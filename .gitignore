@@ -1,0 +1,41 @@
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+dist/
+build/
+
+# Blender temporary files
+*.blend1
+*.blend2
+*.blend@*
+*.blend@tmp
+*.blend1@*
+
+# Local environment files
+.env
+.env.*
+venv/
+.venv/
+
+# Web project is tracked separately
+web/

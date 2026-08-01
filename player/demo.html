@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VecBake — player harness</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14161a; --muted: #666e7a;
+    --line: #dfe3e8; --accent: #2f6feb; --alarm: #e5484d;
+    --stage: #ffffff;
+  }
+  body.dark {
+    --bg: #14161a; --panel: #1c1f25; --ink: #e8eaed; --muted: #98a1ad;
+    --line: #2b3038; --accent: #6ea8fe; --stage: #10131a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+    display: grid; grid-template-columns: 1fr 268px; height: 100vh;
+  }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; height: auto; } }
+  main { display: flex; flex-direction: column; padding: 16px; gap: 12px; min-width: 0; }
+  #stage {
+    position: relative; flex: 1; min-height: 320px; background: var(--stage);
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  }
+  #stage > * { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #svgHost { display: none; }
+  #svgHost svg { width: 100%; height: 100%; }
+  #canvas { display: block; }
+  body.showSvg #canvas { visibility: hidden; }
+  body.showSvg #svgHost { display: block; }
+  aside {
+    background: var(--panel); border-left: 1px solid var(--line);
+    padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px;
+  }
+  h1 { font-size: 14px; margin: 0; letter-spacing: .01em; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  button {
+    font: inherit; color: var(--ink); background: transparent; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 2px 0; }
+  td:last-child { text-align: right; font-weight: 600; }
+  .muted { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 11.5px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  #err { color: var(--alarm); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <div class="row" style="justify-content:space-between">
+    <h1>VecBake <span class="muted" style="font-weight:400">player harness</span></h1>
+    <div class="row">
+      <button id="theme">Dark</button>
+    </div>
+  </div>
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="svgHost"></div>
+  </div>
+  <div class="row">
+    <button id="play">Play</button>
+    <button id="loop" class="on">Loop</button>
+    <input id="scrub" type="range" min="0" max="1000" value="0" style="flex:1;min-width:140px">
+    <span class="muted" id="tlabel" style="width:78px;text-align:right">0.000 s</span>
+  </div>
+  <div id="err"></div>
+</main>
+
+<aside>
+  <div class="card">
+    <h2>Frame cost</h2>
+    <table>
+      <tr><td>render</td><td id="ms">—</td></tr>
+      <tr><td>fps</td><td id="fps">—</td></tr>
+      <tr><td>drawn / total</td><td id="drawn">—</td></tr>
+      <tr><td>budget @60fps</td><td class="muted">16.7 ms</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Document</h2>
+    <table>
+      <tr><td>elements</td><td id="els">—</td></tr>
+      <tr><td>keyframes</td><td id="keys">—</td></tr>
+      <tr><td>JSON</td><td id="size">—</td></tr>
+      <tr><td>duration</td><td id="dur">—</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Seam test</h2>
+    <div class="row">
+      <button id="toEnd">Player @ end</button>
+      <button id="toSvg">Static SVG</button>
+    </div>
+    <p class="hint">Both are drawn from the same baked IR. Flip between them —
+      nothing should move.</p>
+  </div>
+
+  <div class="card">
+    <h2>Live data binding</h2>
+    <div class="row" id="groups"></div>
+    <p class="hint">Click the drawing to pick an element — hit-testing works
+      <em>during</em> playback.</p>
+    <div id="picked" class="hint">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Stress</h2>
+    <div class="row">
+      <button id="bench">Benchmark 300 frames</button>
+    </div>
+    <div id="benchout" class="hint">—</div>
+  </div>
+</aside>
+
+<script src="vecplay.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('canvas');
+let player = null, alarmed = new Set();
+
+const q = new URLSearchParams(location.search);
+const name = q.get('name') || 'tower';
+const base = q.get('base') || '../out/';
+
+function fmtBytes(n) { return n > 1024 * 1024 ? (n / 1048576).toFixed(2) + ' MB' : (n / 1024).toFixed(1) + ' KB'; }
+
+async function boot() {
+  let raw;
+  try {
+    const res = await fetch(base + name + '.json');
+    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+    raw = await res.text();
+  } catch (e) {
+    $('err').textContent = 'Could not load ' + base + name + '.json — ' + e.message +
+      '\nServe this folder over HTTP (fetch is blocked on file://).';
+    return;
+  }
+  const doc = JSON.parse(raw);
+  player = new VecPlay(canvas, doc, { background: null });
+
+  $('els').textContent = doc.stats.elements + ' (' + doc.stats.strokes + 's/' + doc.stats.fills + 'f)';
+  $('keys').textContent = doc.stats.keyframes;
+  $('size').textContent = fmtBytes(new Blob([raw]).size);
+  $('dur').textContent = doc.dur.toFixed(3) + ' s @ ' + doc.fps + ' fps';
+
+  // group tint buttons — stands in for a sensor tripping mid-transition
+  for (const g of doc.groups) {
+    const b = document.createElement('button');
+    b.textContent = g;
+    b.onclick = () => {
+      if (alarmed.has(g)) { alarmed.delete(g); b.classList.remove('on'); player.setGroupColor(g, null); }
+      else { alarmed.add(g); b.classList.add('on'); player.setGroupColor(g, getComputedStyle(document.body).getPropertyValue('--alarm').trim()); }
+    };
+    $('groups').appendChild(b);
+  }
+
+  fetch(base + name + '.end.svg').then(r => r.ok ? r.text() : null).then(t => {
+    if (t) $('svgHost').innerHTML = t;
+  }).catch(() => {});
+
+  player.play({ loop: true });
+  requestAnimationFrame(hud);
+}
+
+let frames = 0, acc = 0, lastHud = performance.now();
+function hud(now) {
+  if (player) {
+    frames++; acc += player.lastRenderMs;
+    if (now - lastHud > 400) {
+      $('ms').textContent = (acc / frames).toFixed(2) + ' ms';
+      $('fps').textContent = (frames * 1000 / (now - lastHud)).toFixed(0);
+      $('drawn').textContent = player.visible + ' / ' + player.elements.length;
+      frames = 0; acc = 0; lastHud = now;
+    }
+    if (player.playing) {
+      $('scrub').value = Math.round(player.time / player.duration * 1000);
+      $('tlabel').textContent = player.time.toFixed(3) + ' s';
+    }
+  }
+  requestAnimationFrame(hud);
+}
+
+$('play').onclick = () => {
+  if (!player) return;
+  if (player.playing) { player.pause(); $('play').textContent = 'Play'; }
+  else { player.play({ loop: $('loop').classList.contains('on') }); $('play').textContent = 'Pause'; }
+};
+$('loop').onclick = e => e.target.classList.toggle('on');
+$('scrub').oninput = e => {
+  if (!player) return;
+  player.pause(); $('play').textContent = 'Play';
+  player.seek(e.target.value / 1000 * player.duration);
+  $('tlabel').textContent = player.time.toFixed(3) + ' s';
+};
+$('toEnd').onclick = () => {
+  document.body.classList.remove('showSvg');
+  player.pause(); $('play').textContent = 'Play';
+  player.seek(player.duration);
+  $('scrub').value = 1000; $('tlabel').textContent = player.time.toFixed(3) + ' s';
+};
+$('toSvg').onclick = () => document.body.classList.toggle('showSvg');
+$('theme').onclick = () => {
+  document.body.classList.toggle('dark');
+  $('theme').textContent = document.body.classList.contains('dark') ? 'Light' : 'Dark';
+  if (player) {
+    const dark = document.body.classList.contains('dark');
+    player.setColor(0, dark ? '#e8eaed' : null);   // stroke swatch
+    for (const g of alarmed) player.setGroupColor(g, getComputedStyle(document.body).getPropertyValue('--alarm').trim());
+  }
+};
+canvas.onclick = e => {
+  if (!player) return;
+  const hit = player.pick(e.clientX, e.clientY);
+  $('picked').textContent = hit ? (hit.id || '(no id)') + '  ·  group ' + hit.group : 'nothing there';
+  if (hit) {
+    player.setElementColor(hit.id, '#e5484d');
+    setTimeout(() => player.setElementColor(hit.id, null), 1200);
+  }
+};
+$('bench').onclick = () => {
+  if (!player) return;
+  player.pause(); $('play').textContent = 'Play';
+  const N = 300, t0 = performance.now();
+  for (let i = 0; i < N; i++) player.render(i / N * player.duration);
+  const total = performance.now() - t0;
+  $('benchout').textContent = (total / N).toFixed(3) + ' ms/frame avg · ' +
+    Math.round(1000 / (total / N)) + ' fps ceiling (' + N + ' frames, no rAF)';
+};
+
+boot();
+</script>
+</body>
+</html>
