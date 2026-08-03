@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """The .ivg container -- one file per transition.
 
 An .ivg **is a valid SVG file** with the animation data embedded in it. That

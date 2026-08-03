@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Bake settings as a plain dataclass.
 
 Kept free of bpy types so scripts can call the baker headlessly without a

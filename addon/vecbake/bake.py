@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """The baker: 3D scene + camera -> corresponded 2D keyframes.
 
 This is the only module that simulates 3D, and it runs exactly once, offline.
@@ -264,6 +266,16 @@ class ObjectPlan:
         # marked -- so absence is normal and means "none".
         self.edge_freestyle = _edge_attribute(me, "freestyle_edge", self.nedges, bool)
         self.edge_crease = _edge_attribute(me, "crease_edge", self.nedges, float)
+
+    def edge_face_keys(self, edge_index):
+        """Element keys of the faces this edge borders, if they are drawn."""
+        if not self.fills:
+            return ()
+        return tuple(
+            f"{self.name}/f{int(face)}"
+            for face in (self.edge_face_a[edge_index], self.edge_face_b[edge_index])
+            if face >= 0
+        )
 
     def check(self, me):
         if _topology_signature(me) != self.signature:
@@ -662,6 +674,10 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 collect.append({
                     "key": key, "kind": 0, "seed": float(edge_depth[eidx]),
                     "pts": np.array([pa, pb]), "depths": depth[pair],
+                    # The faces this edge physically lies on. Their relative
+                    # order is topology, not something to be measured -- see
+                    # order.resolve().
+                    "on_faces": plan.edge_face_keys(eidx),
                 })
 
 

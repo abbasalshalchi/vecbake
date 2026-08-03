@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Keyframe reduction.
 
 Densely-sampled tracks go in, sparse ones come out.  We use Ramer-Douglas-

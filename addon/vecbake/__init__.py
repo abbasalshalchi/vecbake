@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """VecBake -- bake a 3D scene to an interpolated 2D vector animation.
 
 The primary output is an **animated SVG**: one `.svg` per camera that renders

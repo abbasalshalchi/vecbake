@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Correct draw order, resolved offline.
 
 A single depth scalar per element cannot express occlusion in general. The
@@ -177,6 +179,58 @@ def _inside(poly, qx, qy):
     return out
 
 
+def _scc(nodes, after):
+    """Tarjan's strongly connected components over a subgraph. Iterative.
+
+    Used to find the edges that are *actually* on a cycle. When the sort
+    deadlocks, most of the blocked elements are not in the cycle at all -- they
+    are simply downstream of it, waiting on something that is. Breaking their
+    constraints resolves nothing and throws away good evidence.
+
+    Recursion is not an option here: components run to hundreds of elements on
+    a real scene and Python's stack limit is well below that.
+    """
+    index, low, comp = {}, {}, {}
+    stack, on_stack = [], set()
+    counter = ncomp = 0
+    for root in nodes:
+        if root in index:
+            continue
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        work = [(root, iter([v for v in after[root] if v in nodes]))]
+        while work:
+            v, it = work[-1]
+            descended = False
+            for w in it:
+                if w not in index:
+                    index[w] = low[w] = counter
+                    counter += 1
+                    stack.append(w)
+                    on_stack.add(w)
+                    work.append((w, iter([u for u in after[w] if u in nodes])))
+                    descended = True
+                    break
+                if w in on_stack and index[w] < low[v]:
+                    low[v] = index[w]
+            if descended:
+                continue
+            work.pop()
+            if work and low[v] < low[work[-1][0]]:
+                low[work[-1][0]] = low[v]
+            if low[v] == index[v]:
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    comp[w] = ncomp
+                    if w == v:
+                        break
+                ncomp += 1
+    return comp
+
+
 def _bbox_of(item):
     box = item.get("bbox")
     if box is not None:
@@ -329,11 +383,15 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # its own constraints can be carried straight past an unconstrained
             # neighbour. Skipping here is what let the ground paint over the
             # mast legs.
+            # Weight these by the actual gap. They are the *most* certain
+            # constraints in the graph -- the depth ranges do not even touch --
+            # so leaving them at the default strength of zero made the cycle
+            # breaker treat them as worthless and discard them first.
             if dmax[j] < dmin[i]:
-                add_edge(i, j)
+                add_edge(i, j, float(dmin[i] - dmax[j]))
                 continue
             if dmax[i] < dmin[j]:
-                add_edge(j, i)
+                add_edge(j, i, float(dmin[j] - dmax[i]))
                 continue
             shared = _shared_samples(items[i], items[j])
             if shared is None:
@@ -346,20 +404,63 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 # the seed order makes the pair flicker as the seeds jitter
                 # frame to frame (mast legs standing on the ground). Break it
                 # deterministically -- lines belong on top of surfaces.
+                # Weakest genuine class: strictly below tol, so below every
+                # constraint that sampling actually decided. If a cycle has to
+                # give something up, these go first -- by construction depth had
+                # no opinion about them anyway.
                 if kinds[i] == FILL_KIND and kinds[j] != FILL_KIND:
-                    add_edge(i, j)
+                    add_edge(i, j, tol)
                 elif kinds[j] == FILL_KIND and kinds[i] != FILL_KIND:
-                    add_edge(j, i)
+                    add_edge(j, i, tol)
                 continue
             if delta > 0:
                 add_edge(i, j, abs(delta))    # i is further away where they overlap
             else:
                 add_edge(j, i, abs(delta))
 
+    # An edge lies *on* the faces it borders, so a face can never legitimately
+    # be painted over it. Sampling cannot discover this: the two are coincident,
+    # every sampled delta lands inside tol, and the pair falls through to the
+    # seed order -- which puts the fill on top about half the time. The fill
+    # then eats the inner half of the stroke's width and the line reads as
+    # thinned, or vanishes wherever the coverage is total.
+    #
+    # Weighted by the scene's full depth span so it outranks every measured
+    # delta, but stays finite: where geometry genuinely interpenetrates this
+    # still has to be breakable like anything else.
+    index = {it["key"]: k for k, it in enumerate(items)}
+    asserted = set()
+    missing_face = 0
+    for j, it in enumerate(items):
+        for face_key in it.get("on_faces", ()):
+            i = index.get(face_key)
+            if i is None or i == j:
+                missing_face += i is None
+                continue
+            asserted.add((i, j))
+            if j in after[i]:
+                # Sampling already agrees. Leave it alone rather than raising it
+                # to span: a measured edge at its measured weight stays available
+                # to the cycle breaker, and there is nothing to correct here.
+                continue
+            if i in after[j]:
+                # Sampling put the fill over its own boundary -- this is the
+                # error, caused by fitting a plane to an n-gon that is not quite
+                # planar, so the fit misses its own edge by a hair. Retract it
+                # before asserting the truth, or the two sit in the graph as a
+                # 2-cycle that the breaker then has to pay to resolve.
+                after[j].discard(i)
+                before[i].discard(j)
+                indeg[i] -= 1
+                weight.pop((j, i), None)
+            add_edge(i, j, span)
+
     # Kahn's algorithm, tie-broken by seed depth so unconstrained elements keep
     # their natural far-to-near ordering.
     constraints = sum(len(s) for s in after)
     cycle_breaks = 0
+    dropped = 0
+    assertions_lost = 0
     heap = [(-seed[i], i) for i in range(n) if indeg[i] == 0]
     heapq.heapify(heap)
     ranking = []
@@ -372,8 +473,17 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # -- the one derived from the smallest depth difference, i.e. the
             # least evidence -- rather than discarding every constraint on some
             # element, which throws away good evidence along with bad.
+            # Only edges *inside* a strongly connected component are on a cycle.
+            # Everything else feeding a blocked node is a constraint that will
+            # be satisfied perfectly well once the deadlock clears, and dropping
+            # it just manufactures an occlusion error somewhere unrelated.
+            comp = _scc(blocked, after)
+            sizes = {}
+            for c in comp.values():
+                sizes[c] = sizes.get(c, 0) + 1
             live = [(weight.get((src, node), 0.0), src, node)
-                    for node in blocked for src in before[node]]
+                    for node in blocked for src in before[node]
+                    if comp.get(src, -1) == comp.get(node, -2) and sizes[comp[node]] > 1]
             if not live:
                 node = max(blocked, key=lambda k: seed[k])
                 blocked.discard(node)
@@ -384,15 +494,30 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # break needs as many breaks as there are cyclic edges, and each
             # costs a full scan -- on interpenetrating geometry that is
             # thousands of passes.
+            #
+            # Bound that tenth by *count*. Taking the tenth-percentile weight as
+            # a threshold and dropping everything at or below it is not the same
+            # thing: weights are heavily tied, so one break discarded every edge
+            # sharing the cutoff value -- 15736 of 24456 constraints, 64% of all
+            # the evidence in the scene, in a single pass. The sort already puts
+            # the least-supported constraints first; just take that many.
             live.sort(key=lambda item: item[0])
-            cutoff = live[len(live) // 10][0]
-            for w, src, node in live:
-                if w > cutoff:
-                    break
+            # Spend measured constraints before asserted ones. An assertion is a
+            # geometric fact -- the edge lies on the face -- so it outranks any
+            # amount of sampled evidence, and every cycle through one also runs
+            # through a stroke->fill edge that can go instead. Weight alone is
+            # not enough to express that: a component dominated by assertions
+            # exhausts its few measured edges partway through the slice and the
+            # rest of the budget comes out of the facts.
+            pool = [e for e in live if (e[1], e[2]) not in asserted] or live
+            for w, src, node in pool[:max(1, len(pool) // 10)]:
                 if node in after[src]:
                     after[src].discard(node)
                     before[node].discard(src)
                     indeg[node] -= 1
+                    dropped += 1
+                    if (src, node) in asserted:
+                        assertions_lost += 1
             for node in list(blocked):
                 if indeg[node] == 0:
                     blocked.discard(node)
@@ -408,7 +533,10 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 heapq.heappush(heap, (-seed[j], j))
 
     LAST_STATS.clear()
-    LAST_STATS.update({"elements": n, "constraints": constraints, "cycle_breaks": cycle_breaks})
+    LAST_STATS.update({"elements": n, "constraints": constraints,
+                       "cycle_breaks": cycle_breaks, "constraints_dropped": dropped,
+                       "assertions": len(asserted), "assertions_lost": assertions_lost,
+                       "assertions_face_not_drawn": missing_face})
 
     # Emit the *rank*, not a depth magnitude. The player only ever sorts these,
     # so the absolute distance is information nobody reads -- and storing it

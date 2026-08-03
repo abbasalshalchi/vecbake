@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Static SVG emitter -- the resting states.
 
 Emitted from the *same IR* the player consumes, evaluated at one instant.  That

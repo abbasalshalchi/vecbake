@@ -39,3 +39,5 @@ venv/
 
 # Web project is tracked separately
 web/
+# site project is tracked separately
+site/

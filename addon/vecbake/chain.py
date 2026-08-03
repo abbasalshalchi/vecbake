@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Merge runs of edges into single polylines, and dissolve redundant vertices.
 
 Two separate savings, both of which the mesh hands you for free:
@@ -333,12 +335,15 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 merged += len(run_members)
 
                 # replace the member items the ordering pass will see
+                # a chain lies on every face any of its members lay on
+                on_faces = tuple({f for e in run_members for f in plan.edge_face_keys(e)})
                 for fi in visible_frames:
                     xy, depths = vertex_cache[fi][plan.name]
                     seed = min(float(slots[k]["depth"][fi]) for k in run_keys)
                     chain_items.setdefault(fi, []).append({
                         "key": key, "kind": 0, "seed": seed,
                         "pts": xy[final_path], "depths": depths[final_path],
+                        "on_faces": on_faces,
                     })
 
     if not added:

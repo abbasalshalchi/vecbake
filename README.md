@@ -39,7 +39,8 @@ Measured on a real telecom-site scene (1,654 elements, 1280×720, 12 frames):
 | `tower.svg` | 1,198 KB raw, **259 KB gzipped** |
 | — of which resting states | ~361 KB raw, a few KB gzipped |
 | Player frame cost | 8–11 ms, or **4–5 ms** with seam fixing off |
-| Occlusion violations | **0** across every frame |
+| Occlusion violations | 95, all under **0.4%** of scene depth (flush-mounted parts) |
+| Lines covered by their own face | **0** |
 
 Most of the bake is offline occlusion resolution, which is quadratic in
 overlapping elements — the price of correct ordering, paid once. Sharp-edge
@@ -179,7 +180,7 @@ other, and adjacent faces of a box each test as "behind" the other. Both
 produce 2-cycles between every neighbouring pair, saturating the graph with
 cycles until it silently degrades back to centroid order.
 
-Two further traps, both fixed:
+Three further traps, all fixed:
 
 - **Don't skip pairs whose depth ranges are disjoint.** It looks safe — seed
   depth already orders them — but the topological sort reorders *globally*, so
@@ -189,6 +190,17 @@ Two further traps, both fixed:
   the depth of the face it borders, so every edge around a face ties). Indexing
   sorted seeds collapses distinct ranks onto one value and hands the tie back to
   the player to break arbitrarily.
+- **An edge lying on a face cannot be ordered by sampling it.** The two are
+  coincident, and the plane fitted to an n-gon that is not perfectly planar
+  misses its own boundary by a hair — enough to read as "the face is nearer".
+  The fill then paints over the inner half of its own outline and the line looks
+  thinned, or disappears where coverage is total. Sampling cannot fix this
+  because sampling is what is wrong; the relation is asserted from topology
+  instead. Two details matter: retract the opposing measured edge first, or the
+  pair sits in the graph as a 2-cycle the breaker then pays to resolve, and
+  never spend an assertion to break a cycle while any measured edge is available
+  — a component dominated by assertions otherwise exhausts its measured edges
+  partway through the budget and the remainder comes out of the facts.
 
 ### 3. Keyframe reduction can destroy a correct order
 
@@ -480,17 +492,20 @@ gzipped:
 - **Stroke-vs-stroke order is unconstrained.** Both are hairlines of the same
   colour, so it isn't visible — but it is not resolved.
 - **Geometry that touches or interpenetrates** produces contradictory
-  constraints and therefore cycles. Two things keep that survivable: "coplanar"
-  is judged relative to the scene's depth scale rather than an absolute epsilon,
-  and breaking a cycle gives up the *weakest* constraints — those resting on the
-  smallest depth differences, i.e. the least evidence — instead of discarding
-  every constraint on some element.
+  constraints and therefore cycles. Three things keep that survivable:
+  "coplanar" is judged relative to the scene's depth scale rather than an
+  absolute epsilon; only edges lying *inside a strongly connected component* are
+  ever broken, so constraints that are merely downstream of a deadlock survive
+  it; and among those, the weakest go first — the ones resting on the smallest
+  depth differences, i.e. the least evidence.
 
   It is still the one case with no correct answer. On a model whose dishes sit
   flush against the mast, surfaces separated by 0.002 units on a 30-unit scene
   are genuinely ambiguous, and the cheapest real fix is in the model: give
-  mounted parts a little clearance. `validate_bake.py` reports `cycle_breaks`,
-  and a large number there means the geometry, not the exporter, is deciding.
+  mounted parts a little clearance. `validate_bake.py` reports `cycle_breaks`
+  and `constraints_discarded`; a large number in either means the geometry, not
+  the exporter, is deciding. On the reference tower the residue is 95 pairs,
+  every one of them under 0.4% of the scene's depth span.
 - **Lottie layer order is static.** Depth becomes a fixed layer stack, so
   occlusion cannot flip mid-animation there. Invisible for a modest camera move,
   not for a full orbit around a lattice. This is why the native player exists and
@@ -532,3 +547,16 @@ scripts/build_test_scene.py
 scripts/devserver.py      static server + POST /save/<name> snapshot endpoint
 player/demo.html          older harness for the bare .json track format
 ```
+
+## Licence
+
+**GPL-3.0-or-later** — see [addon/vecbake/LICENSE](addon/vecbake/LICENSE). The
+add-on links against Blender's Python API, so this is not a choice: any Blender
+add-on is a derivative work and must be GPL. A copy you receive is yours to
+modify and redistribute.
+
+The web runtime in [web/](web/) is separate code under **AGPL-3.0-or-later**,
+with a commercial licence available for closed-source products — see
+[web/COMMERCIAL.md](web/COMMERCIAL.md).
+
+**Files you bake are yours.** Neither licence reaches the output.

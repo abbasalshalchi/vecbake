@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Secondary emitter: Lottie, for previewing in standard tools.
 
 Nearly free because the IR already holds exactly what Lottie wants -- sparse 2D

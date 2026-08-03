@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """Format-neutral intermediate representation.
 
 The whole point of this module: the baker produces a `VecScene`, and every
