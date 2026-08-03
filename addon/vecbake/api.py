@@ -10,6 +10,7 @@ Deliberately usable without any UI so bakes can run headless
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 
@@ -158,6 +159,34 @@ def bake_and_write(
 
         outputs.append({"camera": cam.name, "basename": stem, "scene": vec,
                         "stats": vec.stats(), "reversed": settings.bidirectional})
+
+    # With several cameras there is no way to tell from a filename which move a
+    # clip contains or which way it runs, and guessing yields transitions that
+    # play backwards. Ship an index that answers both.
+    if "ivg" in formats and multi:
+        manifest = {
+            "format": "ivg-manifest",
+            "version": 1,
+            "clips": [
+                {
+                    "file": f"{out['basename']}.svg",
+                    "camera": out["camera"],
+                    "from": out["scene"].meta.get("from"),
+                    "to": out["scene"].meta.get("to"),
+                    "duration": round(out["scene"].duration, 6),
+                    "motion": out["scene"].motion(),
+                    "width": out["scene"].width,
+                    "height": out["scene"].height,
+                    "elements": out["stats"]["elements"],
+                }
+                for out in outputs
+            ],
+        }
+        path = os.path.join(directory, f"{basename}.index.json")
+        text = json.dumps(manifest, indent=1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        files[path] = len(text.encode("utf-8"))
 
     return {
         "scene": outputs[0]["scene"],

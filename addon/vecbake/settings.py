@@ -37,7 +37,9 @@ class BakeSettings:
     offscreen_margin: float = 24.0
 
     # --- style ------------------------------------------------------------
-    stroke_color: tuple = (0.07, 0.07, 0.09)
+    # scene-linear, like every Blender COLOR property; these are the linear
+    # equivalents of #121217 and #c7ccd6
+    stroke_color: tuple = (0.00605, 0.00605, 0.00857)
     stroke_width: float = 1.6
     stroke_source: str = "FIXED"   # FIXED = stroke_color | MATERIAL = darkened fill
     stroke_darken: float = 0.55    # how far towards black, MATERIAL source
@@ -45,7 +47,7 @@ class BakeSettings:
     # force edges into the drawing whatever the edge mode selected
     always_freestyle: bool = False   # edges marked Freestyle in the mesh
     always_crease: bool = False      # edges with a crease value above zero
-    default_fill: tuple = (0.78, 0.80, 0.84)
+    default_fill: tuple = (0.57112, 0.60383, 0.67244)
     use_material_color: bool = True
     color_source: str = "AUTO"     # AUTO | MATERIAL (Principled) | VIEWPORT
     shading: bool = True

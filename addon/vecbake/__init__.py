@@ -104,7 +104,7 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "and stops large floors slicing through objects standing on them")
 
     stroke_color: FloatVectorProperty(name="Stroke Colour", subtype="COLOR", size=3,
-                                      min=0.0, max=1.0, default=(0.07, 0.07, 0.09),
+                                      min=0.0, max=1.0, default=(0.00605, 0.00605, 0.00857),
                                       description="Colour for every stroke. Override per "
                                                   "object with a 'vecbake_stroke' custom property")
     stroke_width: FloatProperty(name="Width", default=1.6, min=0.0, soft_max=8.0)
@@ -142,7 +142,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         default="AUTO",
     )
     default_fill: FloatVectorProperty(name="Fill", subtype="COLOR", size=3,
-                                      min=0.0, max=1.0, default=(0.78, 0.80, 0.84))
+                                      min=0.0, max=1.0, default=(0.57112, 0.60383, 0.67244))
     shading: BoolProperty(name="Shade Fills", default=True,
                           description="Modulate fill colour by face normal")
     light_dir: FloatVectorProperty(name="Light", subtype="DIRECTION", size=3,

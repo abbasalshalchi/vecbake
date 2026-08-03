@@ -139,6 +139,7 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
         "groups": list(vec.groups),
         "colors": palette,
         "els": els,
+        "motion": vec.motion(),
         "stats": vec.stats(),
         "meta": vec.meta,
     }

@@ -57,6 +57,27 @@ def collect_objects(context, settings: BakeSettings):
 NEUTRAL_GREY = (0.8, 0.8, 0.8)
 
 
+def _display_color(color):
+    """Scene-linear -> sRGB, the space CSS and SVG hex actually mean.
+
+    Blender stores every COLOR property in scene-linear and only converts for
+    display, so the float behind a swatch reading #4c8cb8 is (0.072, 0.262,
+    0.479). Writing those numbers straight into a hex triple yields #12437a --
+    every colour markedly darker than the one that was picked, whatever the
+    shading setting does. Convert on the way into the IR so all three emitters
+    inherit the fix.
+    """
+    try:
+        from mathutils import Color
+        return tuple(Color(tuple(color[:3])).from_scene_linear_to_srgb())
+    except (ImportError, AttributeError):
+        out = []
+        for c in color[:3]:
+            c = max(0.0, min(1.0, c))
+            out.append(c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055)
+        return tuple(out)
+
+
 def _principled_base(mat):
     if not (mat.use_nodes and mat.node_tree):
         return None
@@ -218,10 +239,11 @@ class ObjectPlan:
             palette = [_material_color(m, default, settings.color_source) for m in mats] or [default]
         else:
             palette = [default for _ in mats] or [default]
+        palette = [_display_color(c) for c in palette]
         self.face_color = [palette[min(int(i), len(palette) - 1)] for i in mat_idx]
 
         stroke = obj.get("vecbake_stroke", None)
-        self.stroke_color = tuple(stroke[:3]) if stroke else tuple(settings.stroke_color)
+        self.stroke_color = _display_color(stroke[:3] if stroke else settings.stroke_color)
 
         # optional per-edge colour taken from the face the edge borders
         self.edge_colors = None
@@ -400,6 +422,11 @@ def bake(context, settings: BakeSettings, report=None) -> VecScene:
             "edge_mode": settings.edge_mode,
             "camera": cam.name,
             "direction": "forward",
+            # Optional labels for what this move connects, set as custom
+            # properties on the camera. They travel into the manifest so a
+            # consumer can look a clip up by intent instead of by filename.
+            "from": cam.get("vecbake_from", None),
+            "to": cam.get("vecbake_to", None),
             "chains": chain_report["chains"],
             "edges_merged": chain_report["edges_merged"],
         }

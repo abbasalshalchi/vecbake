@@ -289,7 +289,23 @@ but not a grid drawn on the floor.
 ### Cameras and direction
 
 **All Cameras** bakes once per camera, suffixing files with the camera name —
-`tower.tower_cam.svg`, `tower.map_cam.svg`, and so on.
+`tower.tower_cam.svg`, `tower.map_cam.svg`, and so on — plus a
+`tower.index.json` manifest listing every clip with its duration, size and
+measured camera motion.
+
+The manifest exists because a filename cannot say which way a camera moves.
+`tower.bts_cam.svg` could travel towards the cabinet or away from it, and a
+consumer that guesses gets a transition running backwards — which looks like
+broken artwork rather than broken wiring. Every bake measures it and records
+`{"scale": 0.42, "direction": "out"}`, so the answer ships with the file.
+
+Label what a move connects with custom properties on the **camera** and they
+travel into the manifest too, turning it into an exact lookup:
+
+| Property | Effect |
+|---|---|
+| `vecbake_from` | state this move starts at, e.g. `full` |
+| `vecbake_to` | state it ends at, e.g. `bts` |
 
 **Forward + Reverse** writes `<name>.rev.json` / `<name>.rev.lottie.json`, a
 pure transform of the baked keyframes rather than a second bake. It does
@@ -311,6 +327,17 @@ Blender 5 keeps `use_nodes` on for every material, so trusting the Principled
 base colour flattens any scene authored with viewport display colours to a
 uniform grey. **Auto** takes the shader colour when someone has actually set it
 and falls back to the viewport colour; **Shader** and **Viewport** force either.
+
+Colours are converted from **scene-linear to sRGB** on the way out. Blender
+stores every COLOR property linear and only converts for display, so the float
+behind a swatch reading `#4c8cb8` is `(0.072, 0.262, 0.479)`. Writing those
+numbers straight into a hex triple gives `#12437a` — every colour noticeably
+darker than the one that was picked, with or without shading. What you see in
+the swatch is now what lands in the file.
+
+This applies to the add-on's own **Stroke Colour** and **Fill** pickers too,
+since they are ordinary linear COLOR properties. A value chosen before this fix
+will now export lighter — matching its swatch, which it did not before.
 
 ### How the animation is encoded
 

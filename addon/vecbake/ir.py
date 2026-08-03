@@ -154,6 +154,45 @@ class VecScene:
             )
         return counts
 
+    def motion(self) -> dict:
+        """Which way the camera travels, first frame to last.
+
+        Consumers have to decide whether to play a clip forwards or in reverse,
+        and the file name alone never says: `tower.bts_cam.svg` could be a move
+        towards the cabinet or away from it. Guessing produces a transition that
+        runs the wrong way, which looks like a bug in the artwork rather than in
+        the wiring. So measure it at bake time and ship the answer.
+
+        `scale` is how much bigger the framed content gets: >1 moves closer,
+        <1 pulls back.
+        """
+        def extent(t):
+            lo_x = lo_y = float("inf")
+            hi_x = hi_y = float("-inf")
+            for el in self.elements:
+                if el.opacity is not None and el.opacity.sample(t) <= 0.004:
+                    continue
+                pts = el.geo.sample(t)
+                for i in range(0, len(pts), 2):
+                    lo_x = min(lo_x, pts[i]); hi_x = max(hi_x, pts[i])
+                    lo_y = min(lo_y, pts[i + 1]); hi_y = max(hi_y, pts[i + 1])
+            if hi_x <= lo_x:
+                return 0.0
+            return max(hi_x - lo_x, hi_y - lo_y)
+
+        first = extent(0.0)
+        last = extent(self.duration)
+        if first <= 0.0 or last <= 0.0:
+            return {"scale": 1.0, "direction": "none"}
+        scale = last / first
+        if scale > 1.05:
+            direction = "in"        # ends closer than it started
+        elif scale < 0.95:
+            direction = "out"
+        else:
+            direction = "none"
+        return {"scale": round(scale, 3), "direction": direction}
+
     def stats(self) -> dict:
         keys = 0
         pts = 0
