@@ -473,10 +473,18 @@ gzipped:
 
 - **Stroke-vs-stroke order is unconstrained.** Both are hairlines of the same
   colour, so it isn't visible — but it is not resolved.
-- **Genuine interpenetration** (geometry that mutually overlaps, like a stub
-  passing through a disc) is a real cycle. Resolving it properly means splitting
-  polygons, which would break element identity, so the cycle is broken at the
-  furthest element. `validate_bake.py` reports `cycle_breaks` if this happens.
+- **Geometry that touches or interpenetrates** produces contradictory
+  constraints and therefore cycles. Two things keep that survivable: "coplanar"
+  is judged relative to the scene's depth scale rather than an absolute epsilon,
+  and breaking a cycle gives up the *weakest* constraints — those resting on the
+  smallest depth differences, i.e. the least evidence — instead of discarding
+  every constraint on some element.
+
+  It is still the one case with no correct answer. On a model whose dishes sit
+  flush against the mast, surfaces separated by 0.002 units on a 30-unit scene
+  are genuinely ambiguous, and the cheapest real fix is in the model: give
+  mounted parts a little clearance. `validate_bake.py` reports `cycle_breaks`,
+  and a large number there means the geometry, not the exporter, is deciding.
 - **Lottie layer order is static.** Depth becomes a fixed layer stack, so
   occlusion cannot flip mid-animation there. Invisible for a modest camera move,
   not for a full orbit around a lattice. This is why the native player exists and

@@ -138,8 +138,27 @@ def _inside(poly, qx, qy):
     return inside
 
 
-def _shared_samples(a, b, grid=3):
-    """Screen points covered by both elements, or None."""
+def _bbox_of(item):
+    box = item.get("bbox")
+    if box is not None:
+        return box
+    pts = item["pts"]
+    return (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max())
+
+
+def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24):
+    """Screen points covered by both elements, or None.
+
+    Sampling density has to follow *pixels*, not point count. Spreading a fixed
+    number of samples along a polyline means a long chain gets samples tens of
+    pixels apart, which steps clean over any small occluder: a 666px mast leg
+    sampled 8 times never lands on a 41px dish, no constraint is generated, and
+    the chain falls back to its nearest-member depth and paints over it.
+
+    So only the segments whose own box meets the fill are sampled, and those are
+    sampled at a few pixels apart. That is denser where it matters and cheaper
+    everywhere else.
+    """
     a_fill = a["kind"] == FILL_KIND
     b_fill = b["kind"] == FILL_KIND
 
@@ -162,14 +181,37 @@ def _shared_samples(a, b, grid=3):
             return None
         return qx[keep], qy[keep]
 
-    # one of them is a segment: walk along it and keep the part inside the fill
-    seg, fill = (a, b) if not a_fill else (b, a)
+    # one of them is a polyline: sample the parts of it that reach the fill
     if not (a_fill or b_fill):
         return None
-    # a chained polyline can be long, so scale the sampling with its length
-    count = 5 if len(seg["pts"]) == 2 else min(16, 2 * len(seg["pts"]))
-    walked = _walk(seg["pts"], np.linspace(0.04, 0.96, count))
-    qx, qy = walked[:, 0], walked[:, 1]
+    seg, fill = (a, b) if not a_fill else (b, a)
+    pts = seg["pts"]
+    fx0, fx1, fy0, fy1 = _bbox_of(fill)
+
+    xs, ys = [], []
+    for k in range(len(pts) - 1):
+        ax, ay = pts[k]
+        bx, by = pts[k + 1]
+        if (max(ax, bx) < fx0 or min(ax, bx) > fx1
+                or max(ay, by) < fy0 or min(ay, by) > fy1):
+            continue                      # this segment never reaches the fill
+        length = np.hypot(bx - ax, by - ay)
+        count = int(min(max(length / spacing, 2), max_per_segment)) + 1
+        t = np.linspace(0.0, 1.0, count)
+        xs.append(ax + (bx - ax) * t)
+        ys.append(ay + (by - ay) * t)
+    if not xs:
+        return None
+
+    qx = np.concatenate(xs)
+    qy = np.concatenate(ys)
+    if len(qx) > max_total:
+        # Thin out evenly. The samples already sit only on the segments that
+        # reach the fill, so even a couple of dozen are far denser over the
+        # overlap than spreading the same number along the whole polyline --
+        # and the cost per pair stays bounded.
+        pick = np.linspace(0, len(qx) - 1, max_total).astype(np.int32)
+        qx, qy = qx[pick], qy[pick]
     keep = _inside(fill["pts"], qx, qy)
     if not keep.any():
         return None
@@ -206,12 +248,28 @@ def resolve(items, is_ortho=False, tol=1e-4):
     kinds = np.array([it["kind"] for it in items], dtype=np.int32)
 
     after = [set() for _ in range(n)]
+    before = [set() for _ in range(n)]
     indeg = [0] * n
+    weight = {}
 
-    def add_edge(behind, front):
-        if behind != front and front not in after[behind]:
+    def add_edge(behind, front, strength=0.0):
+        if behind == front:
+            return
+        if front not in after[behind]:
             after[behind].add(front)
+            before[front].add(behind)
             indeg[front] += 1
+        # how far apart the two really were where they overlap: a constraint
+        # derived from a 0.002-unit gap on a 30-unit scene is barely evidence,
+        # and is the first thing to give up when a cycle has to be broken
+        key = (behind, front)
+        weight[key] = max(weight.get(key, 0.0), strength)
+
+    # Surfaces that touch or interpenetrate produce contradictory constraints,
+    # so treat "coplanar" as relative to the scene's own depth scale rather
+    # than an absolute epsilon.
+    span = float(dmax.max() - dmin.min()) if n else 0.0
+    tol = max(tol, span * 1e-4)
 
     # Only fills can meaningfully occlude -- strokes are hairlines, so
     # stroke-vs-stroke order is invisible and those pairs are skipped.
@@ -255,9 +313,9 @@ def resolve(items, is_ortho=False, tol=1e-4):
                     add_edge(j, i)
                 continue
             if delta > 0:
-                add_edge(i, j)    # i is further away where they overlap
+                add_edge(i, j, abs(delta))    # i is further away where they overlap
             else:
-                add_edge(j, i)
+                add_edge(j, i, abs(delta))
 
     # Kahn's algorithm, tie-broken by seed depth so unconstrained elements keep
     # their natural far-to-near ordering.
@@ -270,19 +328,41 @@ def resolve(items, is_ortho=False, tol=1e-4):
     while len(ranking) < n:
         if not heap:
             cycle_breaks += 1
-            # A genuine cycle (mutually interpenetrating geometry). Resolving it
-            # properly means splitting polygons, which would break element
-            # identity -- so break at the furthest element and carry on.
-            victim = max(blocked, key=lambda k: seed[k])
-            blocked.discard(victim)
-            for src in range(n):
-                after[src].discard(victim)
-            indeg[victim] = 0
-            heapq.heappush(heap, (-seed[victim], victim))
+            # A genuine cycle: geometry that touches or interpenetrates, where
+            # no single order is right. Give up the *weakest* constraint in play
+            # -- the one derived from the smallest depth difference, i.e. the
+            # least evidence -- rather than discarding every constraint on some
+            # element, which throws away good evidence along with bad.
+            live = [(weight.get((src, node), 0.0), src, node)
+                    for node in blocked for src in before[node]]
+            if not live:
+                node = max(blocked, key=lambda k: seed[k])
+                blocked.discard(node)
+                indeg[node] = 0
+                heapq.heappush(heap, (-seed[node], node))
+                continue
+            # Drop the weakest tenth in one pass. Removing a single edge per
+            # break needs as many breaks as there are cyclic edges, and each
+            # costs a full scan -- on interpenetrating geometry that is
+            # thousands of passes.
+            live.sort(key=lambda item: item[0])
+            cutoff = live[len(live) // 10][0]
+            for w, src, node in live:
+                if w > cutoff:
+                    break
+                if node in after[src]:
+                    after[src].discard(node)
+                    before[node].discard(src)
+                    indeg[node] -= 1
+            for node in list(blocked):
+                if indeg[node] == 0:
+                    blocked.discard(node)
+                    heapq.heappush(heap, (-seed[node], node))
             continue
         _, i = heapq.heappop(heap)
         ranking.append(i)
         for j in after[i]:
+            before[j].discard(i)
             indeg[j] -= 1
             if indeg[j] == 0:
                 blocked.discard(j)
