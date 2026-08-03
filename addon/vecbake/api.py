@@ -141,7 +141,11 @@ def _bake_and_write(
     for index, cam in enumerate(cameras):
         cam_settings = copy.copy(settings)
         cam_settings.camera = cam
-        stem = f"{basename}.{_safe(cam.name)}" if multi else basename
+        # Always name the file after the camera, even for a single-camera bake.
+        # Switching the naming on how many cameras happen to be selected means
+        # baking one camera writes a different file than baking all of them,
+        # so a re-bake leaves a stale copy behind instead of replacing it.
+        stem = f"{basename}.{_safe(cam.name)}"
 
         prefix = f"{cam.name} ({index + 1}/{len(cameras)}) — " if multi else ""
         steps = bake_module.bake_iter(context or bpy.context, cam_settings)
@@ -198,29 +202,48 @@ def _bake_and_write(
         outputs.append({"camera": cam.name, "basename": stem, "scene": vec,
                         "stats": vec.stats(), "reversed": settings.bidirectional})
 
-    # With several cameras there is no way to tell from a filename which move a
-    # clip contains or which way it runs, and guessing yields transitions that
-    # play backwards. Ship an index that answers both.
-    if "ivg" in formats and multi:
+    # A filename cannot say which move a clip contains or which way it runs, and
+    # guessing yields transitions that play backwards. Ship an index that
+    # answers both.
+    if "ivg" in formats:
+        fresh = {
+            f"{out['basename']}.svg": {
+                "file": f"{out['basename']}.svg",
+                "camera": out["camera"],
+                "from": out["scene"].meta.get("from"),
+                "to": out["scene"].meta.get("to"),
+                "duration": round(out["scene"].duration, 6),
+                "motion": out["scene"].motion(),
+                "width": out["scene"].width,
+                "height": out["scene"].height,
+                "elements": out["stats"]["elements"],
+            }
+            for out in outputs
+        }
+        path = os.path.join(directory, f"{basename}.index.json")
+
+        # Merge rather than overwrite. Baking one camera must update only that
+        # camera's row -- rewriting the file from just this run would silently
+        # drop every other clip from the index.
+        clips = dict(fresh)
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for clip in json.load(fh).get("clips", []):
+                        name = clip.get("file")
+                        # keep only entries whose file is still on disk, so a
+                        # renamed or deleted clip does not linger forever
+                        if name and name not in clips and \
+                                os.path.exists(os.path.join(directory, name)):
+                            clips[name] = clip
+            except (ValueError, OSError):
+                pass                      # unreadable index: start it again
+
         manifest = {
             "format": "ivg-manifest",
             "version": 1,
-            "clips": [
-                {
-                    "file": f"{out['basename']}.svg",
-                    "camera": out["camera"],
-                    "from": out["scene"].meta.get("from"),
-                    "to": out["scene"].meta.get("to"),
-                    "duration": round(out["scene"].duration, 6),
-                    "motion": out["scene"].motion(),
-                    "width": out["scene"].width,
-                    "height": out["scene"].height,
-                    "elements": out["stats"]["elements"],
-                }
-                for out in outputs
-            ],
+            "clips": [clips[k] for k in sorted(clips)],
         }
-        path = os.path.join(directory, f"{basename}.index.json")
         text = json.dumps(manifest, indent=1)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)

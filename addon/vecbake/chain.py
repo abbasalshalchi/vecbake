@@ -176,27 +176,33 @@ def _straddle_cuts(members, path, plan_name, vertex_cache, fills, visible_frames
         chain = {"kind": 0, "pts": pts, "depths": depths[path]}
         box = (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max())
         is_ortho = ortho_by_frame[fi]
+        mid_x = (pts[:-1, 0] + pts[1:, 0]) * 0.5
+        mid_y = (pts[:-1, 1] + pts[1:, 1]) * 0.5
 
         for fill in fills[fi]:
             fb = fill["bbox"]
             if fb[0] > box[1] or fb[1] < box[0] or fb[2] > box[3] or fb[3] < box[2]:
                 continue
-            behind = {}
-            for mi in range(len(members)):
-                mid_x = (pts[mi][0] + pts[mi + 1][0]) * 0.5
-                mid_y = (pts[mi][1] + pts[mi + 1][1]) * 0.5
-                inside = order._inside(fill["pts"], np.array([mid_x]), np.array([mid_y]))
-                if not inside[0]:
-                    continue
-                cd = order._depths_at(chain, [mid_x], [mid_y], is_ortho)[0]
-                fd = order._depths_at(fill, [mid_x], [mid_y], is_ortho)[0]
-                if abs(cd - fd) <= tol:
-                    continue
-                behind[mi] = cd > fd
-            covered = sorted(behind)
-            for a, b in zip(covered, covered[1:]):
-                if behind[a] != behind[b]:
-                    cuts.add(b)
+            # Test every member at once. Doing this a member at a time meant a
+            # point-in-polygon call per member per fill, each with a single
+            # query point -- all numpy overhead and no arithmetic, and it
+            # dominated the entire bake.
+            covered = np.nonzero(order._inside(fill, mid_x, mid_y))[0]
+            if len(covered) < 2:
+                continue                  # a flip needs two covered members
+            cx, cy = mid_x[covered], mid_y[covered]
+            delta = (order._depths_at(chain, cx, cy, is_ortho)
+                     - order._depths_at(fill, cx, cy, is_ortho))
+            # Drop members too close to the surface to call, *then* look for a
+            # sign change between what remains. Requiring both sides of a pair
+            # to be decisive instead would miss a flip separated by an
+            # undecidable member in the middle.
+            decisive = np.abs(delta) > tol
+            index = covered[decisive]
+            behind = (delta > 0)[decisive]
+            for a in range(len(index) - 1):
+                if behind[a] != behind[a + 1]:
+                    cuts.add(int(index[a + 1]))
     return cuts
 
 

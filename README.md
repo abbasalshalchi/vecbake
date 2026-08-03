@@ -309,10 +309,16 @@ but not a grid drawn on the floor.
 
 ### Cameras and direction
 
-**All Cameras** bakes once per camera, suffixing files with the camera name —
-`tower.tower_cam.svg`, `tower.map_cam.svg`, and so on — plus a
+Output is **always** named after the camera — `tower.tower_cam.svg`,
+`tower.map_cam.svg` — whether you bake one camera or all of them. Naming that
+varied with how many cameras were selected meant re-baking a single camera
+wrote a different filename and left the old file behind; now a bake replaces
+exactly what it should.
+
+**All Cameras** bakes once per camera. Either way you also get a
 `tower.index.json` manifest listing every clip with its duration, size and
-measured camera motion.
+measured camera motion. The manifest is **merged, not overwritten**: baking one
+camera updates only that row, and rows whose file no longer exists are dropped.
 
 The manifest exists because a filename cannot say which way a camera moves.
 `tower.bts_cam.svg` could travel towards the cabinet or away from it, and a
