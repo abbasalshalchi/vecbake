@@ -14,6 +14,7 @@ interpolation of sparse keyframes.
 from __future__ import annotations
 
 import math
+import time
 
 import bpy
 from bpy.props import (
@@ -207,6 +208,12 @@ class VECBAKE_PG_settings(PropertyGroup):
 
     last_stats: StringProperty(name="Last Result", default="")
 
+    # live progress, mirrored into the panel and the status bar so it survives
+    # switching away from Blender -- the cursor readout does not
+    progress_text: StringProperty(name="Progress", default="")
+    progress_fraction: FloatProperty(name="Progress", default=0.0, min=0.0, max=1.0)
+    baking: BoolProperty(name="Baking", default=False)
+
     def to_bake_settings(self, context) -> BakeSettings:
         s = BakeSettings()
         if self.source == "SELECTED":
@@ -296,12 +303,124 @@ class VECBAKE_OT_analyze(Operator):
         return {"FINISHED"}
 
 
+def _redraw(context):
+    """Repaint the panels showing progress, plus the status bar."""
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type in {"VIEW_3D", "PROPERTIES"}:
+                area.tag_redraw()
+
+
 class VECBAKE_OT_export(Operator):
     """Bake the animation and write the selected formats"""
 
     bl_idname = "vecbake.export"
     bl_label = "Bake & Export"
     bl_options = {"REGISTER"}
+
+    _timer = None
+    _steps = None
+    _slice = 0.12          # seconds of work per tick, then let Blender breathe
+
+    # --- modal path: what you get from the button -------------------------
+
+    def invoke(self, context, event):
+        props = context.scene.vecbake
+        formats = self._formats(props)
+        if not formats:
+            self.report({"ERROR"}, "No output format selected.")
+            return {"CANCELLED"}
+        try:
+            self._steps = api.bake_and_write_iter(
+                context,
+                directory=props.out_dir,
+                basename=props.basename,
+                settings=props.to_bake_settings(context),
+                formats=formats,
+                pretty=props.pretty,
+            )
+        except BakeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        props.baking = True
+        props.progress_text = "Starting…"
+        props.progress_fraction = 0.0
+        self._set_status(context, "VecBake: starting…")
+        _redraw(context)
+        self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        props = context.scene.vecbake
+        if event.type in {"ESC"}:
+            self._finish(context)
+            props.progress_text = ""
+            self.report({"WARNING"}, "VecBake: cancelled")
+            return {"CANCELLED"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+
+        # always take at least one step, then keep going until the slice is up
+        phase, done, total = "", 0, 0
+        deadline = time.perf_counter() + self._slice
+        try:
+            while True:
+                phase, done, total = next(self._steps)
+                if time.perf_counter() >= deadline:
+                    break
+        except StopIteration as finished:
+            result = finished.value
+            self._finish(context)
+            props.last_stats = _summary(result["stats"], result["files"], result["bakes"])
+            props.progress_text = ""
+            self.report({"INFO"}, f"VecBake: {props.last_stats} -> {props.out_dir}")
+            return {"FINISHED"}
+        except BakeError as exc:
+            self._finish(context)
+            props.progress_text = ""
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        props.progress_fraction = (done / total) if total else 0.0
+        props.progress_text = f"{phase} {done}/{total}" if total > 1 else phase
+        self._set_status(context, f"VecBake: {props.progress_text}")
+        _redraw(context)
+        return {"RUNNING_MODAL"}
+
+    def _set_status(self, context, text):
+        try:
+            context.workspace.status_text_set(text)
+        except AttributeError:
+            pass
+
+    def _finish(self, context):
+        if self._steps is not None:
+            self._steps.close()      # unwinds the bake, restoring the frame
+            self._steps = None
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        context.scene.vecbake.baking = False
+        context.scene.vecbake.progress_fraction = 0.0
+        self._set_status(context, None)
+        _redraw(context)
+
+    @staticmethod
+    def _formats(props):
+        formats = []
+        if props.emit_ivg:
+            formats.append("ivg")
+        if props.emit_json:
+            formats.append("json")
+        if props.emit_svg:
+            formats.append("svg")
+        if props.emit_lottie:
+            formats.append("lottie")
+        return formats
+
+    # --- blocking path: what a script gets from bpy.ops.vecbake.export() ---
 
     def execute(self, context):
         props = context.scene.vecbake
@@ -446,9 +565,20 @@ class VECBAKE_PT_panel(Panel):
         box.prop(props, "pretty")
 
         row = layout.row(align=True)
+        row.enabled = not props.baking
         row.operator("vecbake.analyze", icon="INFO")
         row.operator("vecbake.export", icon="EXPORT")
-        if props.last_stats:
+
+        if props.baking:
+            # The cursor readout vanishes the moment Blender loses focus, so
+            # the same progress is mirrored here and in the status bar.
+            box = layout.box()
+            if hasattr(box, "progress"):
+                box.progress(factor=props.progress_fraction, text=props.progress_text)
+            else:
+                box.label(text=props.progress_text, icon="TIME")
+            box.label(text="Esc to cancel", icon="EVENT_ESC")
+        elif props.last_stats:
             layout.label(text=props.last_stats, icon="CHECKMARK")
 
 

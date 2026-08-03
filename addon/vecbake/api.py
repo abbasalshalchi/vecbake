@@ -16,6 +16,7 @@ import re
 
 import bpy
 
+from . import bake as bake_module
 from . import emit_ivg, emit_json, emit_lottie, emit_svg
 from .bake import BakeError, bake
 from .settings import BakeSettings
@@ -62,6 +63,18 @@ def bake_scene(context=None, settings: BakeSettings | None = None, report=None):
     return bake(context, settings or BakeSettings(), report=report)
 
 
+def bake_and_write_iter(context=None, directory="//", basename="vecbake",
+                        settings: BakeSettings | None = None,
+                        formats=("ivg",), rest_times=None, pretty=False):
+    """Step-wise form of bake_and_write, for a UI that stays responsive.
+
+    Yields `(phase, done, total)` and returns the same dict bake_and_write does.
+    """
+    result = yield from _bake_and_write(context, directory, basename, settings,
+                                        formats, rest_times, pretty)
+    return result
+
+
 def bake_and_write(
     context=None,
     directory="//",
@@ -71,6 +84,27 @@ def bake_and_write(
     rest_times=None,
     pretty=False,
     report=None,
+):
+    """Blocking form. See `_bake_and_write` for the work itself."""
+    steps = _bake_and_write(context, directory, basename, settings, formats,
+                            rest_times, pretty)
+    try:
+        while True:
+            phase, done, total = next(steps)
+            if report:
+                report(phase, done, total)
+    except StopIteration as finished:
+        return finished.value
+
+
+def _bake_and_write(
+    context=None,
+    directory="//",
+    basename="vecbake",
+    settings: BakeSettings | None = None,
+    formats=("json", "svg", "lottie"),
+    rest_times=None,
+    pretty=False,
 ):
     """Bake, then serialise to every requested format.
 
@@ -109,12 +143,16 @@ def bake_and_write(
         cam_settings.camera = cam
         stem = f"{basename}.{_safe(cam.name)}" if multi else basename
 
-        def progress(i, n, _index=index):
-            if report:
-                report(_index * n + i, len(cameras) * n)
+        prefix = f"{cam.name} ({index + 1}/{len(cameras)}) — " if multi else ""
+        steps = bake_module.bake_iter(context or bpy.context, cam_settings)
+        try:
+            while True:
+                phase, done, total = next(steps)
+                yield (prefix + phase, done, total)
+        except StopIteration as finished:
+            vec = finished.value
 
-        vec = bake_scene(context, cam_settings, report=progress if report else None)
-
+        yield (prefix + "Writing files", 0, 1)
         variants = [("", vec)]
         if settings.bidirectional:
             variants.append((".rev", vec.reversed_copy()))

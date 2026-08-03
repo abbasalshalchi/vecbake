@@ -70,6 +70,13 @@ Set a camera animation, pick your meshes, press **Bake & Export**. **Analyze**
 runs the same bake without writing anything and reports the element count —
 use it to check you are inside your budget before committing.
 
+The bake runs as a modal operator, in slices of about an eighth of a second, so
+Blender stays responsive throughout and progress appears **in the panel and the
+status bar** rather than only on the cursor — a cursor readout disappears the
+moment you switch to another window, and a blocking bake would leave the whole
+app looking hung. Esc cancels, and the scene's current frame is restored either
+way. Calling `bpy.ops.vecbake.export()` from a script still runs blocking.
+
 From script:
 
 ```python
@@ -260,9 +267,23 @@ philosophy: a vertex goes only if removing it never moves the drawn line by more
 than the tolerance **in pixels**, in any frame. A straight rail modelled as
 eight collinear segments collapses to two points.
 
-One trade-off worth knowing: a chain carries a single depth value, so a very
-long chain has coarser depth resolution than its individual edges did. Run
-`validate_bake.py` after turning it on.
+### Why chains sometimes have to be split
+
+A chain carries a single depth value. Depth is only a sort key, so being behind
+one object and in front of another is fine — the ordering pass just ranks the
+chain between them. There is exactly one arrangement no rank can express: a
+single surface that is in front of *part* of a chain and behind another part.
+Whichever side of it the chain is placed, the other half is wrong, and the
+symptom is a chained line painting straight over something it ran behind.
+
+Chaining therefore tests each chain against the fills it actually overlaps on
+screen, comparing depths at the midpoint of every member inside the fill, and
+cuts only where that comparison changes sign along the chain's length.
+
+The distinction matters. A cruder rule — "cut wherever a fill's depth falls
+between two members" — makes **48 cuts on the bundled test scene where 2 are
+needed**, since it fires on fills the chain never overlaps. Cutting on genuine
+straddles costs 2 extra elements and about a third more bake time.
 
 Note that **element count is not what you should watch** — it counts anything
 visible in *any* frame, and an edge that is a silhouette for one frame of an

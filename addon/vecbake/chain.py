@@ -27,6 +27,7 @@ import math
 
 import numpy as np
 
+from . import order
 from .ir import STROKE, Element
 
 
@@ -132,6 +133,79 @@ def _trace(edge_verts, eligible, keys, cont):
     return chains
 
 
+def _fills_by_frame(frame_items, nframes, ortho_by_frame):
+    """Per frame, every visible fill with the data needed to depth-test it."""
+    out = []
+    for fi in range(nframes):
+        items = (frame_items[fi] if fi < len(frame_items) else None) or []
+        frame = []
+        for it in items:
+            if it["kind"] != 1:
+                continue
+            pts = it["pts"]
+            frame.append({
+                "kind": 1,
+                "pts": pts,
+                "depths": it["depths"],
+                "field": order._fit_field(pts, it["depths"], ortho_by_frame[fi]),
+                "bbox": (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max()),
+            })
+        out.append(frame)
+    return out
+
+
+def _straddle_cuts(members, path, plan_name, vertex_cache, fills, visible_frames,
+                   ortho_by_frame, tol=1e-4):
+    """Member indices where a chain genuinely cannot take a single depth.
+
+    Depth values are only a sort key, so a chain that is behind one object and
+    in front of another needs no splitting at all -- the ordering pass just
+    ranks it between them. The single case no rank can express is one surface
+    that is in front of *part* of a chain and behind another part: whichever
+    side of it the chain is placed, the other half is wrong.
+
+    So this looks for exactly that. For each fill the chain actually overlaps on
+    screen, it compares depths at the midpoint of every member that lies inside
+    it; a chain only gets cut where that comparison changes sign along its
+    length. Anything else is left whole for the ordering pass to place.
+    """
+    cuts = set()
+    for fi in visible_frames:
+        xy, depths = vertex_cache[fi][plan_name]
+        pts = xy[path]
+        chain = {"kind": 0, "pts": pts, "depths": depths[path]}
+        box = (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max())
+        is_ortho = ortho_by_frame[fi]
+
+        for fill in fills[fi]:
+            fb = fill["bbox"]
+            if fb[0] > box[1] or fb[1] < box[0] or fb[2] > box[3] or fb[3] < box[2]:
+                continue
+            behind = {}
+            for mi in range(len(members)):
+                mid_x = (pts[mi][0] + pts[mi + 1][0]) * 0.5
+                mid_y = (pts[mi][1] + pts[mi + 1][1]) * 0.5
+                inside = order._inside(fill["pts"], np.array([mid_x]), np.array([mid_y]))
+                if not inside[0]:
+                    continue
+                cd = order._depths_at(chain, [mid_x], [mid_y], is_ortho)[0]
+                fd = order._depths_at(fill, [mid_x], [mid_y], is_ortho)[0]
+                if abs(cd - fd) <= tol:
+                    continue
+                behind[mi] = cd > fd
+            covered = sorted(behind)
+            for a, b in zip(covered, covered[1:]):
+                if behind[a] != behind[b]:
+                    cuts.add(b)
+    return cuts
+
+
+def _runs(count, cuts):
+    """Split [0, count) at the given indices into contiguous runs."""
+    bounds = [0, *sorted(cuts), count]
+    return [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
+
+
 def _max_deviation(points, a, b, i):
     """Worst distance, over all frames, from vertex i to the segment a..b."""
     A = points[:, a]
@@ -169,12 +243,16 @@ def _dissolve(points, tol):
     return [i for i, k in enumerate(keep) if k]
 
 
-def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes):
+def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
+          ortho_by_frame=None):
     """Rewrite elements/slots/frame_items in place. Returns a small report."""
     removed_keys = set()
     added: list[Element] = []
     chain_items = {}          # frame index -> list of replacement items
     merged = 0
+    if ortho_by_frame is None:
+        ortho_by_frame = [False] * nframes
+    fills = _fills_by_frame(frame_items, nframes, ortho_by_frame)
 
     for plan in plans.values():
         if not plan.strokes or not plan.nedges:
@@ -206,46 +284,56 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes):
             if not visible_frames:
                 continue
 
-            # projected positions of this path, for every frame it is visible
-            points = np.stack([
-                vertex_cache[fi][plan.name][0][path] for fi in visible_frames
-            ])
-            kept = _dissolve(points, settings.dissolve_px)
-            final_path = [path[i] for i in kept]
-            if len(final_path) < 2:
-                continue
+            cuts = _straddle_cuts(members, path, plan.name, vertex_cache, fills,
+                                  visible_frames, ortho_by_frame)
 
-            key = f"{plan.name}/c{index}"
-            first = slots[member_keys[0]]
-            depth = np.min(np.stack([slots[k]["depth"] for k in member_keys]), axis=0)
+            for run, (start, stop) in enumerate(_runs(len(members), cuts)):
+                if stop - start < 2:
+                    continue                      # a lone edge is left as it was
+                run_members = members[start:stop]
+                run_keys = member_keys[start:stop]
+                run_path = path[start:stop + 1]
 
-            geo = [None] * nframes
-            last_seen = None
-            for fi in range(nframes):
-                cached = vertex_cache[fi].get(plan.name)
-                if cached is None:
-                    geo[fi] = last_seen
+                # projected positions of this path, for every frame it is visible
+                points = np.stack([
+                    vertex_cache[fi][plan.name][0][run_path] for fi in visible_frames
+                ])
+                kept = _dissolve(points, settings.dissolve_px)
+                final_path = [run_path[i] for i in kept]
+                if len(final_path) < 2:
                     continue
-                last_seen = cached[0][final_path].ravel().tolist()
-                geo[fi] = last_seen
 
-            slots[key] = {"geo": geo, "vis": vis.copy(), "depth": depth,
-                          "shade": np.ones(nframes), "npts": len(final_path)}
-            colour = plan.edge_colors[members[0]] if plan.edge_colors else plan.stroke_color
-            added.append(Element(key=key, kind=STROKE, npts=len(final_path),
-                                 group=plan.group, color=colour,
-                                 width=settings.stroke_width))
-            removed_keys.update(member_keys)
-            merged += len(members)
+                key = f"{plan.name}/c{index}_{run}"
+                depth = np.min(np.stack([slots[k]["depth"] for k in run_keys]), axis=0)
 
-            # replace the member items the ordering pass will see
-            for fi in visible_frames:
-                xy, depths = vertex_cache[fi][plan.name]
-                seed = min(float(slots[k]["depth"][fi]) for k in member_keys)
-                chain_items.setdefault(fi, []).append({
-                    "key": key, "kind": 0, "seed": seed,
-                    "pts": xy[final_path], "depths": depths[final_path],
-                })
+                geo = [None] * nframes
+                last_seen = None
+                for fi in range(nframes):
+                    cached = vertex_cache[fi].get(plan.name)
+                    if cached is None:
+                        geo[fi] = last_seen
+                        continue
+                    last_seen = cached[0][final_path].ravel().tolist()
+                    geo[fi] = last_seen
+
+                slots[key] = {"geo": geo, "vis": vis.copy(), "depth": depth,
+                              "shade": np.ones(nframes), "npts": len(final_path)}
+                colour = (plan.edge_colors[run_members[0]] if plan.edge_colors
+                          else plan.stroke_color)
+                added.append(Element(key=key, kind=STROKE, npts=len(final_path),
+                                     group=plan.group, color=colour,
+                                     width=settings.stroke_width))
+                removed_keys.update(run_keys)
+                merged += len(run_members)
+
+                # replace the member items the ordering pass will see
+                for fi in visible_frames:
+                    xy, depths = vertex_cache[fi][plan.name]
+                    seed = min(float(slots[k]["depth"][fi]) for k in run_keys)
+                    chain_items.setdefault(fi, []).append({
+                        "key": key, "kind": 0, "seed": seed,
+                        "pts": xy[final_path], "depths": depths[final_path],
+                    })
 
     if not added:
         return {"chains": 0, "edges_merged": 0}

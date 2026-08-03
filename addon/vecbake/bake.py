@@ -324,6 +324,24 @@ def project(world, view, mvp, width, height):
 # ---------------------------------------------------------------------------
 
 def bake(context, settings: BakeSettings, report=None) -> VecScene:
+    """Run a whole bake, blocking. `report(phase, done, total)` if given."""
+    steps = bake_iter(context, settings)
+    try:
+        while True:
+            phase, done, total = next(steps)
+            if report:
+                report(phase, done, total)
+    except StopIteration as finished:
+        return finished.value
+
+
+def bake_iter(context, settings: BakeSettings):
+    """Step-wise bake, so a caller can keep the UI alive between chunks.
+
+    Yields `(phase, done, total)` after each unit of work and returns the
+    finished VecScene. Closing the generator early unwinds it, which restores
+    the scene's current frame just as a completed run does.
+    """
     scene = context.scene
     cam = settings.camera or scene.camera
     if cam is None:
@@ -391,23 +409,26 @@ def bake(context, settings: BakeSettings, report=None) -> VecScene:
             frame_ortho.append(is_ortho)
             vertex_cache.append(cache)
 
-            if report and fi % 10 == 0:
-                report(fi + 1, len(frames))
+            yield ("Sampling", fi + 1, len(frames))
     finally:
         scene.frame_set(original_frame)
 
     chain_report = {"chains": 0, "edges_merged": 0}
     if settings.chain_edges:
+        yield ("Chaining edges", 0, 1)
         chain_report = chain_mod.apply(plans, elements, slots, frame_items,
-                                       vertex_cache, settings, len(frames))
+                                       vertex_cache, settings, len(frames),
+                                       frame_ortho)
 
     if settings.accurate_order:
         for fi, items in enumerate(frame_items):
-            if not items:
-                continue
-            resolved = order_mod.resolve(items, frame_ortho[fi])
-            for item, value in zip(items, resolved):
-                slots[item["key"]]["depth"][fi] = value
+            if items:
+                resolved = order_mod.resolve(items, frame_ortho[fi])
+                for item, value in zip(items, resolved):
+                    slots[item["key"]]["depth"][fi] = value
+            yield ("Resolving occlusion", fi + 1, len(frame_items))
+
+    yield ("Reducing keyframes", 0, 1)
 
     times = [(f - start) / fps for f in frames]
     duration = times[-1] if len(times) > 1 else 1.0 / fps
