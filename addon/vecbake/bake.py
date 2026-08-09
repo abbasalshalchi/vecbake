@@ -538,9 +538,11 @@ def bake_iter(context, settings: BakeSettings):
         for plan in plans.values():
             if plan.fills:
                 for fidx in range(plan.nfaces):
-                    start = int(plan.loop_start[fidx])
+                    # NOT `start` -- that name holds the bake's first frame and
+                    # is still needed at the end to compute `times`/`duration`.
+                    lstart = int(plan.loop_start[fidx])
                     element_verts[f"{plan.name}/f{fidx}"] = \
-                        plan.loop_verts[start:start + int(plan.loop_total[fidx])]
+                        plan.loop_verts[lstart:lstart + int(plan.loop_total[fidx])]
             if plan.strokes:
                 # Edges that never chained are still edges, and a lone one
                 # lying on a curved rim has to follow it like any other.
