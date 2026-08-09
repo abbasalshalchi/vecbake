@@ -125,7 +125,7 @@ is byte-identical to the same still exported alone.
 Install the [player](web/README.md) once, then drop the file in:
 
 ```html
-<script type="module" src="https://unpkg.com/lerpa"></script>
+<script type="module" src="https://unpkg.com/lerpa-player"></script>
 
 <lerpa-player src="/anim/tower.svg" autoplay loop></lerpa-player>
 ```
@@ -158,6 +158,25 @@ Two harnesses ship with the project:
 * `web/examples/bench.html` — frame cost, with and without seam fixing.
 * `player/demo.html` — the original scrubber and A/B seam check, kept because
   it exercises the bare `.json` track format directly.
+
+## Other platforms
+
+There is one player and it is the web one. Everything else goes through Lottie,
+which VecBake already emits — so iOS, Android, React Native and Flutter are
+served by their own mature runtimes, at no maintenance cost here.
+
+| target | format | what you get |
+|---|---|---|
+| Web | `lerpa` → `tower.svg` | per-frame occlusion, live recolouring, hit-testing during playback, and the file still renders in a plain `<img>` |
+| iOS · Android · React Native · Flutter | `lottie` → `tower.lottie.json` | the standard players, within the limit below |
+
+**Where the Lottie path is lossy:** layer order in Lottie is static. Depth
+collapses to a fixed stack sorted by average depth, so occlusion cannot flip
+mid-animation. For a modest camera move that is invisible; for a full orbit,
+where the far side becomes the near side, it is not. Dashboard-style transitions
+sit well inside the safe zone; a product turntable does not.
+
+That gap is the whole reason the native format exists.
 
 ---
 
