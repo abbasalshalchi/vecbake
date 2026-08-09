@@ -26,7 +26,10 @@ import bpy
 from mathutils import Vector
 
 from . import chain as chain_mod
+from . import curves
+from . import follow
 from . import order as order_mod
+from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
 from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_bounded
 from .settings import BakeSettings
@@ -81,13 +84,29 @@ def _display_color(color):
 
 
 def _principled_base(mat):
+    """(base colour, alpha) from an unlinked Principled BSDF, or None.
+
+    Transparency in a Principled shader is the **Alpha socket**, not the fourth
+    channel of Base Color. That fourth channel exists because the colour picker
+    carries one around; the shader ignores it, so reading it would make a
+    material look transparent in the bake and solid in a render.
+    """
     if not (mat.use_nodes and mat.node_tree):
         return None
     for node in mat.node_tree.nodes:
-        if node.type == "BSDF_PRINCIPLED":
-            base = node.inputs.get("Base Color")
-            if base is not None and not base.is_linked:
-                return tuple(base.default_value[:3])
+        if node.type != "BSDF_PRINCIPLED":
+            continue
+        base = node.inputs.get("Base Color")
+        if base is None or base.is_linked:
+            continue
+        alpha = node.inputs.get("Alpha")
+        value = 1.0
+        if alpha is not None and not alpha.is_linked:
+            try:
+                value = float(alpha.default_value)
+            except (TypeError, ValueError):
+                value = 1.0
+        return tuple(base.default_value[:3]), max(0.0, min(1.0, value))
     return None
 
 
@@ -95,26 +114,36 @@ def _is_default(color):
     return all(abs(c - d) < 1e-4 for c, d in zip(color, NEUTRAL_GREY))
 
 
-def _material_color(mat, default, source="AUTO"):
-    """Resolve a material to one flat colour.
+def _material_color(mat, default, source="AUTO", use_alpha=True):
+    """Resolve a material to one flat colour and one opacity.
 
     Blender 5 keeps `use_nodes` on for every material, so naively trusting the
     Principled base colour flattens any scene authored with viewport display
     colours to a uniform grey. AUTO takes the shader colour when someone has
     actually set it and falls back to the viewport colour otherwise, which is
     the behaviour both authoring styles expect.
+
+    Opacity comes from wherever the colour came from, never mixed: the shader's
+    Alpha socket alongside a shader colour, `diffuse_color`'s fourth channel
+    alongside a viewport colour. Taking the colour from one and the opacity from
+    the other would give a result that matches neither authoring style.
     """
     if mat is None:
-        return default
+        return default, 1.0
     viewport = tuple(mat.diffuse_color[:3])
-    base = _principled_base(mat)
+    viewport_alpha = float(mat.diffuse_color[3]) if len(mat.diffuse_color) > 3 else 1.0
+    found = _principled_base(mat)
+    base, base_alpha = found if found is not None else (None, 1.0)
+
     if source == "MATERIAL":
-        return base if base is not None else viewport
-    if source == "VIEWPORT":
-        return viewport
-    if base is not None and not _is_default(base):
-        return base
-    return viewport
+        color, alpha = (base, base_alpha) if base is not None else (viewport, viewport_alpha)
+    elif source == "VIEWPORT":
+        color, alpha = viewport, viewport_alpha
+    elif base is not None and not _is_default(base):
+        color, alpha = base, base_alpha
+    else:
+        color, alpha = viewport, viewport_alpha
+    return color, (alpha if use_alpha else 1.0)
 
 
 def _edge_attribute(me, name, count, dtype):
@@ -137,6 +166,58 @@ def _edge_attribute(me, name, count, dtype):
 
 def _topology_signature(me):
     return (len(me.vertices), len(me.edges), len(me.polygons), len(me.loops))
+
+
+def _smooth_by_angle(obj):
+    """Degrees from the object's Smooth by Angle modifier, or None if absent."""
+    for mod in getattr(obj, "modifiers", ()):
+        if getattr(mod, "type", "") != "NODES":
+            continue
+        group = getattr(mod, "node_group", None)
+        if group is None or "smooth by angle" not in (group.name or "").lower():
+            continue
+        try:
+            items = group.interface.items_tree
+        except AttributeError:
+            items = ()
+        for item in items:
+            if (getattr(item, "item_type", "") == "SOCKET"
+                    and getattr(item, "in_out", "") == "INPUT"
+                    and (item.name or "").lower() == "angle"):
+                try:
+                    return math.degrees(float(mod[item.identifier]))
+                except (KeyError, TypeError, ValueError):
+                    break
+        return 30.0        # present but unreadable: Blender's own default
+    return None
+
+
+def _shading(obj, me, nfaces):
+    """(per-face flat flags, mode, degrees) describing Blender's own shading.
+
+    Blender 4.1 moved smoothing out of a per-face flag into attributes plus a
+    "Smooth by Angle" node modifier, so both are read: `sharp_face` marks the
+    faces set to flat, and the modifier -- when present -- carries the angle it
+    uses. We reuse that angle but apply it to the turn along the drawn path
+    rather than to the dihedral between faces: what matters here is whether the
+    *line* bends, not whether the surface creases. A cylinder's rim is one
+    smooth circle even though every edge on it is a hard crease.
+    """
+    sharp = np.zeros(nfaces, dtype=bool)
+    attributes = getattr(me, "attributes", None)
+    attr = attributes.get("sharp_face") if attributes is not None else None
+    if attr is not None and nfaces:
+        try:
+            attr.data.foreach_get("value", sharp)
+        except (TypeError, AttributeError, RuntimeError):
+            sharp[:] = False
+
+    angle = _smooth_by_angle(obj)
+    if angle is not None:
+        return sharp, "ANGLE", angle
+    if nfaces and sharp.all():
+        return sharp, "FLAT", 0.0
+    return sharp, "SMOOTH", 180.0
 
 
 def _loop_totals(me):
@@ -194,6 +275,9 @@ class ObjectPlan:
         me.vertices.foreach_get("co", co)
         self.vert_co = co.reshape(-1, 3)
         self.matrix3 = np.array(obj.matrix_world, dtype=np.float64)[:3, :3]
+        # The curve classifier measures 3D angles, which only survive a
+        # non-uniform object scale if the scale is applied first.
+        self.vert_co_world = self.vert_co @ self.matrix3.T
 
         self.loop_start, self.loop_total = _loop_totals(me)
         self.loop_verts = np.empty(len(me.loops), dtype=np.int32)
@@ -227,6 +311,9 @@ class ObjectPlan:
             except (TypeError, AttributeError):
                 pass
 
+        # how Blender itself is shading this object, for curve_mode SHADING
+        self.face_sharp, self.shade_mode, self.shade_angle = _shading(obj, me, self.nfaces)
+
         self.crease_angle = float(obj.get("vecbake_crease_angle", settings.crease_angle))
 
         # per-face colour from its material
@@ -238,11 +325,19 @@ class ObjectPlan:
         if self.nfaces:
             me.polygons.foreach_get("material_index", mat_idx)
         if settings.use_material_color:
-            palette = [_material_color(m, default, settings.color_source) for m in mats] or [default]
+            resolved = [_material_color(m, default, settings.color_source,
+                                        settings.material_alpha) for m in mats]
         else:
-            palette = [default for _ in mats] or [default]
-        palette = [_display_color(c) for c in palette]
+            resolved = [(default, 1.0) for _ in mats]
+        resolved = resolved or [(default, 1.0)]
+        palette = [_display_color(c) for c, _a in resolved]
+        alphas = [a for _c, a in resolved]
         self.face_color = [palette[min(int(i), len(palette) - 1)] for i in mat_idx]
+        # Opacity rides the existing per-element opacity track rather than
+        # needing one of its own, and the painter's order already draws far to
+        # near, which is exactly what blending translucent fills requires.
+        self.face_alpha = np.array(
+            [alphas[min(int(i), len(alphas) - 1)] for i in mat_idx], dtype=np.float64)
 
         stroke = obj.get("vecbake_stroke", None)
         self.stroke_color = _display_color(stroke[:3] if stroke else settings.stroke_color)
@@ -425,12 +520,48 @@ def bake_iter(context, settings: BakeSettings):
     finally:
         scene.frame_set(original_frame)
 
-    chain_report = {"chains": 0, "edges_merged": 0}
+    chain_report = {"chains": 0, "edges_merged": 0, "paths": {}}
     if settings.chain_edges:
         yield ("Chaining edges", 0, 1)
         chain_report = chain_mod.apply(plans, elements, slots, frame_items,
                                        vertex_cache, settings, len(frames),
                                        frame_ortho)
+
+    curve_report = {"mode": curves.NONE, "curved": 0, "vertices": 0}
+    follow_report = {"followed": 0, "points": 0, "splits": 0, "silhouettes": 0}
+    if settings.curve_mode != curves.NONE:
+        yield ("Fitting curves", 0, 1)
+        # Which mesh vertices each element runs through. The 3D test needs it
+        # to measure angles on the shape rather than on one view of it, and the
+        # follow pass needs it to know which elements share an edge.
+        element_verts = dict(chain_report.get("paths") or {})
+        for plan in plans.values():
+            if plan.fills:
+                for fidx in range(plan.nfaces):
+                    start = int(plan.loop_start[fidx])
+                    element_verts[f"{plan.name}/f{fidx}"] = \
+                        plan.loop_verts[start:start + int(plan.loop_total[fidx])]
+            if plan.strokes:
+                # Edges that never chained are still edges, and a lone one
+                # lying on a curved rim has to follow it like any other.
+                for eidx in range(plan.nedges):
+                    element_verts.setdefault(f"{plan.name}/e{eidx}",
+                                             plan.edge_verts[eidx])
+        curve_report = curves.classify(elements, slots, element_verts, plans, settings)
+
+        if curve_report["curved"]:
+            yield ("Following curves", 0, 1)
+            follow_report = follow.apply(elements, slots, element_verts,
+                                         settings, len(frames))
+            # Curving an outline moves it, so the silhouette has to move with
+            # it -- otherwise the rim bulges into open space and the side steps
+            # back in underneath. Runs after following, which is what settles
+            # where each element's points are.
+            yield ("Placing silhouettes", 0, 1)
+            sil_report = silhouette.apply(elements, slots, element_verts,
+                                          len(frames))
+            follow_report["silhouettes"] = sil_report["corners"]
+            follow_report["points"] += sil_report["points"]
 
     if settings.accurate_order:
         for fi, items in enumerate(frame_items):
@@ -462,6 +593,11 @@ def bake_iter(context, settings: BakeSettings):
             "to": cam.get("vecbake_to", None),
             "chains": chain_report["chains"],
             "edges_merged": chain_report["edges_merged"],
+            "curve_mode": curve_report["mode"],
+            "curved_elements": curve_report["curved"],
+            "followed_elements": follow_report["followed"],
+            "follow_points": follow_report["points"],
+            "silhouette_corners": follow_report["silhouettes"],
         }
     )
     return vec
@@ -472,6 +608,9 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
         slots[key] = {
             "geo": [None] * nframes,
             "vis": np.zeros(nframes, dtype=np.float64),
+            # Which side of the surface an edge is on, frame by frame. Only
+            # meaningful for strokes; chaining refuses to merge across it.
+            "front": np.zeros(nframes, dtype=bool),
             "depth": np.zeros(nframes, dtype=np.float64),
             "shade": np.ones(nframes, dtype=np.float64),
             "npts": npts,
@@ -560,7 +699,25 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         half_lambert = 0.5 * (world_n @ light) + 0.5
         face_shade = settings.ambient + (1.0 - settings.ambient) * np.clip(half_lambert, 0.0, 1.0)
 
-    face_visible = face_ok & (face_front if settings.backface_cull else np.ones(nf, dtype=bool))
+    # Nothing here culls geometry behind *other* geometry -- the painter's order
+    # simply draws it first and paints over it, which is what lets a translucent
+    # fill reveal whatever is behind it for free. What an object does hide is
+    # itself: its far side faces away, so the backface cull and hidden-line
+    # removal both drop it. For a see-through material that is wrong, and only
+    # for that material.
+    see_through = (plan.face_alpha < 0.999 if settings.see_through
+                   else np.zeros(nf, dtype=bool))
+
+    # One definition of "this face is drawn", used for faces and for the edges
+    # around them alike. Deriving edge visibility from `face_front` instead is
+    # how edges came to ignore Backface Cull entirely: turning the cull off made
+    # the far faces appear while every edge whose faces all pointed away stayed
+    # culled, because nothing in the edge path ever consulted the setting.
+    if settings.backface_cull:
+        face_drawn = face_front | see_through
+    else:
+        face_drawn = np.ones(nf, dtype=bool)
+    face_visible = face_ok & face_drawn
 
     # ---- edges ----------------------------------------------------------
     ne = plan.nedges
@@ -581,17 +738,26 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         any_front = front_count > 0
         all_front = front_count == plan.edge_face_count
         boundary = plan.edge_face_count < 2
+        # Silhouette stays a statement about *facing*, so it is built from
+        # front_count alone -- it is where the surface turns away, whether or
+        # not the far side happens to be drawn.
         silhouette = any_front & ~all_front
+        # Reachable is the separate question of whether the eye gets to the edge
+        # at all, and it follows whichever faces are actually being drawn.
+        drawn_count = np.zeros(ne, dtype=np.int32)
+        np.add.at(drawn_count, plan.adj_edge, face_drawn[plan.adj_face].astype(np.int32))
+        reachable = drawn_count > 0
     else:
         any_front = np.ones(ne, dtype=bool)
         boundary = np.ones(ne, dtype=bool)
         silhouette = np.zeros(ne, dtype=bool)
+        reachable = np.ones(ne, dtype=bool)
 
     mode = plan.edge_mode
     if mode == "WIRE":
         edge_shown = np.ones(ne, dtype=bool)
     elif mode == "BOUNDARY":
-        edge_shown = silhouette | (boundary & any_front)
+        edge_shown = silhouette | (boundary & reachable)
     elif mode == "SHARP":
         # Creases steeper than the threshold, plus silhouette and open edges.
         # Silhouette has to be included or a smooth curved surface loses its
@@ -603,9 +769,9 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             nb = world_n[plan.edge_face_b[pair]]
             cos_limit = math.cos(math.radians(plan.crease_angle))
             crease[pair] = np.einsum("ij,ij->i", na, nb) < cos_limit
-        edge_shown = (crease | plan.edge_marked_sharp | boundary | silhouette) & (any_front | boundary)
+        edge_shown = (crease | plan.edge_marked_sharp | boundary | silhouette) & (reachable | boundary)
     else:  # HIDDEN
-        edge_shown = any_front | boundary
+        edge_shown = reachable | boundary
 
     # Forced edges bypass the mode filter entirely -- that is what "always"
     # means. They stay subject to depth sorting, so fills still occlude them.
@@ -645,7 +811,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
                 )
             slot["geo"][fi] = pts.ravel().tolist()
-            slot["vis"][fi] = 1.0 if visible else 0.0
+            slot["vis"][fi] = float(plan.face_alpha[fidx]) if visible else 0.0
             slot["depth"][fi] = face_depth[fidx]
             slot["shade"][fi] = face_shade[fidx] if settings.shading else 1.0
             if visible and collect is not None:
@@ -668,6 +834,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 )
             slot["geo"][fi] = [pa[0], pa[1], pb[0], pb[1]]
             slot["vis"][fi] = 1.0 if visible else 0.0
+            slot["front"][fi] = bool(any_front[eidx])
             slot["depth"][fi] = edge_depth[eidx]
             if visible and collect is not None:
                 pair = [int(a), int(b)]

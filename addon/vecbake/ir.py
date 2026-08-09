@@ -72,10 +72,23 @@ class Element:
     group: str
     color: tuple[float, float, float]
     width: float = 1.0
+    # Strokes only -- a fill is closed by definition. A chained stroke that came
+    # back to its own start joins last point to first instead of stopping, which
+    # is what lets a rim be one continuous curve rather than an arc with two
+    # straightened ends. See chain._trace.
+    closed: bool = False
     geo: Track = None          # vector track, flat xy pairs, pixel space
     opacity: Track = None      # scalar 0..1
     depth: Track = None        # scalar, camera-space distance (bigger = further)
     shade: Track = None        # scalar 0..1 multiplied into `color` (fills)
+    # Static per-vertex bool: does the path bend smoothly through this vertex?
+    # Not a Track -- deciding it per frame would let the shape pop as the
+    # camera moves. None means every vertex is a corner. See curves.py.
+    smooth: object = None
+
+    def is_closed(self) -> bool:
+        """Does the last point join back to the first?"""
+        return self.kind == FILL or self.closed
 
     def tracks(self):
         for name in ("geo", "opacity", "depth", "shade"):
@@ -119,11 +132,13 @@ class VecScene:
             flipped.append(
                 Element(
                     key=el.key, kind=el.kind, npts=el.npts, group=el.group,
-                    color=el.color, width=el.width,
+                    color=el.color, width=el.width, closed=el.closed,
                     geo=reverse_track(el.geo, self.duration),
                     opacity=reverse_track(el.opacity, self.duration),
                     depth=reverse_track(el.depth, self.duration),
                     shade=reverse_track(el.shade, self.duration),
+                    # reversing is a time transform; vertex order is untouched
+                    smooth=el.smooth,
                 )
             )
         meta = dict(self.meta)

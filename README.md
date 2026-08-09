@@ -99,12 +99,26 @@ Output formats, all optional except the first:
 | format | file | |
 |---|---|---|
 | `ivg` | `tower.svg` | the animated SVG — what the web player consumes |
+| `still` | `tower.still.svg` | one plain picture of the current frame, no animation |
 | `json` | `tower.json` | bare track data, no artwork or states |
 | `svg` | `tower.start.svg`, `tower.end.svg` | resting states as loose files |
 | `lottie` | `tower.lottie.json` | for standard Lottie tools |
 
 **Forward + Reverse** only affects `json` and `lottie`. The animated SVG needs
 no reverse file, since the player runs the timeline backwards for free.
+
+**Still** is the one that has nothing to do with animation: a flat SVG of the
+scene as it stands at the **current frame**, the way Render Image means the
+current frame. No `<metadata>`, no tracks, nothing for a player to read —
+artwork you can drop into Illustrator or an `<img>` and be done.
+
+It is always its own single-frame bake, never a slice of the animated one. That
+costs a few milliseconds and buys two things. Asked for on its own it bakes one
+frame instead of the whole range — 0.05s against 5.65s on a 250-frame clip, and
+the gap only widens. And the picture never depends on the export range: sampling
+the clip would mean a range that happens not to contain the current frame quietly
+handing back a different frame instead. Ticked alongside the animated formats it
+is byte-identical to the same still exported alone.
 
 ## Play
 
@@ -327,10 +341,23 @@ varied with how many cameras were selected meant re-baking a single camera
 wrote a different filename and left the old file behind; now a bake replaces
 exactly what it should.
 
-**All Cameras** bakes once per camera. Either way you also get a
-`tower.index.json` manifest listing every clip with its duration, size and
-measured camera motion. The manifest is **merged, not overwritten**: baking one
-camera updates only that row, and rows whose file no longer exists are dropped.
+**All Cameras** bakes once per camera. A folder holding more than one clip also
+gets a `tower.index.json` manifest listing every clip with its duration, size
+and measured camera motion.
+
+You will not see it for a single clip, because there is nothing to choose
+between — the `.svg` is self-contained and plays on its own, so an index beside
+it is a second file that has to be explained and does nothing. It appears the
+moment a choice exists, and once it exists it is kept current rather than
+orphaned. Delete it and a single-clip bake will not bring it back.
+
+Building it never depends on having seen the other clips: rows for cameras
+baked on an earlier run are read back out of those clips' own metadata, which
+is where the row came from in the first place. So baking one camera at a time
+and baking All Cameras produce the same index. It is also **merged, not
+overwritten** — baking one camera updates only that row, and rows whose file no
+longer exists are dropped. `npx ivg manifest <folder>` rebuilds one from
+scratch.
 
 The manifest exists because a filename cannot say which way a camera moves.
 `tower.bts_cam.svg` could travel towards the cabinet or away from it, and a
@@ -352,6 +379,176 @@ nothing for the animated SVG, which needs no reverse file: the player runs the
 timeline backwards, so shipping one would double the asset to encode something
 already in it. Turn it on only if you are consuming the raw `json` or `lottie`
 outputs in a player that cannot reverse.
+
+### Curves
+
+A baked circle is a polygon, and no tolerance setting fixes that — the points
+*are* the shape. **Curves** draws through them instead of between them, so a
+10-sided cylinder reads as round.
+
+It costs no extra data. Rather than fitting and storing Bézier control points,
+the bake stores one static bit per vertex — *does the path bend here* — and the
+control points are derived at draw time from the neighbours, using uniform
+Catmull-Rom. A corner carries a zero tangent, which collapses its cubic to
+exactly the straight segment it replaced, so corners and curves mix inside one
+path with no special case at the join.
+
+| Mode | Decides from |
+|---|---|
+| **Off** | nothing — straight segments, as baked |
+| **Smooth** | every vertex that is not a hard corner |
+| **Smooth by Angle** | the **2D** turn angle on screen, against **Curve Angle** |
+| **Blender Shading** | the object's own shading — see below |
+
+**No mode ever smooths a hard corner** (a turn over 80°), because a curve
+through one cannot stay inside the shape: it has to pass *through* the corner,
+so between two corners it bows outward. Smoothing the four 90° corners of a
+cylinder's side quad turns the flat face into a barrel that overflows its own
+vertical edges. No tangent scaling avoids this — only not smoothing the corner
+does. The limit keeps quads (90°) and triangles (120°) flat while still
+rounding a cylinder as coarse as five sides (72°). Faceted hard-surface shapes
+that fall under it — a hex nut at 60° — are what **Blender Shading** is for:
+they are normally shade-flat, and it leaves them alone.
+
+**Blender Shading** follows what the object is already set to: shade-smooth
+curves throughout, shade-flat stays straight, and a *Smooth by Angle* modifier
+contributes its angle, applied to the **3D** turn along the path. Note that
+this deliberately is *not* the modifier's own meaning — it compares faces, we
+compare the drawn line — because a cylinder's rim is one smooth circle even
+though every edge on it is a hard crease.
+
+### Following
+
+An edge belongs to more than one element, and only one of them may be in a
+position to curve it. A cylinder's cap curves its rim, because going round the
+rim is a run of shallow turns. The side quads meeting that same rim cannot —
+their own corners turn 90°, and see above. Left there, the two draw one edge two
+different ways and the shape splits along it: the cap overhangs the sides at the
+top, and at the bottom the rim sweeps out past the fills with background showing
+between them. On the demo cylinder that was **610 pixels of enclosed background**
+— holes inside the silhouette.
+
+No per-element rule can close them, and that is not an oversight. Tangents come
+from each element's own points, which is exactly what keeps the format free of
+stored control points; the side quad does not contain the rim's next vertex, so
+nothing inside it says which way its top edge should bow.
+
+So the flat one **follows**. `follow.py` splits it along the curve its neighbour
+draws, adding as few points as it takes to stay within `dissolve_px` of that
+curve in every frame — the dissolve pass's bargain run backwards. Whoever curves
+the edge hardest owns it, ties broken by key so the choice is the same in every
+frame and every re-bake.
+
+One curve per **rim**, though, not one per edge — an element that loses anywhere
+is made to follow everywhere. Deciding edge by edge looks equivalent and is not.
+A chain runs out of neighbours at its last vertex, so its tangent there is forced
+to zero and its final segment straightens; the faces beside it, having measured
+that same segment against a closed ring that keeps curving, track the fuller
+curve. The two part company by about 3px exactly where the eye is on them, at the
+silhouette — the fill spilling past the line on one side of the cylinder and
+falling short of it on the other. Demoting the loser over its whole length leaves
+nobody holding a second opinion.
+
+The split count comes from the exact bow, not the usual flatness bound — with one
+tangent zero the bound reads 70% high, and the count is its square root, so that
+is points bought for nothing in every frame. The n² rule gets within one piece
+and a direct check settles it. Enclosed background on the demo cylinder: **zero**.
+Nothing downstream needs to know any of this happened; a follower is just an
+element with more points, so the player, both SVG paths, Lottie and anything else
+that opens an SVG agree on the shape without implementing a thing.
+
+It is not free. On the demo cylinder — where almost every face abuts a curve, so
+it is close to the worst case — points went 58 → 95 and the clip 2,900 → 3,447
+bytes. Raise `Dissolve` to trade accuracy back for size; the budget it spends is
+the same one it spends removing vertices elsewhere.
+
+### Silhouettes
+
+Following closes the gaps but does not, on its own, put the outline in the right
+place. Curving an outline *moves* it: the rim is a polygon inscribed in the real
+circle, so the curve drawn through it reaches past every vertex — 8.3px past, on
+the demo cylinder, at a point lying *between* two vertices.
+
+A silhouette is a mesh edge, and a mesh edge runs through a vertex. So the side
+of the cylinder stopped 8.3px short of the shape the curve had just drawn: the
+rim bulged into open space and the side stepped back in underneath it. A bump,
+where a cylinder should have a straight edge running between the two rims'
+furthest points.
+
+`silhouette.py` moves the corner out to meet it. For each edge separating a drawn
+face from a hidden one, it walks the rim curve either side of the corner and
+finds the outermost point — outermost meaning perpendicular to the silhouette
+edge, away from the face.
+
+**Either side**, and that is the part that matters. The silhouette of the
+reconstructed surface falls anywhere within half a facet of the mesh edge, so as
+the camera turns it crosses the vertex and keeps going. Searching only outwards
+would pin the corner to the vertex for half of every facet and then jump, which
+reads as a stutter running round the object. Searching both segments slides it
+through instead: past the vertex the face is extended, short of it the face is
+trimmed, and at the vertex the two agree. Swept through a full facet, the
+outermost point of the drawing moves 0.013px per frame on average and 0.145px at
+worst — no step to see.
+
+The face is not the only thing that moves. The line drawn along the silhouette
+edge goes with it, or it ends up sitting 8px inside the fill it is meant to
+outline, and so does the rim arc that stops there. And the curve consulted is not
+always one that gets *drawn*: at the bottom of a cylinder the rim arc ends at the
+silhouette, so it cannot say where the rim goes next — the culled bottom cap can,
+being a closed ring sampled every frame whether it is painted or not.
+
+Two details decide whether the result is watertight or a mess, and both are about
+what happens to points that are already there.
+
+The split points `follow.py` put on the edge running into a corner have to stop
+where the corner now does. Ordering them by distance *outward* does not work: the
+curve bulges, so a point can be closer to the chord than the corner is and still
+lie beyond it. They are ordered along the edge instead. Get this wrong and the
+outline runs out to the corner, doubles back behind it and comes out again — a
+spur, which a fill rule renders as either a spike or a notch depending on which
+way the loop wound.
+
+And the old vertex is only worth keeping for something that follows the rim
+*through* it — a face, or the rim arc. The line drawn along the silhouette never
+goes near it: give that one both points and it overshoots to the old vertex and
+hooks back, poking out past the fill it is supposed to outline.
+
+Where the rim and the silhouette meet, the boundary is genuinely cusped: they are
+tangent there, so the side face comes to a point. That is the shape, not a defect
+— a 172° turn in the outline is the correct answer.
+
+This is a **reconstruction, not a measurement**, and it is the one place VecBake
+deliberately parts company with what Blender renders. Blender draws the mesh, so
+its silhouette is faceted; this draws the silhouette of the smooth shape the mesh
+stands for — the same shape `curves.py` is drawing the outline of. With `Curves`
+off it does not run at all.
+
+A chained stroke that comes back to its own start is kept as a **ring**, and
+that matters here more than it sounds. An open path has two ends, and an end is
+a vertex with nothing on one side of it, so no tangent can be measured and the
+curve has to straighten — meaning a rim drawn as an arc gets a chord across the
+join no matter how smooth the mask says it is. Rings have no ends. Closing them
+also reclaims the edge that used to be stranded as a lone straight segment
+across the same join. In `.ivg` a ring carries `cl: 1`; fills are closed by
+definition and say nothing.
+
+The mask is decided **once for the whole bake, never per frame.** A vertex that
+could be a corner in one frame and smooth in the next would visibly pop as the
+camera moved, so the 2D test asks whether a vertex is sharp in *any* frame, not
+in the current one — a real corner that happens to project straight in one view
+stays a corner. This is why the 2D mode still needs the whole animation before
+it can answer, and why it is not simply the 3D test done later.
+
+Three implementations have to agree on the tangent formula or a clip stops
+matching its own resting states: `curves.py` (classification), `emit_svg.py`
+(the `<path d>` in the states) and `player.js` (`_trace`). Change one, change
+all three — and `follow.py` is a fourth, since it has to reproduce the very
+curve the owner will draw in order to put points on it. Lottie is a fifth, and
+falls out almost free: its per-vertex `i`/`o` handles *are* the tangent over
+three, stated relative to the vertex, so it draws the same curve rather than
+approximating it. `scripts/test_chain_trace.py` guards the ring invariants they
+depend on, and `scripts/test_follow.py` checks that a follower's points land on
+the owner's curve, the right way round.
 
 ### Stroke colour
 
@@ -377,6 +574,73 @@ the swatch is now what lands in the file.
 This applies to the add-on's own **Stroke Colour** and **Fill** pickers too,
 since they are ordinary linear COLOR properties. A value chosen before this fix
 will now export lighter — matching its swatch, which it did not before.
+
+### Fill transparency
+
+**Material Alpha** takes opacity from the material along with its colour, so a
+translucent surface bakes translucent. It reads from wherever the *colour* came
+from, never mixed: the Principled **Alpha socket** beside a shader colour, or
+`diffuse_color`'s fourth channel beside a viewport colour. Taking one from each
+would match neither authoring style.
+
+Note it is the Alpha *socket*, not the fourth channel of Base Color. That one
+exists because the colour picker carries an alpha around; the shader ignores it.
+Reading it would make materials look transparent in the bake and solid in a
+render.
+
+Opacity rides the per-element opacity track that already existed, so it costs no
+new format field, and the painter's order already draws far to near — which is
+exactly what blending translucent fills needs. A material at alpha 0 drops out of
+the file entirely, the same as any element nothing ever sees.
+
+**Translucent fills skip the seam fix.** Canvas applies its alpha per draw call,
+so stroking a fill with its own colour — which is how the hairline between
+abutting polygons is normally closed — blends twice along the boundary and rings
+every face in a darker outline. SVG composites the element before applying
+opacity and would not, but it follows anyway, because the two renderers agreeing
+matters more than a hairline you can see through a translucent surface. The cost
+is measurable and small: on the demo cylinder, cross-renderer disagreement goes
+from 0.37% of inked pixels to 0.48%, all of it single-pixel antialiasing along
+shared edges.
+
+### Seeing through
+
+Nothing culls geometry behind *other* geometry. The painter's order draws far to
+near and simply paints over, which is what lets a translucent fill reveal what is
+behind it at no cost. What an object hides is **itself**: its far side faces away,
+so the backface cull drops those faces and hidden-line removal drops their edges.
+
+**See Through** stops a translucent material doing that to itself. Its back faces
+survive the cull and its edges survive hidden-line removal — for that material
+only, so solid geometry elsewhere stays solid. On the demo cylinder it takes the
+drawing from 6 of 12 faces and 21 of 30 edges to all of both.
+
+Both of those now answer to one mask. Faces and the edges around them used to be
+decided separately — faces from `Backface Cull`, edges from face orientation
+alone, which never consulted the setting. Turning the cull off therefore revealed
+the far faces while leaving every edge whose faces all pointed away culled. They
+are derived from the same "is this face drawn" mask now, so the two agree by
+construction rather than by coincidence.
+
+*Silhouette* still means what it always did — where the surface turns away — and
+is still built from facing alone. Whether the far side happens to be drawn is a
+different question.
+
+**Chains do not merge across the surface.** A chain gets one depth, so an
+element running from the near side of an object round to the far side cannot be
+ordered against anything: it paints at its nearest member's depth, on top of the
+very faces that should be covering half of it. On a see-through cylinder that put
+the whole bottom rim in front of the body — a black line at luminance 20 laid over
+everything, where it should read as 72–111 seen through two translucent walls.
+
+Backface culling hid the problem rather than solving it: the far half was never
+drawn, so no chain ever spanned a silhouette. Facing is now recorded per frame and
+compared whole, exactly the way visibility already was, so the merge only splits
+where the two genuinely differ. On the demo cylinder the bottom rim becomes a
+front arc and a back arc — two elements instead of one — while the top rim stays
+whole, because its far half borders the cap, which faces the camera, so nothing
+covers it. Opaque scenes are unaffected: a culled edge is invisible in every
+frame, so its visibility signature already kept it apart.
 
 ### How the animation is encoded
 

@@ -35,6 +35,17 @@ class BakeSettings:
                                   # SHARP = creases over crease_angle, + silhouette
     crease_angle: float = 30.0    # degrees between adjacent faces, SHARP mode
     backface_cull: bool = True
+
+    # --- curves -----------------------------------------------------------
+    # Which vertices a path bends smoothly through, rather than turning a
+    # corner at. See curves.py; the mask is static, so it costs nothing at
+    # runtime and cannot pop mid-animation.
+    #   NONE    = every vertex is a corner (polylines, as before)
+    #   SMOOTH  = every vertex is smooth
+    #   ANGLE   = 2D screen turn angle vs curve_angle
+    #   SHADING = 3D turn angle, threshold taken from Blender's own shading
+    curve_mode: str = "NONE"
+    curve_angle: float = 30.0     # degrees, ANGLE mode
     cull_offscreen: bool = True
     offscreen_margin: float = 24.0
 
@@ -52,6 +63,15 @@ class BakeSettings:
     default_fill: tuple = (0.57112, 0.60383, 0.67244)
     use_material_color: bool = True
     color_source: str = "AUTO"     # AUTO | MATERIAL (Principled) | VIEWPORT
+    # Take fill opacity from the material as well as its colour: the Principled
+    # Alpha socket, or the viewport colour's fourth channel, matching whichever
+    # the colour came from. Off makes every fill solid however it is authored.
+    material_alpha: bool = True
+    # A translucent surface should not hide its own far side. Lets the back
+    # faces of a see-through material through the backface cull, and its edges
+    # through hidden-line removal -- for that material only, so solid geometry
+    # elsewhere in the scene stays solid. Does nothing without material_alpha.
+    see_through: bool = True
     shading: bool = True
     light_dir: tuple = (-0.4, -0.7, 0.6)   # direction *towards* the light
     ambient: float = 0.42

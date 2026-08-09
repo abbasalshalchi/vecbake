@@ -60,6 +60,85 @@ def resolve_cameras(context, settings: BakeSettings):
     return [cam]
 
 
+def _is_clip(path):
+    """Does this .svg carry an animation, or is it just a resting state?
+
+    The container marks itself on the root tag, so the answer is in the first
+    line -- no need to parse a megabyte of geometry to find out.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            return 'data-ivg="1"' in fh.read(2048)
+    except OSError:
+        return False
+
+
+def _clips_on_disk(directory, basename, known):
+    """Clips beside this bake that the index does not already account for.
+
+    Cameras baked one at a time still add up to a folder full of clips, and
+    that folder needs a manifest as much as an All Cameras bake does.
+    """
+    prefix = f"{basename}."
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return set()
+    return {
+        name for name in names
+        if name.startswith(prefix) and name.endswith(".svg") and name not in known
+        and _is_clip(os.path.join(directory, name))
+    }
+
+
+def _clip_payload(path):
+    """The animation JSON carried inside an .ivg, or None if it carries none."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    head = text.find(f'<metadata id="{emit_ivg.DATA_ID}"')
+    if head < 0:
+        return None
+    start = text.find("<![CDATA[", head)
+    end = text.find("</metadata>", head)
+    if start < 0 or end < 0:
+        return None
+    body = text[start + len("<![CDATA["):end]
+    if body.endswith("]]>"):
+        body = body[:-3]
+    # undo the split emit_ivg uses to smuggle a literal "]]>" through CDATA
+    body = body.replace("]]]]><![CDATA[>", "]]>")
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
+def _clip_row(name, doc):
+    """An index row rebuilt from a clip's own metadata.
+
+    Same shape and same sources the row had when it was first written, so a
+    rebuilt index is indistinguishable from an accumulated one.
+    """
+    meta = doc.get("meta") or {}
+    return {
+        "file": name,
+        "camera": meta.get("camera"),
+        "from": doc.get("from", meta.get("from")),
+        "to": doc.get("to", meta.get("to")),
+        "duration": doc.get("dur"),
+        "motion": doc.get("motion"),
+        "width": doc.get("w"),
+        "height": doc.get("h"),
+        "elements": (doc.get("stats") or {}).get("elements"),
+    }
+
+
+ANIMATED = ("ivg", "json", "lottie", "svg")
+
+
 def bake_scene(context=None, settings: BakeSettings | None = None, report=None):
     context = context or bpy.context
     return bake(context, settings or BakeSettings(), report=report)
@@ -119,6 +198,10 @@ def _bake_and_write(
     between. The SVGs belong to the *camera*, not the direction: a reverse bake
     runs between the same two resting states, so `<name>.rev.json` pairs with
     the same `<name>.start.svg` / `<name>.end.svg`, swapped.
+
+    The `still` format is the odd one out: one `<name>.still.svg` of the scene
+    at the current frame, with no animation in it at all. Asked for on its own
+    it also shortens the bake to that single frame.
     """
     context = context or bpy.context
     settings = settings or BakeSettings()
@@ -139,10 +222,17 @@ def _bake_and_write(
     multi = len(cameras) > 1
     files = {}
     outputs = []
+    scene = context.scene
+    # A still on its own needs one frame. Sampling the whole shot and throwing
+    # all but one frame away is the slowest possible way to draw a picture, and
+    # on a long clip it is the difference between a second and a minute.
+    still_only = "still" in formats and not set(formats) & set(ANIMATED)
 
     for index, cam in enumerate(cameras):
         cam_settings = copy.copy(settings)
         cam_settings.camera = cam
+        if still_only:
+            cam_settings.frame_start = cam_settings.frame_end = scene.frame_current
         # Always name the file after the camera, even for a single-camera bake.
         # Switching the naming on how many cameras happen to be selected means
         # baking one camera writes a different file than baking all of them,
@@ -193,6 +283,26 @@ def _bake_and_write(
                 path = os.path.join(directory, f"{name}.lottie.json")
                 files[path] = emit_lottie.write(doc, path, name=name, pretty=pretty)
 
+        # One picture of the scene as it stands, with no animation attached to
+        # it -- the current frame, the way Render Image means the current frame.
+        # Per camera, never per direction: a still has no direction to run in.
+        #
+        # Always its own single-frame bake, never a slice of the animated one.
+        # Sampling the clip would tie the picture to the export range, so a
+        # range that does not happen to contain the current frame would quietly
+        # hand back a different frame instead. A frame costs milliseconds.
+        if "still" in formats:
+            yield (prefix + "Still frame", 0, 1)
+            if still_only:
+                shot = vec
+            else:
+                one = copy.copy(cam_settings)
+                one.frame_start = one.frame_end = scene.frame_current
+                shot = bake_module.bake(context, one)
+            path = os.path.join(directory, f"{stem}.still.svg")
+            files[path] = emit_svg.write(shot, path, time=0.0,
+                                         decimals=settings.coord_decimals)
+
         # resting states are per camera, not per direction
         if "svg" in formats:
             times = rest_times if rest_times is not None else [0.0, vec.duration]
@@ -223,12 +333,13 @@ def _bake_and_write(
             for out in outputs
         }
         path = os.path.join(directory, f"{basename}.index.json")
+        had_index = os.path.exists(path)
 
         # Merge rather than overwrite. Baking one camera must update only that
         # camera's row -- rewriting the file from just this run would silently
         # drop every other clip from the index.
         clips = dict(fresh)
-        if os.path.exists(path):
+        if had_index:
             try:
                 with open(path, encoding="utf-8") as fh:
                     for clip in json.load(fh).get("clips", []):
@@ -241,15 +352,31 @@ def _bake_and_write(
             except (ValueError, OSError):
                 pass                      # unreadable index: start it again
 
-        manifest = {
-            "format": "ivg-manifest",
-            "version": 1,
-            "clips": [clips[k] for k in sorted(clips)],
-        }
-        text = json.dumps(manifest, indent=1)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        files[path] = len(text.encode("utf-8"))
+        # Clips neither this run nor the index accounts for: cameras baked one
+        # at a time, or an index deleted since. Their rows come from their own
+        # embedded metadata -- the same source the row had originally -- rather
+        # than being guessed from the filename.
+        for name in sorted(_clips_on_disk(directory, basename, set(clips))):
+            doc = _clip_payload(os.path.join(directory, name))
+            if doc is not None:
+                clips[name] = _clip_row(name, doc)
+
+        # The manifest answers "which clip do I play?", so it is only worth
+        # writing when that is a real question. A single camera into an empty
+        # folder produces one clip and no question -- just a second file to
+        # explain. It appears the moment a choice exists. An index already
+        # there is always kept current, never orphaned; delete it and a
+        # single-clip bake will not bring it back.
+        if len(clips) > 1 or had_index:
+            manifest = {
+                "format": "ivg-manifest",
+                "version": 1,
+                "clips": [clips[k] for k in sorted(clips)],
+            }
+            text = json.dumps(manifest, indent=1)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            files[path] = len(text.encode("utf-8"))
 
     return {
         "scene": outputs[0]["scene"],

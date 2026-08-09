@@ -98,7 +98,38 @@ class VECBAKE_PG_settings(PropertyGroup):
         description="Minimum angle between two faces for their shared edge to count as "
                     "a crease. Higher keeps only the hardest edges. Edges marked Sharp "
                     "in the mesh are always kept")
+    curve_mode: EnumProperty(
+        name="Curves",
+        items=[
+            ("NONE", "Off", "Straight segments between every point, as baked"),
+            ("SMOOTH", "Smooth", "Bend through every point. A baked circle comes out "
+                                 "round instead of faceted"),
+            ("ANGLE", "Smooth by Angle", "Bend only where the line turns by less than "
+                                         "the threshold, measured on screen in 2D. "
+                                         "Corners stay sharp"),
+            ("SHADING", "Blender Shading", "Follow the object's own shading: shade-smooth "
+                                           "curves throughout, shade-flat stays straight, "
+                                           "and Smooth by Angle uses its angle against the "
+                                           "3D shape"),
+        ],
+        default="NONE",
+        description="Draw curves through the baked points instead of straight lines. "
+                    "Costs no extra data -- the control points are derived from the "
+                    "points either side",
+    )
+    curve_angle: FloatProperty(
+        name="Curve Angle", default=math.radians(30.0), min=0.0, max=math.pi, subtype="ANGLE",
+        description="How far the line may turn at a point and still be drawn as a curve. "
+                    "Measured in 2D on screen, across every frame -- a point that is a "
+                    "corner in any frame stays a corner in all of them, so the shape "
+                    "cannot pop as the camera moves")
     backface_cull: BoolProperty(name="Backface Cull", default=True)
+    see_through: BoolProperty(
+        name="See Through", default=True,
+        description="A translucent material does not hide its own far side: its back "
+                    "faces survive the backface cull and its edges survive hidden-line "
+                    "removal. Only that material -- solid geometry elsewhere stays "
+                    "solid. Needs Material Alpha to have found some transparency")
     cull_offscreen: BoolProperty(name="Cull Offscreen", default=True)
     accurate_order: BoolProperty(
         name="Resolve Paint Order", default=True,
@@ -134,6 +165,12 @@ class VECBAKE_PG_settings(PropertyGroup):
         description="Draw every edge with a crease value above zero, whatever the edge "
                     "mode would have selected")
     use_material_color: BoolProperty(name="Material Colours", default=True)
+    material_alpha: BoolProperty(
+        name="Material Alpha", default=True,
+        description="Take fill opacity from the material too: the Principled "
+                    "Alpha socket, or the viewport colour's alpha, matching "
+                    "wherever the colour itself came from. Turn off to make "
+                    "every fill solid however it is authored")
     color_source: EnumProperty(
         name="Colour From",
         items=[
@@ -202,6 +239,11 @@ class VECBAKE_PG_settings(PropertyGroup):
                            description="Resting states as separate .svg files. Already "
                                        "inside the .ivg unless you turn that off")
     emit_lottie: BoolProperty(name="Lottie", default=False)
+    emit_still: BoolProperty(name="Still SVG", default=False,
+                             description="One plain .svg of the scene at the current "
+                                         "frame, with no animation in it. On its own it "
+                                         "bakes that frame only, so it is quick whatever "
+                                         "the frame range says")
     ivg_states: BoolProperty(name="Embed States", default=True,
                              description="Include the resting-state SVGs inside the .ivg. "
                                          "They gzip to a few KB and remove the need to ship "
@@ -232,7 +274,10 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.strokes, s.fills = self.strokes, self.fills
         s.edge_mode = self.edge_mode
         s.crease_angle = math.degrees(self.crease_angle)
+        s.curve_mode = self.curve_mode
+        s.curve_angle = math.degrees(self.curve_angle)
         s.backface_cull = self.backface_cull
+        s.see_through = self.see_through
         s.cull_offscreen = self.cull_offscreen
         s.accurate_order = self.accurate_order
         s.stroke_color = tuple(self.stroke_color)
@@ -242,6 +287,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.always_freestyle = self.always_freestyle
         s.always_crease = self.always_crease
         s.use_material_color = self.use_material_color
+        s.material_alpha = self.material_alpha
         s.color_source = self.color_source
         s.default_fill = tuple(self.default_fill)
         s.shading = self.shading
@@ -411,30 +457,16 @@ class VECBAKE_OT_export(Operator):
 
     @staticmethod
     def _formats(props):
-        formats = []
-        if props.emit_ivg:
-            formats.append("ivg")
-        if props.emit_json:
-            formats.append("json")
-        if props.emit_svg:
-            formats.append("svg")
-        if props.emit_lottie:
-            formats.append("lottie")
-        return formats
+        wanted = (("ivg", props.emit_ivg), ("json", props.emit_json),
+                  ("svg", props.emit_svg), ("lottie", props.emit_lottie),
+                  ("still", props.emit_still))
+        return [name for name, on in wanted if on]
 
     # --- blocking path: what a script gets from bpy.ops.vecbake.export() ---
 
     def execute(self, context):
         props = context.scene.vecbake
-        formats = []
-        if props.emit_ivg:
-            formats.append("ivg")
-        if props.emit_json:
-            formats.append("json")
-        if props.emit_svg:
-            formats.append("svg")
-        if props.emit_lottie:
-            formats.append("lottie")
+        formats = self._formats(props)
         if not formats:
             self.report({"ERROR"}, "No output format selected.")
             return {"CANCELLED"}
@@ -472,99 +504,116 @@ class VECBAKE_PT_panel(Panel):
     bl_region_type = "UI"
     bl_category = "VecBake"
 
+    @staticmethod
+    def _section(layout, title, icon="NONE"):
+        """A titled box and the two-column grid to fill it with.
+
+        Everything that fits goes in the grid; anything that would be unreadable
+        at half width -- a file path, a colour swatch, a vector -- is put on the
+        box itself, full width. Two columns of truncated text is not tidier than
+        one column of legible text.
+        """
+        box = layout.box()
+        box.label(text=title, icon=icon)
+        grid = box.grid_flow(row_major=True, columns=2, even_columns=True,
+                             even_rows=False, align=False)
+        return box, grid
+
     def draw(self, context):
         layout = self.layout
         props = context.scene.vecbake
+        scene = context.scene
 
-        col = layout.column(align=True)
-        col.prop(props, "source")
+        box, grid = self._section(layout, "Scene", "SCENE_DATA")
+        grid.prop(props, "source", text="")
         if props.source == "COLLECTION":
-            col.prop(props, "collection")
-
-        box = layout.box()
-        box.label(text="Cameras")
-        box.prop(props, "all_cameras")
-        box.prop(props, "bidirectional")
-        cams = [o for o in context.scene.objects if o.type == "CAMERA"]
+            grid.prop(props, "collection", text="")
+        grid.prop(props, "all_cameras")
+        grid.prop(props, "bidirectional")
+        cams = [o for o in scene.objects if o.type == "CAMERA"]
         if props.all_cameras:
             count = len(cams) * (2 if props.bidirectional else 1)
             box.label(text=f"{len(cams)} camera(s) -> {count} file set(s)",
                       icon="OUTLINER_OB_CAMERA")
-        elif context.scene.camera:
-            box.label(text=context.scene.camera.name, icon="CAMERA_DATA")
+        elif scene.camera:
+            box.label(text=scene.camera.name, icon="CAMERA_DATA")
 
-        box = layout.box()
-        box.prop(props, "use_scene_range")
+        box, grid = self._section(layout, "Frames & Size", "TIME")
+        grid.prop(props, "use_scene_range")
+        grid.prop(props, "frame_step")
         if not props.use_scene_range:
-            row = box.row(align=True)
-            row.prop(props, "frame_start")
-            row.prop(props, "frame_end")
-        box.prop(props, "frame_step")
-        box.prop(props, "use_scene_res")
+            grid.prop(props, "frame_start")
+            grid.prop(props, "frame_end")
+        grid.prop(props, "use_scene_res")
+        grid.separator()
         if not props.use_scene_res:
-            row = box.row(align=True)
-            row.prop(props, "width")
-            row.prop(props, "height")
+            grid.prop(props, "width")
+            grid.prop(props, "height")
 
-        box = layout.box()
-        box.label(text="Geometry")
-        row = box.row(align=True)
-        row.prop(props, "strokes", toggle=True)
-        row.prop(props, "fills", toggle=True)
+        box, grid = self._section(layout, "Geometry", "MESH_DATA")
+        grid.prop(props, "strokes", toggle=True)
+        grid.prop(props, "fills", toggle=True)
+        grid.prop(props, "backface_cull")
+        grid.prop(props, "see_through")
+        grid.prop(props, "cull_offscreen")
+        grid.prop(props, "always_freestyle")
+        grid.prop(props, "always_crease")
+        grid.prop(props, "accurate_order")
+        grid.prop(props, "chain_edges")
+        if props.chain_edges:
+            grid.prop(props, "chain_junctions")
+            grid.prop(props, "dissolve_px")
+            if props.chain_junctions:
+                grid.prop(props, "chain_max_turn")
         box.prop(props, "edge_mode")
         if props.edge_mode == "SHARP":
             box.prop(props, "crease_angle")
-        col = box.column(align=True)
-        col.prop(props, "always_freestyle")
-        col.prop(props, "always_crease")
-        box.prop(props, "backface_cull")
-        box.prop(props, "cull_offscreen")
-        box.prop(props, "accurate_order")
-        box.prop(props, "chain_edges")
-        if props.chain_edges:
-            box.prop(props, "chain_junctions")
-            if props.chain_junctions:
-                box.prop(props, "chain_max_turn")
-            box.prop(props, "dissolve_px")
 
-        box = layout.box()
-        box.label(text="Style")
-        box.prop(props, "stroke_source")
-        if props.stroke_source == "MATERIAL":
-            box.prop(props, "stroke_darken")
-        else:
-            box.prop(props, "stroke_color")
-        box.prop(props, "stroke_width")
-        box.prop(props, "use_material_color")
+        box, grid = self._section(layout, "Curves", "IPO_EASE_IN_OUT")
+        box.prop(props, "curve_mode", text="")
+        if props.curve_mode == "ANGLE":
+            box.prop(props, "curve_angle")
+
+        box, grid = self._section(layout, "Style", "BRUSH_DATA")
+        grid.prop(props, "stroke_width")
+        grid.prop(props, "use_material_color")
         if props.use_material_color:
-            box.prop(props, "color_source")
+            grid.prop(props, "material_alpha")
+        grid.prop(props, "shading")
+        if props.shading:
+            grid.prop(props, "ambient")
+        if props.stroke_source == "MATERIAL":
+            grid.prop(props, "stroke_darken")
+        box.prop(props, "stroke_source", text="")
+        if props.stroke_source != "MATERIAL":
+            box.prop(props, "stroke_color", text="")
+        if props.use_material_color:
+            box.prop(props, "color_source", text="")
         else:
             box.prop(props, "default_fill", text="")
-        box.prop(props, "shading")
         if props.shading:
             box.prop(props, "light_dir", text="")
-            box.prop(props, "ambient")
 
-        box = layout.box()
-        box.label(text="Precision")
-        box.prop(props, "tol_px")
-        box.prop(props, "auto_precision")
+        box, grid = self._section(layout, "Precision", "DRIVER")
+        grid.prop(props, "tol_px")
+        grid.prop(props, "auto_precision")
         if not props.auto_precision:
-            box.prop(props, "coord_decimals")
-        box.prop(props, "include_ids")
+            grid.prop(props, "coord_decimals")
+        grid.prop(props, "include_ids")
 
-        box = layout.box()
-        box.label(text="Output")
+        box, grid = self._section(layout, "Output", "EXPORT")
+        grid.prop(props, "emit_ivg", toggle=True)
+        grid.prop(props, "emit_still", toggle=True)
+        grid.prop(props, "emit_json", toggle=True)
+        grid.prop(props, "emit_svg", toggle=True)
+        grid.prop(props, "emit_lottie", toggle=True)
+        grid.prop(props, "pretty")
+        if props.emit_ivg:
+            grid.prop(props, "ivg_states")
         box.prop(props, "out_dir")
         box.prop(props, "basename")
-        row = box.row(align=True)
-        row.prop(props, "emit_ivg", toggle=True)
-        row.prop(props, "emit_json", toggle=True)
-        row.prop(props, "emit_svg", toggle=True)
-        row.prop(props, "emit_lottie", toggle=True)
-        if props.emit_ivg:
-            box.prop(props, "ivg_states")
-        box.prop(props, "pretty")
+        if props.emit_still:
+            box.label(text=f"Still: frame {scene.frame_current}", icon="RENDER_STILL")
 
         row = layout.row(align=True)
         row.enabled = not props.baking

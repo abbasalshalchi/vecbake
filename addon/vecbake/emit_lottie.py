@@ -35,12 +35,46 @@ def _avg(track, fallback=0.0):
     return sum(track.values) / len(track.values)
 
 
-def _path_keyframes(geo, npts, fps, closed):
-    zeros = [[0.0, 0.0] for _ in range(npts)]
+def _handles(verts, mask, closed):
+    """Lottie's per-vertex in/out handles, from the same tangents as everyone.
 
+    The format already wants exactly what `curves.py` computes: a handle is the
+    Catmull-Rom tangent over three, stated relative to its own vertex, and a
+    corner is a pair of zeros -- which collapses its segment to the straight
+    line it replaced, the same way it does in the SVG and the player.
+
+    Leaving these at zero was survivable while the mask only ever *added* a bow
+    that Lottie declined to draw. It stopped being survivable once flat faces
+    began following their neighbours' curves: their bulge is real geometry, so
+    a Lottie file without the handles has the sides overhanging a cap still
+    drawn as a polygon -- the original gap, inside out.
+    """
+    n = len(verts)
+    inn = [[0.0, 0.0] for _ in range(n)]
+    out = [[0.0, 0.0] for _ in range(n)]
+    if mask is None:
+        return inn, out
+    for i in range(n):
+        if not mask[i]:
+            continue
+        if closed:
+            a, b = (i - 1) % n, (i + 1) % n
+        elif 0 < i < n - 1:
+            a, b = i - 1, i + 1
+        else:
+            continue                       # an end has nothing to bend through
+        tx = (verts[b][0] - verts[a][0]) / 6.0
+        ty = (verts[b][1] - verts[a][1]) / 6.0
+        out[i] = [tx, ty]
+        inn[i] = [-tx, -ty]
+    return inn, out
+
+
+def _path_keyframes(geo, npts, fps, closed, mask=None):
     def shape(values):
         verts = [[values[i], values[i + 1]] for i in range(0, len(values), 2)]
-        return [{"i": list(zeros), "o": list(zeros), "v": verts, "c": closed}]
+        inn, out = _handles(verts, mask, closed)
+        return [{"i": inn, "o": out, "v": verts, "c": closed}]
 
     if geo.constant:
         return {"a": 0, "k": shape(geo.values[0])[0]}
@@ -91,9 +125,12 @@ def to_dict(vec: VecScene, name="vecbake") -> dict:
 
     layers = []
     for i, el in enumerate(ordered):
-        closed = el.kind == FILL
-        path = {"ty": "sh", "ind": 0, "nm": el.key, "ks": _path_keyframes(el.geo, el.npts, fps, closed)}
-        if closed:
+        # what closes the path and what paints it are different questions: a
+        # chained stroke can be a ring without being a fill
+        filled = el.kind == FILL
+        path = {"ty": "sh", "ind": 0, "nm": el.key,
+                "ks": _path_keyframes(el.geo, el.npts, fps, el.is_closed(), el.smooth)}
+        if filled:
             paint = {"ty": "fl", "nm": "fill", "c": _color_property(el, fps), "o": {"a": 0, "k": 100}, "r": 1}
         else:
             paint = {

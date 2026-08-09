@@ -195,6 +195,7 @@
         group: this.groups[e.g] || '',
         color: e.c,
         width: e.w === undefined ? 1 : e.w,
+        closed: e.k !== STROKE || e.cl === 1,
         geo: new Track(e.G, e.n * 2, this.duration, samples),
         opacity: e.O ? new Track(e.O, 1, this.duration, samples) : null,
         depth: e.D ? new Track(e.D, 1, this.duration, samples) : null,
@@ -308,6 +309,7 @@
           var o = e2.offset, np = e2.npts;
           ctx.moveTo(scratch[o], scratch[o + 1]);
           for (var p = 1; p < np; p++) ctx.lineTo(scratch[o + p * 2], scratch[o + p * 2 + 1]);
+          if (e2.closed) ctx.closePath();   // ends this subpath, not the batch
           k++;
         }
         ctx.globalAlpha = alpha;
@@ -325,7 +327,7 @@
         for (var q = 1; q < npts; q++) ctx.lineTo(scratch[off + q * 2], scratch[off + q * 2 + 1]);
         ctx.closePath();
         ctx.fill();
-        if (this.seamFix) {
+        if (this.seamFix && el.alpha > 0.999) {
           ctx.strokeStyle = ctx.fillStyle;
           ctx.lineWidth = this.seamWidth;
           ctx.stroke();
@@ -421,6 +423,7 @@
       ctx.moveTo(scratch[o], scratch[o + 1]);
       for (var p = 1; p < el.npts; p++) ctx.lineTo(scratch[o + p * 2], scratch[o + p * 2 + 1]);
       if (el.kind === STROKE) {
+        if (el.closed) ctx.closePath();
         ctx.lineWidth = Math.max(el.width, slop || 6);
         if (ctx.isPointInStroke(x, y)) return { id: el.id, group: el.group, index: view[i] };
       } else {

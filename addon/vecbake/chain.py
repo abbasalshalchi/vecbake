@@ -99,7 +99,21 @@ def _continuations(edge_verts, eligible, keys, coords, max_turn, through_junctio
 
 
 def _trace(edge_verts, eligible, keys, cont):
-    """Walk runs of edges into ordered vertex paths, following continuations."""
+    """Walk runs of edges into ordered vertex paths, following continuations.
+
+    A walk that arrives back at its own start is reported *closed*: it takes
+    that last edge and repeats the starting vertex at the end of the path.
+
+    Leaving the ring open instead -- which is what this used to do -- cost the
+    join twice over. The edge that would have closed it was never claimed, so it
+    resurfaced as a lone two-point stroke lying straight across the join, and
+    the two ends of the ring became path endpoints, where no tangent can be
+    measured and the curve therefore has to straighten. On a cylinder's rim
+    that is a visible chord cutting the corner off the oval.
+
+    `members[i]` is always the edge joining `path[i]` to `path[i + 1]`, in both
+    directions of growth -- the straddle test slices the two together.
+    """
     used = set()
     chains = []
     for seed in eligible:
@@ -111,8 +125,11 @@ def _trace(edge_verts, eligible, keys, cont):
         seen = {a, b}
         members = [seed]
         key = keys[seed]
+        closed = False
 
         for forward in (True, False):
+            if closed:
+                break
             current = seed
             while True:
                 tip = path[-1] if forward else path[0]
@@ -121,17 +138,22 @@ def _trace(edge_verts, eligible, keys, cont):
                     break
                 va, vb = (int(v) for v in edge_verts[nxt])
                 other = vb if va == tip else va
-                if other in seen:
-                    break                       # closed loop -- leave it open
+                revisit = other in seen
+                if revisit and other != (path[0] if forward else path[-1]):
+                    break        # a figure-eight: no one traversal closes it
                 used.add(nxt)
-                members.append(nxt)
-                seen.add(other)
                 if forward:
+                    members.append(nxt)
                     path.append(other)
                 else:
+                    members.insert(0, nxt)
                     path.insert(0, other)
+                if revisit:
+                    closed = True
+                    break
+                seen.add(other)
                 current = nxt
-        chains.append((path, members))
+        chains.append((path, members, closed))
     return chains
 
 
@@ -257,6 +279,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
     removed_keys = set()
     added: list[Element] = []
     chain_items = {}          # frame index -> list of replacement items
+    paths = {}                # chain key -> its mesh vertex path, for curves.py
     merged = 0
     if ortho_by_frame is None:
         ortho_by_frame = [False] * nframes
@@ -271,17 +294,26 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
 
         # Only merge edges drawn identically in every frame. Colour and width
         # have to match too or the merged stroke would change appearance.
+        #
+        # And never merge across the surface: a chain gets one depth, so an
+        # element running from the near side of an object round to the far side
+        # cannot be ordered against anything. With backface culling that never
+        # arose -- the far half was not drawn -- but a see-through material
+        # draws both, and the whole rim then paints at its nearest member's
+        # depth, on top of the very faces that should be covering half of it.
+        # Facing is recorded per frame and compared whole, exactly like
+        # visibility, so a split only happens where the two genuinely differ.
         keys = {}
         for e in eligible:
             slot = slots[f"{plan.name}/e{e}"]
             colour = plan.edge_colors[e] if plan.edge_colors else plan.stroke_color
-            keys[e] = ((slot["vis"] > 0.0).tobytes(), colour)
+            keys[e] = ((slot["vis"] > 0.0).tobytes(), slot["front"].tobytes(), colour)
 
         coords = plan.vert_co @ plan.matrix3.T
         cont = _continuations(plan.edge_verts, eligible, keys, coords,
                               settings.chain_max_turn, settings.chain_junctions)
 
-        for index, (path, members) in enumerate(
+        for index, (path, members, ring) in enumerate(
                 _trace(plan.edge_verts, eligible, keys, cont)):
             if len(members) < 2:
                 continue
@@ -301,6 +333,9 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 run_members = members[start:stop]
                 run_keys = member_keys[start:stop]
                 run_path = path[start:stop + 1]
+                # A ring only survives whole. Any straddle cut turns it into an
+                # arc, and an arc has two ends like any other open chain.
+                closed = ring and not cuts
 
                 # projected positions of this path, for every frame it is visible
                 points = np.stack([
@@ -308,7 +343,9 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 ])
                 kept = _dissolve(points, settings.dissolve_px)
                 final_path = [run_path[i] for i in kept]
-                if len(final_path) < 2:
+                if closed:
+                    final_path.pop()      # the seam vertex the ring implies
+                if len(final_path) < (3 if closed else 2):
                     continue
 
                 key = f"{plan.name}/c{index}_{run}"
@@ -330,7 +367,8 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                           else plan.stroke_color)
                 added.append(Element(key=key, kind=STROKE, npts=len(final_path),
                                      group=plan.group, color=colour,
-                                     width=settings.stroke_width))
+                                     width=settings.stroke_width, closed=closed))
+                paths[key] = final_path
                 removed_keys.update(run_keys)
                 merged += len(run_members)
 
@@ -347,7 +385,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                     })
 
     if not added:
-        return {"chains": 0, "edges_merged": 0}
+        return {"chains": 0, "edges_merged": 0, "paths": {}}
 
     for key in removed_keys:
         slots.pop(key, None)
@@ -359,4 +397,4 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
         items[:] = [it for it in items if it["key"] not in removed_keys]
         items.extend(chain_items.get(fi, []))
 
-    return {"chains": len(added), "edges_merged": merged}
+    return {"chains": len(added), "edges_merged": merged, "paths": paths}

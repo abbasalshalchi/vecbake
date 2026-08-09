@@ -90,6 +90,27 @@ def _encode_track(track, decimals, grid):
         len(json.dumps(sparse, separators=(",", ":"))) else sparse
 
 
+def _encode_smooth(mask):
+    """Per-vertex smooth flags: 1 for all, else a hex bitmask, else absent.
+
+    Bit i is vertex i, so the *last* hex digit carries vertices 0-3. A bitmask
+    beats a list of indices here because it is the same size whether the path
+    is mostly corners or mostly curve, and a cube is as common as a circle.
+    """
+    if mask is None:
+        return None
+    flags = [bool(v) for v in mask]
+    if not any(flags):
+        return None
+    if all(flags):
+        return 1
+    bits = 0
+    for i, on in enumerate(flags):
+        if on:
+            bits |= 1 << i
+    return format(bits, "x")
+
+
 def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
     palette: list[str] = []
     index: dict[str, int] = {}
@@ -124,8 +145,13 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
         }
         if el.kind != FILL:
             item["w"] = round(el.width, 2)
+            if el.closed:
+                item["cl"] = 1        # a stroke that joins back to its start
         if el.shade is not None:
             item["S"] = _encode_track(el.shade, 3, grid)
+        smooth = _encode_smooth(el.smooth)
+        if smooth is not None:
+            item["sm"] = smooth
         if include_ids:
             item["id"] = el.key
         els.append(item)
