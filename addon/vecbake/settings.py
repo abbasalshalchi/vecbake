@@ -106,7 +106,7 @@ class BakeSettings:
     depth_bias: float = 1e-4      # pulls edges in front of their own faces
     accurate_order: bool = True   # resolve true paint order offline (see order.py)
     include_ids: bool = True
-    ivg_states: bool = True       # embed the resting states in the animated SVG
+    lerpa_states: bool = True       # embed the resting states in the animated SVG
 
     def resolved_range(self, scene):
         start = self.frame_start if self.frame_start is not None else scene.frame_start

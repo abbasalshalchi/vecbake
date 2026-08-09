@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # VecBake -- Copyright (C) 2026 Abbas Alshalchi
-"""The .ivg container -- one file per transition.
+"""The .lerpa container -- one file per transition.
 
-An .ivg **is a valid SVG file** with the animation data embedded in it. That
+A .lerpa **is a valid SVG file** with the animation data embedded in it. That
 single decision is what makes the format pleasant to hand to someone who knows
 nothing about this project:
 
@@ -32,7 +32,7 @@ from . import emit_json, emit_svg
 from .ir import VecScene
 
 CONTAINER_VERSION = 1
-DATA_ID = "ivg-data"
+DATA_ID = "lerpa-data"
 
 
 def _cdata(text: str) -> str:
@@ -44,7 +44,7 @@ def _cdata(text: str) -> str:
 def to_svg(vec: VecScene, include_ids=True, coord_decimals=2, states=True,
            name="", source="", pretty=False) -> str:
     doc = emit_json.to_dict(vec, include_ids=include_ids, coord_decimals=coord_decimals)
-    doc["format"] = "ivg"
+    doc["format"] = "lerpa"
     doc["version"] = CONTAINER_VERSION
     doc["track_format"] = emit_json.FORMAT_VERSION
     if name:
@@ -58,20 +58,20 @@ def to_svg(vec: VecScene, include_ids=True, coord_decimals=2, states=True,
 
     payload = json.dumps(doc, indent=1) if pretty else json.dumps(doc, separators=(",", ":"))
 
-    parts = [emit_svg.svg_open_tag(vec, extra=' data-ivg="1"')]
-    parts.append(f'<title>{name or "IVG animation"}</title>')
-    parts.append(f'<metadata id="{DATA_ID}" data-format="ivg">{_cdata(payload)}</metadata>')
+    parts = [emit_svg.svg_open_tag(vec, extra=' data-lerpa="1"')]
+    parts.append(f'<title>{name or "Lerpa animation"}</title>')
+    parts.append(f'<metadata id="{DATA_ID}" data-format="lerpa">{_cdata(payload)}</metadata>')
 
     if states:
-        parts.append('<g id="ivg-state-start">')
+        parts.append('<g id="lerpa-state-start">')
         parts.append(emit_svg.render_inner(vec, time=0.0, decimals=coord_decimals))
         parts.append("</g>")
-        parts.append('<g id="ivg-state-end" style="display:none">')
+        parts.append('<g id="lerpa-state-end" style="display:none">')
         parts.append(emit_svg.render_inner(vec, time=vec.duration, decimals=coord_decimals))
         parts.append("</g>")
     else:
         # still render *something* so the file is never a blank image
-        parts.append('<g id="ivg-state-start">')
+        parts.append('<g id="lerpa-state-start">')
         parts.append(emit_svg.render_inner(vec, time=0.0, decimals=coord_decimals))
         parts.append("</g>")
 

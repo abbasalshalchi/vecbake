@@ -19,7 +19,7 @@ import re
 import bpy
 
 from . import bake as bake_module
-from . import emit_ivg, emit_json, emit_lottie, emit_svg
+from . import emit_lerpa, emit_json, emit_lottie, emit_svg
 from .bake import BakeError, bake
 from .settings import BakeSettings
 
@@ -68,7 +68,7 @@ def _is_clip(path):
     """
     try:
         with open(path, encoding="utf-8", errors="ignore") as fh:
-            return 'data-ivg="1"' in fh.read(2048)
+            return 'data-lerpa="1"' in fh.read(2048)
     except OSError:
         return False
 
@@ -92,13 +92,13 @@ def _clips_on_disk(directory, basename, known):
 
 
 def _clip_payload(path):
-    """The animation JSON carried inside an .ivg, or None if it carries none."""
+    """The animation JSON carried inside a .lerpa, or None if it carries none."""
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return None
-    head = text.find(f'<metadata id="{emit_ivg.DATA_ID}"')
+    head = text.find(f'<metadata id="{emit_lerpa.DATA_ID}"')
     if head < 0:
         return None
     start = text.find("<![CDATA[", head)
@@ -108,7 +108,7 @@ def _clip_payload(path):
     body = text[start + len("<![CDATA["):end]
     if body.endswith("]]>"):
         body = body[:-3]
-    # undo the split emit_ivg uses to smuggle a literal "]]>" through CDATA
+    # undo the split emit_lerpa uses to smuggle a literal "]]>" through CDATA
     body = body.replace("]]]]><![CDATA[>", "]]>")
     try:
         return json.loads(body)
@@ -136,7 +136,7 @@ def _clip_row(name, doc):
     }
 
 
-ANIMATED = ("ivg", "json", "lottie", "svg")
+ANIMATED = ("lerpa", "json", "lottie", "svg")
 
 
 def bake_scene(context=None, settings: BakeSettings | None = None, report=None):
@@ -146,7 +146,7 @@ def bake_scene(context=None, settings: BakeSettings | None = None, report=None):
 
 def bake_and_write_iter(context=None, directory="//", basename="vecbake",
                         settings: BakeSettings | None = None,
-                        formats=("ivg",), rest_times=None, pretty=False):
+                        formats=("lerpa",), rest_times=None, pretty=False):
     """Step-wise form of bake_and_write, for a UI that stays responsive.
 
     Yields `(phase, done, total)` and returns the same dict bake_and_write does.
@@ -253,17 +253,17 @@ def _bake_and_write(
         if settings.bidirectional:
             variants.append((".rev", vec.reversed_copy()))
 
-        if "ivg" in formats:
+        if "lerpa" in formats:
             # One self-contained asset per camera, named .svg because that is
             # exactly what it is -- every host, bundler and image viewer already
             # handles it, with no MIME configuration. Reverse needs no file of
             # its own because the player runs the timeline backwards.
             path = os.path.join(directory, f"{stem}.svg")
-            files[path] = emit_ivg.write(
+            files[path] = emit_lerpa.write(
                 vec, path,
                 include_ids=settings.include_ids,
                 coord_decimals=settings.effective_coord_decimals(),
-                states=settings.ivg_states,
+                states=settings.lerpa_states,
                 name=stem,
                 source=os.path.basename(bpy.data.filepath) or "",
                 pretty=pretty,
@@ -317,7 +317,7 @@ def _bake_and_write(
     # A filename cannot say which move a clip contains or which way it runs, and
     # guessing yields transitions that play backwards. Ship an index that
     # answers both.
-    if "ivg" in formats:
+    if "lerpa" in formats:
         fresh = {
             f"{out['basename']}.svg": {
                 "file": f"{out['basename']}.svg",
@@ -369,7 +369,7 @@ def _bake_and_write(
         # single-clip bake will not bring it back.
         if len(clips) > 1 or had_index:
             manifest = {
-                "format": "ivg-manifest",
+                "format": "lerpa-manifest",
                 "version": 1,
                 "clips": [clips[k] for k in sorted(clips)],
             }

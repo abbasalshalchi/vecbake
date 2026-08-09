@@ -89,7 +89,7 @@ s.edge_mode = "SHARP"      # HIDDEN | SHARP | BOUNDARY | WIRE
 s.crease_angle = 30.0
 s.all_cameras = True
 vecbake.bake_and_write(bpy.context, "//out", "tower",
-                       settings=s, formats=("ivg",))   # "ivg" writes tower.svg
+                       settings=s, formats=("lerpa",))   # "lerpa" writes tower.svg
 ```
 
 Works headless: `blender -b scene.blend -P bake.py`.
@@ -98,7 +98,7 @@ Output formats, all optional except the first:
 
 | format | file | |
 |---|---|---|
-| `ivg` | `tower.svg` | the animated SVG — what the web player consumes |
+| `lerpa` | `tower.svg` | the animated SVG — what the web player consumes |
 | `still` | `tower.still.svg` | one plain picture of the current frame, no animation |
 | `json` | `tower.json` | bare track data, no artwork or states |
 | `svg` | `tower.start.svg`, `tower.end.svg` | resting states as loose files |
@@ -125,12 +125,12 @@ is byte-identical to the same still exported alone.
 Install the [player](web/README.md) once, then drop the file in:
 
 ```html
-<script type="module" src="https://unpkg.com/ivg"></script>
+<script type="module" src="https://unpkg.com/lerpa"></script>
 
-<ivg-player src="/anim/tower.svg" autoplay loop></ivg-player>
+<lerpa-player src="/anim/tower.svg" autoplay loop></lerpa-player>
 ```
 
-`<ivg-player>` is a custom element, so it behaves the same in Vue, Svelte,
+`<lerpa-player>` is a custom element, so it behaves the same in Vue, Svelte,
 Angular, plain HTML and React 19+. There is a React binding and an imperative
 `load()` API too — see [web/README.md](web/README.md).
 
@@ -356,7 +356,7 @@ baked on an earlier run are read back out of those clips' own metadata, which
 is where the row came from in the first place. So baking one camera at a time
 and baking All Cameras produce the same index. It is also **merged, not
 overwritten** — baking one camera updates only that row, and rows whose file no
-longer exists are dropped. `npx ivg manifest <folder>` rebuilds one from
+longer exists are dropped. `npx lerpa manifest <folder>` rebuilds one from
 scratch.
 
 The manifest exists because a filename cannot say which way a camera moves.
@@ -529,7 +529,7 @@ a vertex with nothing on one side of it, so no tangent can be measured and the
 curve has to straighten — meaning a rim drawn as an arc gets a chord across the
 join no matter how smooth the mask says it is. Rings have no ends. Closing them
 also reclaims the edge that used to be stranded as a lone straight segment
-across the same join. In `.ivg` a ring carries `cl: 1`; fills are closed by
+across the same join. In `.lerpa` a ring carries `cl: 1`; fills are closed by
 definition and say nothing.
 
 The mask is decided **once for the whole bake, never per frame.** A vertex that
@@ -791,16 +791,16 @@ addon/vecbake/            the Blender add-on
   order.py                offline paint-order resolution
   chain.py                edge chaining and vertex dissolve
   reduce.py               keyframe reduction
-  emit_ivg.py             animated SVG   <- the primary output
+  emit_lerpa.py             animated SVG   <- the primary output
   emit_json.py            bare track data
   emit_svg.py             static resting states
   emit_lottie.py          Lottie, for preview in standard tools
 
 web/                      the npm package -- see web/README.md
   src/player.js           Canvas 2D player, no dependencies
-  src/element.js          <ivg-player> custom element
+  src/element.js          <lerpa-player> custom element
   src/react.js            React binding
-  bin/ivg.js              CLI: info / strip / states
+  bin/lerpa.js              CLI: info / strip / states
   examples/               vanilla.html, bench.html
 
 scripts/dev.py            reload() bake() check() install()

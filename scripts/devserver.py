@@ -17,12 +17,12 @@ SNAPSHOTS = os.path.join(ROOT, "snapshots")
 
 
 class Handler(SimpleHTTPRequestHandler):
-    # An .ivg *is* an SVG, so serve it as one. Without this a static host falls
+    # A .lerpa *is* an SVG, so serve it as one. Without this a static host falls
     # back to application/octet-stream, and the file downloads instead of
     # rendering when you open it or point an <img> at it.
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
-        ".ivg": "image/svg+xml",
+        ".lerpa": "image/svg+xml",
         ".svg": "image/svg+xml",
     }
 

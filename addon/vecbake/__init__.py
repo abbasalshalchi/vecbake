@@ -228,7 +228,7 @@ class VECBAKE_PG_settings(PropertyGroup):
 
     out_dir: StringProperty(name="Folder", subtype="DIR_PATH", default="//vecbake/")
     basename: StringProperty(name="Name", default="transition")
-    emit_ivg: BoolProperty(name="Animated SVG", default=True,
+    emit_lerpa: BoolProperty(name="Animated SVG", default=True,
                            description="One self-contained .svg per camera: a real SVG that "
                                        "renders anywhere, carrying the animation and both "
                                        "resting states inside it. This is what the web "
@@ -237,15 +237,15 @@ class VECBAKE_PG_settings(PropertyGroup):
                             description="The bare track data, without the resting states")
     emit_svg: BoolProperty(name="Resting SVGs", default=False,
                            description="Resting states as separate .svg files. Already "
-                                       "inside the .ivg unless you turn that off")
+                                       "inside the .lerpa unless you turn that off")
     emit_lottie: BoolProperty(name="Lottie", default=False)
     emit_still: BoolProperty(name="Still SVG", default=False,
                              description="One plain .svg of the scene at the current "
                                          "frame, with no animation in it. On its own it "
                                          "bakes that frame only, so it is quick whatever "
                                          "the frame range says")
-    ivg_states: BoolProperty(name="Embed States", default=True,
-                             description="Include the resting-state SVGs inside the .ivg. "
+    lerpa_states: BoolProperty(name="Embed States", default=True,
+                             description="Include the resting-state SVGs inside the .lerpa. "
                                          "They gzip to a few KB and remove the need to ship "
                                          "matching files alongside")
     pretty: BoolProperty(name="Readable JSON", default=False)
@@ -301,7 +301,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.auto_precision = self.auto_precision
         s.coord_decimals = self.coord_decimals
         s.include_ids = self.include_ids
-        s.ivg_states = self.ivg_states
+        s.lerpa_states = self.lerpa_states
         return s
 
 
@@ -457,7 +457,7 @@ class VECBAKE_OT_export(Operator):
 
     @staticmethod
     def _formats(props):
-        wanted = (("ivg", props.emit_ivg), ("json", props.emit_json),
+        wanted = (("lerpa", props.emit_lerpa), ("json", props.emit_json),
                   ("svg", props.emit_svg), ("lottie", props.emit_lottie),
                   ("still", props.emit_still))
         return [name for name, on in wanted if on]
@@ -602,14 +602,14 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "include_ids")
 
         box, grid = self._section(layout, "Output", "EXPORT")
-        grid.prop(props, "emit_ivg", toggle=True)
+        grid.prop(props, "emit_lerpa", toggle=True)
         grid.prop(props, "emit_still", toggle=True)
         grid.prop(props, "emit_json", toggle=True)
         grid.prop(props, "emit_svg", toggle=True)
         grid.prop(props, "emit_lottie", toggle=True)
         grid.prop(props, "pretty")
-        if props.emit_ivg:
-            grid.prop(props, "ivg_states")
+        if props.emit_lerpa:
+            grid.prop(props, "lerpa_states")
         box.prop(props, "out_dir")
         box.prop(props, "basename")
         if props.emit_still:

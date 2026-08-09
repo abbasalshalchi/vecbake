@@ -18,8 +18,8 @@ from vecbake.api import _clip_payload, _clip_row, _clips_on_disk, _is_clip
 
 PAYLOAD = {"w": 800, "h": 600, "dur": 0.5, "motion": {"scale": 0.4, "direction": "out"},
            "stats": {"elements": 12}, "meta": {"camera": "a cam", "from": "x", "to": "y"}}
-CLIP = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" data-ivg="1">\n'
-        '<metadata id="ivg-data" data-format="ivg"><![CDATA['
+CLIP = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" data-lerpa="1">\n'
+        '<metadata id="lerpa-data" data-format="lerpa"><![CDATA['
         + json.dumps(PAYLOAD) + ']]></metadata>\n</svg>')
 STATE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">\n<rect width="8" height="8"/>\n</svg>'
 
@@ -102,11 +102,11 @@ def test_second_camera_baked_separately_lists_both():
 
 
 def test_cdata_escape_survives_the_round_trip():
-    """emit_ivg splits a literal "]]>" across two sections; undo it exactly."""
-    from vecbake import emit_ivg
+    """emit_lerpa splits a literal "]]>" across two sections; undo it exactly."""
+    from vecbake import emit_lerpa
     payload = dict(PAYLOAD, meta={"camera": "]]> odd"})
-    text = ('<svg data-ivg="1"><metadata id="ivg-data">'
-            + emit_ivg._cdata(json.dumps(payload)) + "</metadata></svg>")
+    text = ('<svg data-lerpa="1"><metadata id="lerpa-data">'
+            + emit_lerpa._cdata(json.dumps(payload)) + "</metadata></svg>")
     d = tempfile.mkdtemp()
     try:
         _write(d, "t.weird.svg", text)
@@ -121,7 +121,7 @@ def test_existing_index_is_kept_current():
     try:
         _write(d, "t.a_cam.svg", CLIP)
         with open(os.path.join(d, "t.index.json"), "w", encoding="utf-8") as fh:
-            json.dump({"format": "ivg-manifest", "version": 1, "clips": []}, fh)
+            json.dump({"format": "lerpa-manifest", "version": 1, "clips": []}, fh)
         assert _wanted(d, "t", {"t.a_cam.svg": {}}), "never orphan an index"
     finally:
         shutil.rmtree(d)
