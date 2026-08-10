@@ -28,6 +28,7 @@ from mathutils import Vector
 from . import chain as chain_mod
 from . import curves
 from . import follow
+from . import merge
 from . import order as order_mod
 from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
@@ -268,6 +269,8 @@ class ObjectPlan:
         # subdivision for depth sorting, but not a grid drawn on the floor.
         self.strokes = bool(obj.get("vecbake_strokes", settings.strokes))
         self.fills = bool(obj.get("vecbake_fills", settings.fills))
+        self.merge_fill = bool(obj.get("vecbake_merge_fill", settings.merge_fills))
+        self.merged = None            # a merge.MergedPath, built on first sample
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -291,6 +294,12 @@ class ObjectPlan:
         self.edge_face_count = np.zeros(self.nedges, dtype=np.int32)
         if len(self.adj_edge):
             np.add.at(self.edge_face_count, self.adj_edge, 1)
+
+        # "Loose" in the sense that matters to curving: nothing on the other
+        # side. Covers a wire edge with no face at all and the open border of a
+        # single plane alike -- neither has a surface whose shading could say
+        # whether the edge should bend.
+        self.edge_loose = self.edge_face_count < 2
 
         # the two faces flanking each interior edge, for the crease angle
         self.edge_face_a = np.full(self.nedges, -1, dtype=np.int32)
@@ -527,6 +536,12 @@ def bake_iter(context, settings: BakeSettings):
                                        vertex_cache, settings, len(frames),
                                        frame_ortho)
 
+    # Fills get the same thinning strokes have always had. Placed here, beside
+    # chaining, because both rewrite element geometry and both must finish
+    # before the ordering pass reads it.
+    thin_report = chain_mod.thin_fills(plans, elements, slots, frame_items,
+                                       vertex_cache, settings, len(frames))
+
     curve_report = {"mode": curves.NONE, "curved": 0, "vertices": 0}
     follow_report = {"followed": 0, "points": 0, "splits": 0, "silhouettes": 0}
     if settings.curve_mode != curves.NONE:
@@ -536,7 +551,14 @@ def bake_iter(context, settings: BakeSettings):
         # follow pass needs it to know which elements share an edge.
         element_verts = dict(chain_report.get("paths") or {})
         for plan in plans.values():
-            if plan.fills:
+            if plan.fills and plan.merge_fill:
+                # The slot order is only settled once sampling has run, which
+                # it has by the time we get here. Handing it over lets the
+                # curve classifier measure angles on the merged ring in 3D
+                # like it does for any other path.
+                if plan.merged is not None and plan.merged.order is not None:
+                    element_verts[f"{plan.name}/m"] = plan.merged.order
+            elif plan.fills:
                 for fidx in range(plan.nfaces):
                     # NOT `start` -- that name holds the bake's first frame and
                     # is still needed at the end to compute `times`/`duration`.
@@ -549,7 +571,11 @@ def bake_iter(context, settings: BakeSettings):
                 for eidx in range(plan.nedges):
                     element_verts.setdefault(f"{plan.name}/e{eidx}",
                                              plan.edge_verts[eidx])
-        curve_report = curves.classify(elements, slots, element_verts, plans, settings)
+        # Thinned outlines win: the curve classifier has to measure the path
+        # that is actually drawn, not the one before points were dropped.
+        element_verts.update(thin_report.get("paths") or {})
+        curve_report = curves.classify(elements, slots, element_verts, plans, settings,
+                                       chain_report.get("loose"))
 
         if curve_report["curved"]:
             yield ("Following curves", 0, 1)
@@ -600,6 +626,13 @@ def bake_iter(context, settings: BakeSettings):
             "followed_elements": follow_report["followed"],
             "follow_points": follow_report["points"],
             "silhouette_corners": follow_report["silhouettes"],
+            "merged_fills": sum(1 for p in plans.values()
+                                if p.fills and p.merge_fill and p.merged is not None),
+            # Objects whose outline stopped running around the slots in the
+            # order the first frame fixed. Non-zero means a merged fill is
+            # drawing a shuffled outline -- see merge.py.
+            "merged_unstable": sum(1 for p in plans.values()
+                                   if p.merged is not None and not p.merged.stable),
         }
     )
     return vec
@@ -618,7 +651,23 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
             "npts": npts,
         }
 
-    if plan.fills:
+    if plan.fills and plan.merge_fill:
+        # One element for the whole object. It carries a slot per vertex, not
+        # per outline point, because the outline's length is a per-frame fact
+        # and an element's point count is not -- see merge.py.
+        key = f"{plan.name}/m"
+        elements.append(
+            Element(
+                key=key,
+                kind=FILL,
+                npts=plan.nverts,
+                group=plan.group,
+                color=plan.face_color[0] if plan.nfaces else 0,
+                width=0.0,
+            )
+        )
+        new_slot(key, plan.nverts)
+    elif plan.fills:
         for fidx in range(plan.nfaces):
             npts = int(plan.loop_total[fidx])
             key = f"{plan.name}/f{fidx}"
@@ -797,7 +846,40 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     hi_x, hi_y = width + margin, height + margin
     cull = settings.cull_offscreen
 
-    if plan.fills:
+    if plan.fills and plan.merge_fill:
+        key = f"{plan.name}/m"
+        slot = slots[key]
+        loop = None
+        if face_visible.any():
+            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_visible))
+        if loop is None:
+            # No usable ring this frame -- nothing drawn, or a shape whose
+            # outline is not one simple loop. Leave the slot empty; freezing
+            # takes care of holding the last good frame.
+            slot["vis"][fi] = 0.0
+        else:
+            if plan.merged is None:
+                plan.merged = merge.MergedPath(plan.nverts)
+            pts = plan.merged.points(loop, xy)
+            visible = True
+            if cull:
+                visible = not (
+                    pts[:, 0].max() < lo_x or pts[:, 0].min() > hi_x
+                    or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
+                )
+            vis_faces = np.nonzero(face_visible)[0]
+            slot["geo"][fi] = pts.ravel().tolist()
+            slot["vis"][fi] = float(plan.face_alpha[vis_faces].max()) if visible else 0.0
+            slot["depth"][fi] = float(face_depth[vis_faces].mean())
+            slot["shade"][fi] = (float(face_shade[vis_faces].mean())
+                                 if settings.shading else 1.0)
+            if visible and collect is not None:
+                lv_loop = np.asarray(loop, dtype=np.int64)
+                collect.append({
+                    "key": key, "kind": 1, "seed": slot["depth"][fi],
+                    "pts": xy[lv_loop], "depths": depth[lv_loop],
+                })
+    elif plan.fills:
         lv = plan.loop_verts
         for fidx in range(nf):
             key = f"{plan.name}/f{fidx}"

@@ -273,6 +273,129 @@ def _dissolve(points, tol):
     return [i for i, k in enumerate(keep) if k]
 
 
+def _pair_index(plan):
+    """(lo, hi) vertex pair -> edge index, built once per plan."""
+    cached = getattr(plan, "_pair_index_cache", None)
+    if cached is None:
+        cached = {
+            (int(a), int(b)) if a < b else (int(b), int(a)): i
+            for i, (a, b) in enumerate(plan.edge_verts)
+        }
+        plan._pair_index_cache = cached
+    return cached
+
+
+def _path_all_loose(plan, path):
+    """Every step along this closed path is an edge with fewer than two faces.
+
+    Doubles as the test for "is this outline safe to move". A face inside a
+    surface shares its edges with neighbours, and thinning its outline would
+    open a gap along the seam. It also excludes a merged path that carries
+    parked vertices, because there consecutive slots are not mesh edges at all
+    -- which is what keeps the merged body, whose parked points exist to be
+    pulled out on rotation, out of this.
+    """
+    lookup = _pair_index(plan)
+    n = len(path)
+    if n < 4:
+        return False
+    for i in range(n):
+        a, b = int(path[i]), int(path[(i + 1) % n])
+        e = lookup.get((a, b) if a < b else (b, a))
+        if e is None or not plan.edge_loose[e]:
+            return False
+    return True
+
+
+def thin_fills(plans, elements, slots, frame_items, vertex_cache, settings, nframes):
+    """Drop interior points from fill outlines built only of loose edges.
+
+    Chaining has always done this for strokes; fills never had it, so a face
+    kept every vertex of its loop however straight the run. Invisible on a
+    wall, expensive on a wing -- there the whole silhouette is one open border
+    traced at modelling density, and it is drawn once per instance.
+
+    Runs before the ordering pass, and rewrites the items that pass will see,
+    for the same reason chaining does: change the geometry afterwards and the
+    resolved paint order no longer describes the shapes being drawn.
+
+    Returns {element key: kept vertex path} for element_verts.
+    """
+    tol = float(getattr(settings, "loose_dissolve_px", 0.0) or 0.0)
+    if tol <= 0.0:
+        tol = float(settings.dissolve_px)
+    if tol <= 0.0:
+        return {}
+
+    by_key = {el.key: el for el in elements}
+    paths = {}
+    dropped = 0
+
+    for plan in plans.values():
+        if not plan.fills:
+            continue
+
+        candidates = []
+        if plan.merge_fill and plan.merged is not None and plan.merged.order is not None:
+            candidates.append((f"{plan.name}/m", list(plan.merged.order)))
+        elif not plan.merge_fill:
+            for fidx in range(plan.nfaces):
+                s = int(plan.loop_start[fidx])
+                e = s + int(plan.loop_total[fidx])
+                candidates.append((f"{plan.name}/f{fidx}", list(plan.loop_verts[s:e])))
+
+        for key, path in candidates:
+            el = by_key.get(key)
+            slot = slots.get(key)
+            if el is None or slot is None or len(path) < 4:
+                continue
+            if not _path_all_loose(plan, path):
+                continue
+
+            visible = [fi for fi in range(nframes)
+                       if slot["vis"][fi] > 0.0 and vertex_cache[fi].get(plan.name) is not None]
+            if not visible:
+                continue
+
+            idx = np.asarray(path, dtype=np.int64)
+            points = np.stack([vertex_cache[fi][plan.name][0][idx] for fi in visible])
+            kept = _dissolve(points, tol)
+            if len(kept) >= len(path) or len(kept) < 3:
+                continue
+
+            new_path = [path[i] for i in kept]
+            new_idx = np.asarray(new_path, dtype=np.int64)
+            dropped += len(path) - len(new_path)
+
+            last = None
+            for fi in range(nframes):
+                cached = vertex_cache[fi].get(plan.name)
+                if cached is None:
+                    slot["geo"][fi] = last
+                    continue
+                last = cached[0][new_idx].ravel().tolist()
+                slot["geo"][fi] = last
+            slot["npts"] = len(new_path)
+            el.npts = len(new_path)
+            paths[key] = new_idx
+
+            # The ordering pass samples these points directly, so they have to
+            # be the thinned ones too -- rebuilt from the vertex cache rather
+            # than sliced, because a merged element's item points follow the
+            # silhouette ring while its slot follows the slot order.
+            for fi in visible:
+                cached = vertex_cache[fi].get(plan.name)
+                if cached is None:
+                    continue
+                xy, depths = cached
+                for item in frame_items[fi]:
+                    if item.get("key") == key:
+                        item["pts"] = xy[new_idx]
+                        item["depths"] = depths[new_idx]
+
+    return {"paths": paths, "points_dropped": dropped}
+
+
 def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
           ortho_by_frame=None):
     """Rewrite elements/slots/frame_items in place. Returns a small report."""
@@ -280,6 +403,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
     added: list[Element] = []
     chain_items = {}          # frame index -> list of replacement items
     paths = {}                # chain key -> its mesh vertex path, for curves.py
+    loose_keys = set()        # chains made only of edges with < 2 faces
     merged = 0
     if ortho_by_frame is None:
         ortho_by_frame = [False] * nframes
@@ -341,7 +465,20 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 points = np.stack([
                     vertex_cache[fi][plan.name][0][run_path] for fi in visible_frames
                 ])
-                kept = _dissolve(points, settings.dissolve_px)
+                # Loose chains get their own thinning budget. An open border
+                # carries the whole silhouette of a flat shape, so it is both
+                # the run you most want to decimate -- it is all detail and no
+                # structure -- and the one where over-thinning shows first.
+                # Giving it a separate dial beats moving the global one and
+                # dragging every surface crease along with it.
+                # Decided here, not later from the finished path: _dissolve is
+                # about to drop interior vertices, after which consecutive
+                # points are no longer mesh edges and nothing downstream can
+                # tell what this chain was made of.
+                is_loose = bool(plan.edge_loose[np.asarray(run_members)].all())
+                loose_px = float(getattr(settings, "loose_dissolve_px", 0.0) or 0.0)
+                tol = loose_px if (is_loose and loose_px > 0.0) else settings.dissolve_px
+                kept = _dissolve(points, tol)
                 final_path = [run_path[i] for i in kept]
                 if closed:
                     final_path.pop()      # the seam vertex the ring implies
@@ -369,6 +506,8 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                                      group=plan.group, color=colour,
                                      width=settings.stroke_width, closed=closed))
                 paths[key] = final_path
+                if is_loose:
+                    loose_keys.add(key)
                 removed_keys.update(run_keys)
                 merged += len(run_members)
 
@@ -397,4 +536,5 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
         items[:] = [it for it in items if it["key"] not in removed_keys]
         items.extend(chain_items.get(fi, []))
 
-    return {"chains": len(added), "edges_merged": merged, "paths": paths}
+    return {"chains": len(added), "edges_merged": merged, "paths": paths,
+            "loose": loose_keys}

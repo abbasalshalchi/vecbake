@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .ir import STROKE
+
 # curve_mode values
 NONE = "NONE"
 SMOOTH = "SMOOTH"
@@ -145,7 +147,7 @@ def _mask(plan, verts, slot, npts, closed, threshold, prefer_3d):
     return _mask_2d(slot, npts, closed, threshold)
 
 
-def classify(elements, slots, element_verts, plans, settings):
+def classify(elements, slots, element_verts, plans, settings, loose_keys=None):
     """Set `el.smooth` on every element. Returns a small report."""
     mode = getattr(settings, "curve_mode", NONE)
     if mode == NONE or mode not in MODES:
@@ -172,15 +174,37 @@ def classify(elements, slots, element_verts, plans, settings):
         else:                             # SHADING
             if plan is None:
                 continue
-            if closed and plan.face_sharp is not None:
-                fidx = _face_index(el.key)
-                if fidx is not None and fidx < len(plan.face_sharp) and plan.face_sharp[fidx]:
-                    continue              # this face is shade-flat
-            if plan.shade_mode == "FLAT":
-                continue
-            limit = (HARD_CORNER if plan.shade_mode == "SMOOTH"
-                     else min(plan.shade_angle, HARD_CORNER))
-            mask = _mask(plan, verts, slot, npts, closed, limit, True)
+            # An edge with fewer than two faces has no surface on either side,
+            # so "is the surface shade-smooth" is a question it cannot answer.
+            # Its own turn angle is the only thing that describes it, so that
+            # is what decides. This is what lets an open border curve on an
+            # object that is shade-flat everywhere -- previously the FLAT bail
+            # below caught it and left the whole outline as straight segments.
+            #
+            # Sharp vertices still come out as corners, because a corner is
+            # exactly what a zero tangent draws: the curve is cut at every
+            # vertex over the limit and resumes after it, inside one path.
+            if el.kind == STROKE and loose_keys and el.key in loose_keys:
+                # The object's own Smooth by Angle value decides, exactly as it
+                # does for the surface -- measured against the turn along the
+                # line rather than the crease between faces, since there is no
+                # crease. Shade-flat with no modifier gives 0 and leaves the
+                # edge straight; a fully smooth object gives 180, which the
+                # hard-corner cap brings back to something drawable.
+                limit = min(float(plan.shade_angle), HARD_CORNER)
+                if limit <= 0.0:
+                    continue              # nothing to bend around
+                mask = _mask(plan, verts, slot, npts, closed, limit, True)
+            else:
+                if closed and plan.face_sharp is not None:
+                    fidx = _face_index(el.key)
+                    if fidx is not None and fidx < len(plan.face_sharp) and plan.face_sharp[fidx]:
+                        continue          # this face is shade-flat
+                if plan.shade_mode == "FLAT":
+                    continue
+                limit = (HARD_CORNER if plan.shade_mode == "SMOOTH"
+                         else min(plan.shade_angle, HARD_CORNER))
+                mask = _mask(plan, verts, slot, npts, closed, limit, True)
 
         if mask is None or not mask.any():
             continue

@@ -79,6 +79,22 @@ class VECBAKE_PG_settings(PropertyGroup):
 
     strokes: BoolProperty(name="Strokes", default=True)
     fills: BoolProperty(name="Fills", default=True)
+    loose_dissolve_px: FloatProperty(
+        name="Loose Edge Thinning",
+        description=("Drop interior points within this many pixels from outlines "
+                     "built only of edges with fewer than two faces. Applies to "
+                     "fill outlines and stroke chains alike, so it works with "
+                     "Strokes off. Outlines along shared edges are left alone, "
+                     "and so is a merged fill. Zero uses the global Dissolve"),
+        default=0.0, min=0.0, max=8.0, subtype="PIXEL",
+    )
+    merge_fills: BoolProperty(
+        name="Merge Fills",
+        description=("One filled outline per object instead of one fill per face. "
+                     "For parts that only need to read as a silhouette. Override "
+                     "per object with a vecbake_merge_fill custom property"),
+        default=False,
+    )
     edge_mode: EnumProperty(
         name="Edges",
         items=[
@@ -206,9 +222,11 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "junction. Lower keeps only near-collinear continuations")
     dissolve_px: FloatProperty(
         name="Dissolve", default=0.35, min=0.0, soft_max=32.0, max=512.0, subtype="PIXEL",
-        description="Drop a chain's interior vertices while the drawn line never moves "
-                    "more than this many pixels, in any frame. A straight rail built "
-                    "from many segments collapses to two points")
+        description="Drop interior vertices while the drawn outline never moves more "
+                    "than this many pixels, in any frame. A straight rail built from "
+                    "many segments collapses to two points. Applies to stroke chains "
+                    "and to fill outlines along loose edges, so it does something with "
+                    "Strokes off")
 
     tol_px: FloatProperty(name="Tolerance", default=0.35, min=0.0, soft_max=32.0, max=512.0,
                           subtype="PIXEL",
@@ -272,10 +290,12 @@ class VECBAKE_PG_settings(PropertyGroup):
         if not self.use_scene_res:
             s.width, s.height = self.width, self.height
         s.strokes, s.fills = self.strokes, self.fills
+        s.merge_fills = self.merge_fills
         s.edge_mode = self.edge_mode
         s.crease_angle = math.degrees(self.crease_angle)
         s.curve_mode = self.curve_mode
         s.curve_angle = math.degrees(self.curve_angle)
+        s.loose_dissolve_px = self.loose_dissolve_px
         s.backface_cull = self.backface_cull
         s.see_through = self.see_through
         s.cull_offscreen = self.cull_offscreen
@@ -553,6 +573,7 @@ class VECBAKE_PT_panel(Panel):
         box, grid = self._section(layout, "Geometry", "MESH_DATA")
         grid.prop(props, "strokes", toggle=True)
         grid.prop(props, "fills", toggle=True)
+        grid.prop(props, "merge_fills", toggle=True)
         grid.prop(props, "backface_cull")
         grid.prop(props, "see_through")
         grid.prop(props, "cull_offscreen")
@@ -562,9 +583,15 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "chain_edges")
         if props.chain_edges:
             grid.prop(props, "chain_junctions")
-            grid.prop(props, "dissolve_px")
             if props.chain_junctions:
                 grid.prop(props, "chain_max_turn")
+        # Both thinning dials sit outside the Chain Edges block, because both
+        # now thin fill outlines as well as stroke chains and so do something
+        # with Strokes off. What stays inside is only what chaining actually
+        # is -- merging many 2-point edges into one polyline, which a fill,
+        # being a closed loop already, has no use for.
+        grid.prop(props, "dissolve_px")
+        grid.prop(props, "loose_dissolve_px")
         box.prop(props, "edge_mode")
         if props.edge_mode == "SHARP":
             box.prop(props, "crease_angle")

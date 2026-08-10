@@ -29,6 +29,10 @@ class BakeSettings:
     # --- what to draw -----------------------------------------------------
     strokes: bool = True
     fills: bool = True
+    # One filled outline per object instead of one fill per face. For parts that
+    # only need to read as a silhouette; see merge.py. Per-object override is
+    # the `vecbake_merge_fill` custom property.
+    merge_fills: bool = False
     edge_mode: str = "HIDDEN"     # HIDDEN = only edges with a front-facing face
                                   # WIRE   = every edge, see-through
                                   # BOUNDARY = silhouette + open/boundary edges
@@ -46,6 +50,9 @@ class BakeSettings:
     #   SHADING = 3D turn angle, threshold taken from Blender's own shading
     curve_mode: str = "NONE"
     curve_angle: float = 30.0     # degrees, ANGLE mode
+    # Extra thinning for loose-edge chains only, in pixels. 0 means use
+    # dissolve_px like everything else.
+    loose_dissolve_px: float = 0.0
     cull_offscreen: bool = True
     offscreen_margin: float = 24.0
 
