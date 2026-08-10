@@ -22,7 +22,7 @@ Blender scene ──bake──> IR ──┬──> tower.svg          animated 
 
 `tower.svg` renders anywhere an SVG does — double-click it, drop it in an
 `<img>`, open it in Figma — because it *is* an SVG showing the resting state.
-Load the [web player](web/README.md) and the same file animates, because the
+Load the [web player](lerpa/README.md) and the same file animates, because the
 keyframes ride along inside it in a `<metadata>` block. No new extension, no
 MIME configuration, no build plugin, and no broken image if JavaScript never
 runs.
@@ -47,7 +47,7 @@ overlapping elements — the price of correct ordering, paid once. Sharp-edge
 filtering cuts it substantially by cutting element count.
 
 Frame cost is driven by element count, not resolution — it measures flat from
-640×360 to 1920×1080. See [web/README.md](web/README.md#performance).
+640×360 to 1920×1080. See [lerpa/README.md](lerpa/README.md#performance).
 
 ---
 
@@ -122,7 +122,7 @@ is byte-identical to the same still exported alone.
 
 ## Play
 
-Install the [player](web/README.md) once, then drop the file in:
+Install the [player](lerpa/README.md) once, then drop the file in:
 
 ```html
 <script type="module" src="https://unpkg.com/lerpa-player"></script>
@@ -132,7 +132,7 @@ Install the [player](web/README.md) once, then drop the file in:
 
 `<lerpa-player>` is a custom element, so it behaves the same in Vue, Svelte,
 Angular, plain HTML and React 19+. There is a React binding and an imperative
-`load()` API too — see [web/README.md](web/README.md).
+`load()` API too — see [lerpa/README.md](lerpa/README.md).
 
 Without the player it is still a valid SVG:
 
@@ -153,9 +153,9 @@ The player API:
 
 Two harnesses ship with the project:
 
-* `web/examples/vanilla.html` — the same file loaded three ways: a plain
+* `lerpa/examples/vanilla.html` — the same file loaded three ways: a plain
   `<img>`, the element, and the API, with group tinting and click-to-pick.
-* `web/examples/bench.html` — frame cost, with and without seam fixing.
+* `lerpa/examples/bench.html` — frame cost, with and without seam fixing.
 * `player/demo.html` — the original scrubber and A/B seam check, kept because
   it exercises the bare `.json` track format directly.
 
@@ -719,7 +719,7 @@ with both resting states embedded, the default row becomes 1,198 KB raw /
 
 None of these changed frame cost meaningfully; encoding affects size, and the
 decode happens once at load. Frame cost is set by element count — see
-[web/README.md](web/README.md#performance).
+[lerpa/README.md](lerpa/README.md#performance).
 
 Verified against the SVG emitter, which reads the IR directly and shares none
 of this path: **max coordinate error 0.0001 px**.
@@ -810,17 +810,20 @@ addon/vecbake/            the Blender add-on
   order.py                offline paint-order resolution
   chain.py                edge chaining and vertex dissolve
   reduce.py               keyframe reduction
-  emit_lerpa.py             animated SVG   <- the primary output
+  emit_lerpa.py           animated SVG   <- the primary output
   emit_json.py            bare track data
   emit_svg.py             static resting states
   emit_lottie.py          Lottie, for preview in standard tools
 
-web/                      the npm package -- see web/README.md
+lerpa/                    the npm package -- see lerpa/README.md
   src/player.js           Canvas 2D player, no dependencies
   src/element.js          <lerpa-player> custom element
   src/react.js            React binding
-  bin/lerpa.js              CLI: info / strip / states
+  bin/lerpa.js            CLI: info / strip / states
   examples/               vanilla.html, bench.html
+
+lerpa-website/            lerpafiles.com, a static-asset Worker
+demo/                     butterfly swarm example site (Next.js)
 
 scripts/dev.py            reload() bake() check() install()
                           scene(confirm=True) rebuilds the test tower --
@@ -838,8 +841,8 @@ add-on links against Blender's Python API, so this is not a choice: any Blender
 add-on is a derivative work and must be GPL. A copy you receive is yours to
 modify and redistribute.
 
-The web runtime in [web/](web/) is separate code under **AGPL-3.0-or-later**,
+The web runtime in [lerpa/](lerpa/) is separate code under **AGPL-3.0-or-later**,
 with a commercial licence available for closed-source products — see
-[web/COMMERCIAL.md](web/COMMERCIAL.md).
+[lerpa/COMMERCIAL.md](lerpa/COMMERCIAL.md).
 
 **Files you bake are yours.** Neither licence reaches the output.

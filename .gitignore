@@ -37,7 +37,11 @@ build/
 venv/
 .venv/
 
-# Web project is tracked separately
-web/
-# site project is tracked separately
-site/
+# Sibling repositories, each tracked separately.
+# (gitignore has no inline comments -- these must stay on their own lines.)
+# lerpa: the npm player package
+lerpa/
+# lerpa-website: lerpafiles.com
+lerpa-website/
+# demo: butterfly swarm example site
+demo/
