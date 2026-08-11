@@ -30,11 +30,17 @@ second bake, and no dependence on the silhouette being stable.
 
 Where it gives up
 -----------------
-The *order* of the slots is fixed once, from the first frame sampled. Actives
-have to appear around the loop in that order. For anything that does not rotate
-much, and for any single flat face, they always do. When they do not, this
-reports it rather than drawing a shape with its outline shuffled -- see
-`stable` on the result, which the caller turns into a per-face fallback.
+Allocation is not the hard part -- ordering is. The *order* of the slots is
+fixed once, from the first frame that yields a ring, and actives have to appear
+around the loop in that order ever after. Rotate far enough and the silhouette
+changes not just which vertices are on it but their cyclic order, so a vertex
+pops out into a slot that is no longer in the right place and the outline
+crosses itself.
+
+Nothing here can recover from that: an element's point count is fixed before
+sampling begins. So `stable` goes false and `bake.py` samples the whole thing
+again with that object unmerged. This class of shape is exactly what a static
+camera never hits and a moving one always might.
 """
 
 from __future__ import annotations

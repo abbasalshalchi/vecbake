@@ -270,6 +270,11 @@ class ObjectPlan:
         self.strokes = bool(obj.get("vecbake_strokes", settings.strokes))
         self.fills = bool(obj.get("vecbake_fills", settings.fills))
         self.merge_fill = bool(obj.get("vecbake_merge_fill", settings.merge_fills))
+        # Per-object shading override. Turning it off is what makes a part read
+        # as one flat silhouette whether or not its fills were merged, which is
+        # how a merged and an unmerged bake of the same object can be cut
+        # between without the facets popping in.
+        self.shading = bool(obj.get("vecbake_shading", settings.shading))
         self.merged = None            # a merge.MergedPath, built on first sample
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
@@ -490,7 +495,11 @@ def bake_iter(context, settings: BakeSettings):
     frame_ortho: list = []
     vertex_cache: list = []
 
-    try:
+    # Objects whose merged outline turned out not to survive the camera move.
+    # Filled by the first pass, honoured by the second -- see below.
+    no_merge: set[str] = set()
+
+    def sample_pass():
         for fi, frame in enumerate(frames):
             scene.frame_set(frame)
             depsgraph = context.evaluated_depsgraph_get()
@@ -509,6 +518,8 @@ def bake_iter(context, settings: BakeSettings):
                     plan = plans.get(obj.name)
                     if plan is None:
                         plan = ObjectPlan(obj, me, settings)
+                        if obj.name in no_merge:
+                            plan.merge_fill = False
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
                     else:
@@ -526,6 +537,33 @@ def bake_iter(context, settings: BakeSettings):
             vertex_cache.append(cache)
 
             yield ("Sampling", fi + 1, len(frames))
+
+    merge_fallback: list[str] = []
+    try:
+        yield from sample_pass()
+
+        # A merged fill commits its slot order on the first frame that yields a
+        # ring. Rotate far enough and the silhouette's *cyclic order* changes,
+        # not just which vertices are on it, and a vertex pops out into a slot
+        # that is no longer in the right place -- the outline crosses itself and
+        # the shape collapses. There is no way to fix that after the fact: an
+        # element's point count is fixed before sampling starts.
+        #
+        # So sample again with those objects unmerged. One retry is enough --
+        # they have no merged path the second time, so nothing can re-trigger.
+        merge_fallback = sorted(
+            name for name, p in plans.items()
+            if p.merged is not None and not p.merged.stable
+        )
+        if merge_fallback:
+            no_merge.update(merge_fallback)
+            plans.clear()
+            elements.clear()
+            slots.clear()
+            frame_items.clear()
+            frame_ortho.clear()
+            vertex_cache.clear()
+            yield from sample_pass()
     finally:
         scene.frame_set(original_frame)
 
@@ -629,8 +667,11 @@ def bake_iter(context, settings: BakeSettings):
             "merged_fills": sum(1 for p in plans.values()
                                 if p.fills and p.merge_fill and p.merged is not None),
             # Objects whose outline stopped running around the slots in the
-            # order the first frame fixed. Non-zero means a merged fill is
-            # drawing a shuffled outline -- see merge.py.
+            # order the first frame fixed, and were therefore re-sampled
+            # unmerged rather than drawn shuffled -- see merge.py.
+            "merged_fallback": merge_fallback,
+            # Zero by construction now: anything unstable was retried unmerged.
+            # A non-zero here would mean the retry itself failed.
             "merged_unstable": sum(1 for p in plans.values()
                                    if p.merged is not None and not p.merged.stable),
         }
@@ -872,7 +913,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             slot["vis"][fi] = float(plan.face_alpha[vis_faces].max()) if visible else 0.0
             slot["depth"][fi] = float(face_depth[vis_faces].mean())
             slot["shade"][fi] = (float(face_shade[vis_faces].mean())
-                                 if settings.shading else 1.0)
+                                 if plan.shading else 1.0)
             if visible and collect is not None:
                 lv_loop = np.asarray(loop, dtype=np.int64)
                 collect.append({
@@ -897,7 +938,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             slot["geo"][fi] = pts.ravel().tolist()
             slot["vis"][fi] = float(plan.face_alpha[fidx]) if visible else 0.0
             slot["depth"][fi] = face_depth[fidx]
-            slot["shade"][fi] = face_shade[fidx] if settings.shading else 1.0
+            slot["shade"][fi] = face_shade[fidx] if plan.shading else 1.0
             if visible and collect is not None:
                 collect.append({
                     "key": key, "kind": 1, "seed": float(face_depth[fidx]),
