@@ -551,9 +551,18 @@ def bake_iter(context, settings: BakeSettings):
         #
         # So sample again with those objects unmerged. One retry is enough --
         # they have no merged path the second time, so nothing can re-trigger.
+        # Two ways a merged fill fails, and both end here.
+        #
+        # `not stable` is the outline losing its slot order, above. `merged is
+        # None` is subtler: no frame ever produced a ring at all. That happens
+        # to a closed solid with Backface Cull off, because the silhouette test
+        # looks for edges with exactly one *drawn* face and culling is what
+        # hides the other one -- with both drawn, every edge has two and there
+        # is no silhouette to find. Left alone the object simply never appears.
         merge_fallback = sorted(
             name for name, p in plans.items()
-            if p.merged is not None and not p.merged.stable
+            if p.fills and p.merge_fill
+            and (p.merged is None or not p.merged.stable)
         )
         if merge_fallback:
             no_merge.update(merge_fallback)
