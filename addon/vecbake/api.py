@@ -138,6 +138,37 @@ def _clip_row(name, doc):
 
 ANIMATED = ("lerpa", "json", "lottie", "svg")
 
+# Which formats each output option actually reaches.
+#
+# Not every option applies to every format, and an option none of the selected
+# formats consume does nothing at all. Rather than let the panel guess -- and
+# drift out of step with the emitters the first time one changes -- each option
+# names its consumers here, next to the code that writes the files.
+#
+#   bidirectional  the animated SVG reverses itself at playback, and neither a
+#                  still nor a resting state has a direction to run in
+#   include_ids    only the two formats carrying the element table
+#   pretty         only the three JSON payloads; emit_svg has no JSON to indent
+#   lerpa_states   the resting states are embedded in the animated SVG alone
+CONSUMED_BY = {
+    "bidirectional": frozenset({"json", "lottie"}),
+    "include_ids": frozenset({"lerpa", "json"}),
+    "pretty": frozenset({"lerpa", "json", "lottie"}),
+    "lerpa_states": frozenset({"lerpa"}),
+}
+
+REVERSIBLE = CONSUMED_BY["bidirectional"]
+
+
+def option_used(option, formats) -> bool:
+    """Does any selected format consume this output option?"""
+    return bool(CONSUMED_BY[option].intersection(formats))
+
+
+def writes_reverse(settings, formats) -> bool:
+    """Will this run actually produce `.rev` files?"""
+    return bool(settings.bidirectional and option_used("bidirectional", formats))
+
 
 def bake_scene(context=None, settings: BakeSettings | None = None, report=None):
     context = context or bpy.context
@@ -191,7 +222,9 @@ def _bake_and_write(
 
     One bake per camera. With `bidirectional`, each bake is also written played
     backwards -- a pure transform of the keyframes, so the reverse costs no
-    extra 3D work.
+    extra 3D work. Only for the formats in `REVERSIBLE`: everything else either
+    reverses itself at playback or has no direction at all, and for those the
+    flag is ignored rather than half-honoured.
 
     `rest_times` are the instants exported as static interactive SVG. Default
     is the first and last frame -- the two resting states a transition sits
@@ -227,6 +260,7 @@ def _bake_and_write(
     # all but one frame away is the slowest possible way to draw a picture, and
     # on a long clip it is the difference between a second and a minute.
     still_only = "still" in formats and not set(formats) & set(ANIMATED)
+    reverse = writes_reverse(settings, formats)
 
     for index, cam in enumerate(cameras):
         cam_settings = copy.copy(settings)
@@ -250,7 +284,7 @@ def _bake_and_write(
 
         yield (prefix + "Writing files", 0, 1)
         variants = [("", vec)]
-        if settings.bidirectional:
+        if reverse:
             variants.append((".rev", vec.reversed_copy()))
 
         if "lerpa" in formats:
@@ -312,7 +346,7 @@ def _bake_and_write(
                 files[path] = emit_svg.write(vec, path, time=t, decimals=settings.coord_decimals)
 
         outputs.append({"camera": cam.name, "basename": stem, "scene": vec,
-                        "stats": vec.stats(), "reversed": settings.bidirectional})
+                        "stats": vec.stats(), "reversed": reverse})
 
     # A filename cannot say which move a clip contains or which way it runs, and
     # guessing yields transitions that play backwards. Ship an index that
@@ -382,7 +416,7 @@ def _bake_and_write(
         "scene": outputs[0]["scene"],
         "outputs": outputs,
         "cameras": [c.name for c in cameras],
-        "bakes": len(outputs) * (2 if settings.bidirectional else 1),
+        "bakes": len(outputs) * (2 if reverse else 1),
         "files": files,
         "stats": combine_stats([o["stats"] for o in outputs]),
     }

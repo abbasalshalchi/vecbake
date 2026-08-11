@@ -62,9 +62,12 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "active one. Output files are suffixed with the camera name")
     bidirectional: BoolProperty(
         name="Forward + Reverse", default=False,
-        description="Also write each bake played backwards, as <name>.rev.json. "
-                    "The reverse is a transform of the baked keyframes, so it costs "
-                    "no extra bake time. Both directions share the same resting SVGs")
+        description="Also write each JSON and Lottie bake played backwards, as "
+                    "<name>.rev.json. The reverse is a transform of the baked "
+                    "keyframes, so it costs no extra bake time. Both directions "
+                    "share the same resting SVGs. Nothing is written for the "
+                    "animated SVG, whose player runs the timeline backwards "
+                    "already -- turn this on only for a consumer that cannot")
 
     use_scene_range: BoolProperty(name="Scene Frame Range", default=True)
     frame_start: IntProperty(name="Start", default=1)
@@ -266,7 +269,14 @@ class VECBAKE_PG_settings(PropertyGroup):
                              description="Include the resting-state SVGs inside the .lerpa. "
                                          "They gzip to a few KB and remove the need to ship "
                                          "matching files alongside")
-    pretty: BoolProperty(name="Readable JSON", default=False)
+    pretty: BoolProperty(
+        name="Readable JSON", default=False,
+        description="Write the JSON payload indented, one value per line, instead "
+                    "of with every space stripped out. For reading or diffing a "
+                    "bake by hand: it changes nothing a player sees, and costs "
+                    "two to four times the file size -- Lottie the worst of them. "
+                    "Gzip narrows that to well under half, but never to nothing. "
+                    "Ship the compact form")
 
     last_stats: StringProperty(name="Last Result", default="")
 
@@ -328,6 +338,26 @@ class VECBAKE_PG_settings(PropertyGroup):
 # ---------------------------------------------------------------------------
 # operators
 # ---------------------------------------------------------------------------
+
+def _formats(props):
+    wanted = (("lerpa", props.emit_lerpa), ("json", props.emit_json),
+              ("svg", props.emit_svg), ("lottie", props.emit_lottie),
+              ("still", props.emit_still))
+    return [name for name, on in wanted if on]
+
+
+def _used(props, option) -> bool:
+    """Is a format that consumes this option switched on?
+
+    Governs whether the control is worth drawing at all. `_writes_reverse` is
+    the narrower question of whether this run would write the reverse files.
+    """
+    return api.option_used(option, _formats(props))
+
+
+def _writes_reverse(props) -> bool:
+    return props.bidirectional and _used(props, "bidirectional")
+
 
 def _summary(stats, files=None, bakes=1):
     text = (
@@ -394,7 +424,7 @@ class VECBAKE_OT_export(Operator):
 
     def invoke(self, context, event):
         props = context.scene.vecbake
-        formats = self._formats(props)
+        formats = _formats(props)
         if not formats:
             self.report({"ERROR"}, "No output format selected.")
             return {"CANCELLED"}
@@ -475,18 +505,11 @@ class VECBAKE_OT_export(Operator):
         self._set_status(context, None)
         _redraw(context)
 
-    @staticmethod
-    def _formats(props):
-        wanted = (("lerpa", props.emit_lerpa), ("json", props.emit_json),
-                  ("svg", props.emit_svg), ("lottie", props.emit_lottie),
-                  ("still", props.emit_still))
-        return [name for name, on in wanted if on]
-
     # --- blocking path: what a script gets from bpy.ops.vecbake.export() ---
 
     def execute(self, context):
         props = context.scene.vecbake
-        formats = self._formats(props)
+        formats = _formats(props)
         if not formats:
             self.report({"ERROR"}, "No output format selected.")
             return {"CANCELLED"}
@@ -549,10 +572,14 @@ class VECBAKE_PT_panel(Panel):
         if props.source == "COLLECTION":
             grid.prop(props, "collection", text="")
         grid.prop(props, "all_cameras")
-        grid.prop(props, "bidirectional")
+        # Only shown when a format that consumes it is on. A checkbox that
+        # writes nothing is worse than a missing one: it reads as a setting the
+        # bake ignored rather than one this output has no use for.
+        if _used(props, "bidirectional"):
+            grid.prop(props, "bidirectional")
         cams = [o for o in scene.objects if o.type == "CAMERA"]
         if props.all_cameras:
-            count = len(cams) * (2 if props.bidirectional else 1)
+            count = len(cams) * (2 if _writes_reverse(props) else 1)
             box.label(text=f"{len(cams)} camera(s) -> {count} file set(s)",
                       icon="OUTLINER_OB_CAMERA")
         elif scene.camera:
@@ -626,7 +653,9 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "auto_precision")
         if not props.auto_precision:
             grid.prop(props, "coord_decimals")
-        grid.prop(props, "include_ids")
+        # Only the formats carrying an element table have anywhere to put ids.
+        if _used(props, "include_ids"):
+            grid.prop(props, "include_ids")
 
         box, grid = self._section(layout, "Output", "EXPORT")
         grid.prop(props, "emit_lerpa", toggle=True)
@@ -634,8 +663,11 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "emit_json", toggle=True)
         grid.prop(props, "emit_svg", toggle=True)
         grid.prop(props, "emit_lottie", toggle=True)
-        grid.prop(props, "pretty")
-        if props.emit_lerpa:
+        # Both are JSON-only: a plain SVG has no payload to indent, and the
+        # resting states live inside the animated SVG and nowhere else.
+        if _used(props, "pretty"):
+            grid.prop(props, "pretty")
+        if _used(props, "lerpa_states"):
             grid.prop(props, "lerpa_states")
         box.prop(props, "out_dir")
         box.prop(props, "basename")

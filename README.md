@@ -104,8 +104,9 @@ Output formats, all optional except the first:
 | `svg` | `tower.start.svg`, `tower.end.svg` | resting states as loose files |
 | `lottie` | `tower.lottie.json` | for standard Lottie tools |
 
-**Forward + Reverse** only affects `json` and `lottie`. The animated SVG needs
-no reverse file, since the player runs the timeline backwards for free.
+**Forward + Reverse** only affects `json` and `lottie`, and the checkbox only
+appears when one of them is switched on. The animated SVG needs no reverse
+file, since the player runs the timeline backwards for free.
 
 **Still** is the one that has nothing to do with animation: a flat SVG of the
 scene as it stands at the **current frame**, the way Render Image means the
@@ -398,6 +399,12 @@ nothing for the animated SVG, which needs no reverse file: the player runs the
 timeline backwards, so shipping one would double the asset to encode something
 already in it. Turn it on only if you are consuming the raw `json` or `lottie`
 outputs in a player that cannot reverse.
+
+Because it does nothing anywhere else, the checkbox is only drawn when `json`
+or `lottie` is selected. A control that writes no file is worse than an absent
+one — it reads as a setting the bake ignored, rather than one this output has
+no use for. `bidirectional` in a script is ignored the same way, so the file
+count a bake reports always matches the files on disk.
 
 ### Curves
 
