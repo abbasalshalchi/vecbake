@@ -262,17 +262,65 @@ def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24)
         y1 = min(a["bbox"][3], b["bbox"][3])
         if x1 <= x0 or y1 <= y0:
             return None
-        step_x = (x1 - x0) / (grid + 1)
-        step_y = (y1 - y0) / (grid + 1)
+
+        # Density follows pixels here too. A fixed grid over the *bounding box*
+        # intersection is only as good as the overlap fills that box, and two
+        # large polygons crossing at an angle share a thin diagonal sliver a
+        # long way from filling it -- on the reference butterfly the wings
+        # overlap by under 1% of their own area, and a 4x4 grid landed 1 point
+        # in it at best and none at all on four frames of seventeen. A missed
+        # pair emits no constraint, so the order silently falls back to the
+        # centroid seed, which is exactly what this module exists to avoid.
+        step = max(spacing, 1e-6)
+        nx = int(min(max(round((x1 - x0) / step), grid), 48))
+        ny = int(min(max(round((y1 - y0) / step), grid), 48))
+        budget = 576
+        if nx * ny > budget:
+            shrink = (budget / float(nx * ny)) ** 0.5
+            nx = max(grid, int(nx * shrink))
+            ny = max(grid, int(ny * shrink))
         gx, gy = np.meshgrid(
-            x0 + step_x * np.arange(1, grid + 1),
-            y0 + step_y * np.arange(1, grid + 1),
+            x0 + ((x1 - x0) / (nx + 1)) * np.arange(1, nx + 1),
+            y0 + ((y1 - y0) / (ny + 1)) * np.arange(1, ny + 1),
         )
         qx, qy = gx.ravel(), gy.ravel()
         keep = _inside(a, qx, qy) & _inside(b, qx, qy)
-        if not keep.any():
-            return None
-        return qx[keep], qy[keep]
+        if keep.any():
+            return qx[keep], qy[keep]
+
+        # Still nothing: the shared region is thinner than the sample step.
+        # Walk both outlines instead. A sliver is bounded by an edge of one
+        # polygon or the other, so following the edges finds it when a grid
+        # spanning open space cannot.
+        for owner, other in ((a, b), (b, a)):
+            pts = owner["pts"]
+            xs, ys = [], []
+            for k in range(len(pts)):
+                ax, ay = pts[k]
+                bx, by = pts[(k + 1) % len(pts)]
+                if (max(ax, bx) < x0 or min(ax, bx) > x1
+                        or max(ay, by) < y0 or min(ay, by) > y1):
+                    continue
+                count = int(min(max(np.hypot(bx - ax, by - ay) / step, 2),
+                                max_per_segment)) + 1
+                t = np.linspace(0.0, 1.0, count)
+                xs.append(ax + (bx - ax) * t)
+                ys.append(ay + (by - ay) * t)
+            if not xs:
+                continue
+            ex = np.concatenate(xs)
+            ey = np.concatenate(ys)
+            # Tested against the *other* polygon only: these points lie on this
+            # one's boundary, where an inside test is a coin flip on rounding,
+            # and a boundary point is in the shared region by closure anyway.
+            keep = _inside(other, ex, ey)
+            if keep.any():
+                ex, ey = ex[keep], ey[keep]
+                if len(ex) > max_total:
+                    pick = np.linspace(0, len(ex) - 1, max_total).astype(np.int32)
+                    ex, ey = ex[pick], ey[pick]
+                return ex, ey
+        return None
 
     # one of them is a polyline: sample the parts of it that reach the fill
     if not (a_fill or b_fill):
