@@ -74,7 +74,10 @@ class VECBAKE_PG_settings(PropertyGroup):
     frame_end: IntProperty(name="End", default=24)
     frame_step: IntProperty(name="Step", default=1, min=1, soft_max=4,
                             description="Sample every Nth frame. The reducer removes "
-                                        "redundant keys anyway; raise this only for very long bakes")
+                                        "redundant keys anyway; raise this only for very long "
+                                        "bakes. The end frame is always sampled even when the "
+                                        "step does not divide the range, so the clip lands "
+                                        "where the camera move does")
 
     use_scene_res: BoolProperty(name="Render Resolution", default=True)
     width: IntProperty(name="Width", default=960, min=1)
@@ -150,6 +153,20 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "removal. Only that material -- solid geometry elsewhere stays "
                     "solid. Needs Material Alpha to have found some transparency")
     cull_offscreen: BoolProperty(name="Cull Offscreen", default=True)
+    occlusion_cull: BoolProperty(
+        name="Cull Hidden", default=False,
+        description="Drop fills that stay behind other fills in every frame. "
+                    "Backface and offscreen culling never remove a wall standing "
+                    "directly behind another wall, which in a dense scene is most "
+                    "of the geometry. Cuts the file and the bake, and cuts Resolve "
+                    "Paint Order hardest of all. Approximate: it works from a "
+                    "coverage grid, so something visible only through a very narrow "
+                    "gap can be missed")
+    occlusion_px: FloatProperty(
+        name="Cull Detail", default=6.0, min=1.0, max=32.0, subtype="PIXEL",
+        description="Coverage grid cell size for Cull Hidden. Smaller sees narrower "
+                    "gaps and costs more. Raise it if the bake is slow, lower it if "
+                    "something visible went missing")
     accurate_order: BoolProperty(
         name="Resolve Paint Order", default=True,
         description="Work out true occlusion order per frame using plane tests "
@@ -269,6 +286,13 @@ class VECBAKE_PG_settings(PropertyGroup):
                              description="Include the resting-state SVGs inside the .lerpa. "
                                          "They gzip to a few KB and remove the need to ship "
                                          "matching files alongside")
+    emit_preview: BoolProperty(
+        name="Preview Page", default=False,
+        description="Write a self-contained .preview.html next to the bake. Double-click "
+                    "it and the animation plays -- scrubber, per-group colours, and a "
+                    "click-to-identify readout. The runtime is inlined, so it needs no "
+                    "server, no build and no network, and it still works emailed to "
+                    "someone else")
     pretty: BoolProperty(
         name="Readable JSON", default=False,
         description="Write the JSON payload indented, one value per line, instead "
@@ -309,6 +333,8 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.backface_cull = self.backface_cull
         s.see_through = self.see_through
         s.cull_offscreen = self.cull_offscreen
+        s.occlusion_cull = self.occlusion_cull
+        s.occlusion_px = self.occlusion_px
         s.accurate_order = self.accurate_order
         s.stroke_color = tuple(self.stroke_color)
         s.stroke_width = self.stroke_width
@@ -342,7 +368,7 @@ class VECBAKE_PG_settings(PropertyGroup):
 def _formats(props):
     wanted = (("lerpa", props.emit_lerpa), ("json", props.emit_json),
               ("svg", props.emit_svg), ("lottie", props.emit_lottie),
-              ("still", props.emit_still))
+              ("still", props.emit_still), ("preview", props.emit_preview))
     return [name for name, on in wanted if on]
 
 
@@ -601,9 +627,6 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "strokes", toggle=True)
         grid.prop(props, "fills", toggle=True)
         grid.prop(props, "merge_fills", toggle=True)
-        grid.prop(props, "backface_cull")
-        grid.prop(props, "see_through")
-        grid.prop(props, "cull_offscreen")
         grid.prop(props, "always_freestyle")
         grid.prop(props, "always_crease")
         grid.prop(props, "accurate_order")
@@ -622,6 +645,21 @@ class VECBAKE_PT_panel(Panel):
         box.prop(props, "edge_mode")
         if props.edge_mode == "SHARP":
             box.prop(props, "crease_angle")
+
+        # Everything that decides what is *not* drawn, in one place. They stack:
+        # each one removes a different reason geometry cannot be seen, and the
+        # last of them only exists because the first three never look at what is
+        # standing in front of what.
+        box, grid = self._section(layout, "Culling", "HIDE_OFF")
+        grid.prop(props, "backface_cull")
+        grid.prop(props, "see_through")
+        grid.prop(props, "cull_offscreen")
+        grid.prop(props, "occlusion_cull")
+        if props.occlusion_cull:
+            grid.prop(props, "occlusion_px")
+            if not props.fills:
+                box.label(text="Needs Fills — strokes use hidden-line removal",
+                          icon="INFO")
 
         box, grid = self._section(layout, "Curves", "IPO_EASE_IN_OUT")
         box.prop(props, "curve_mode", text="")
@@ -663,6 +701,7 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "emit_json", toggle=True)
         grid.prop(props, "emit_svg", toggle=True)
         grid.prop(props, "emit_lottie", toggle=True)
+        grid.prop(props, "emit_preview", toggle=True)
         # Both are JSON-only: a plain SVG has no payload to indent, and the
         # resting states live inside the animated SVG and nowhere else.
         if _used(props, "pretty"):

@@ -29,6 +29,7 @@ from . import chain as chain_mod
 from . import curves
 from . import follow
 from . import merge
+from . import occlude
 from . import order as order_mod
 from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
@@ -476,6 +477,12 @@ def bake_iter(context, settings: BakeSettings):
         raise BakeError(f"Frame range {start}..{end} is empty.")
     fps = scene.render.fps / scene.render.fps_base
     frames = list(range(start, end + 1, step))
+    # A step that does not divide the range evenly would otherwise stop short --
+    # 1..60 by 10 samples 1..51 and silently drops the last nine frames of the
+    # move. The end frame is the one the animation has to land on, so it is
+    # always sampled, even when that makes the final gap shorter than the step.
+    if frames[-1] != end:
+        frames.append(end)
     original_frame = scene.frame_current
 
     objects = collect_objects(context, settings)
@@ -638,6 +645,15 @@ def bake_iter(context, settings: BakeSettings):
             follow_report["silhouettes"] = sil_report["corners"]
             follow_report["points"] += sil_report["points"]
 
+    # Runs before ordering, not after: every fill removed here is one fewer
+    # element for order.resolve to compare against every other, and that pass
+    # is the expensive one on a dense scene.
+    occlusion_report = {"culled": 0, "hidden": 0, "cells": 0}
+    if settings.occlusion_cull and settings.fills:
+        yield ("Culling hidden fills", 0, 1)
+        occlusion_report = occlude.apply(elements, slots, frame_items, settings,
+                                         len(frames), width, height)
+
     if settings.accurate_order:
         for fi, items in enumerate(frame_items):
             if items:
@@ -678,6 +694,8 @@ def bake_iter(context, settings: BakeSettings):
             # Objects whose outline stopped running around the slots in the
             # order the first frame fixed, and were therefore re-sampled
             # unmerged rather than drawn shuffled -- see merge.py.
+            "occlusion_culled": occlusion_report["culled"],
+            "occlusion_hidden_frames": occlusion_report["hidden"],
             "merged_fallback": merge_fallback,
             # Zero by construction now: anything unstable was retried unmerged.
             # A non-zero here would mean the retry itself failed.

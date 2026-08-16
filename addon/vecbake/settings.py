@@ -54,6 +54,8 @@ class BakeSettings:
     # dissolve_px like everything else.
     loose_dissolve_px: float = 0.0
     cull_offscreen: bool = True
+    occlusion_cull: bool = False   # drop fills hidden behind other fills
+    occlusion_px: float = 6.0      # coverage grid cell, in pixels
     offscreen_margin: float = 24.0
 
     # --- style ------------------------------------------------------------

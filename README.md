@@ -629,12 +629,47 @@ is measurable and small: on the demo cylinder, cross-renderer disagreement goes
 from 0.37% of inked pixels to 0.48%, all of it single-pixel antialiasing along
 shared edges.
 
+### Culling
+
+Four settings decide what is never drawn, and they stack — each removes a
+different reason geometry cannot be seen.
+
+| | removes |
+|---|---|
+| **Backface Cull** | faces pointing away from the camera |
+| **See Through** | *un*-culls a translucent material's own far side |
+| **Cull Offscreen** | anything outside the frame, plus a margin |
+| **Cull Hidden** | fills standing behind other fills |
+
+The first three only ever look at one object against the camera. **Cull Hidden**
+is the one that looks at objects against *each other*: a wall directly behind
+another wall passes every other test and still contributes nothing.
+
+In a sparse scene it finds little. In a dense one it is the difference between
+possible and not — a city of 6,144 boxes paints every canvas pixel **55 times
+over**, and turning it on took that bake from 12,232 elements to 809, a 15×
+cut, with zero pixels differing at 480×270 above a 5% threshold and six pixels
+differing at all.
+
+It runs **before** paint order is resolved, which is where most of the saving
+is: that pass compares survivors pairwise, so removing 93% of them removes far
+more than 93% of the work. The same city could not finish an ordering pass at
+all before; afterwards it takes eleven seconds a frame.
+
+Approximate by construction. It works from a coverage grid, so a fill visible
+only through a gap narrower than one cell can be missed — **Cull Detail** is
+that cell size in pixels. Three rules keep the error on the side of keeping too
+much: only a fully opaque fill marks coverage, a fill too small to contain one
+cell centre is never culled, and strokes are neither culled nor allowed to
+occlude, because hidden-line removal already decides which edges are behind
+geometry and does it against the real mesh.
+
 ### Seeing through
 
-Nothing culls geometry behind *other* geometry. The painter's order draws far to
-near and simply paints over, which is what lets a translucent fill reveal what is
-behind it at no cost. What an object hides is **itself**: its far side faces away,
-so the backface cull drops those faces and hidden-line removal drops their edges.
+The painter's order draws far to near and simply paints over, which is what lets
+a translucent fill reveal what is behind it at no cost. What an object hides
+without any help is **itself**: its far side faces away, so the backface cull
+drops those faces and hidden-line removal drops their edges.
 
 **See Through** stops a translucent material doing that to itself. Its back faces
 survive the cull and its edges survive hidden-line removal — for that material
@@ -762,6 +797,11 @@ measured* that the error stays bounded, while `Step` drops frames without ever
 looking at them, so its error is real but unmeasured. If a larger step still
 looks right, your actual quality bar is looser than the tolerance you set, and
 raising both is the honest configuration.
+
+`Step` always samples the **end** frame, even when it does not divide the range.
+Frames 1–60 by 10 gives 1, 11, 21, 31, 41, 51, 60 — the last gap is nine frames
+rather than ten, because a clip that stops at 51 ends nine frames before the
+camera move does, and nothing downstream can tell that the move was cut short.
 
 Once **Auto Precision** is on, raising the tolerance also drops stored digits,
 which is what makes the knob bite. Same 1,654-element scene, animation payload
