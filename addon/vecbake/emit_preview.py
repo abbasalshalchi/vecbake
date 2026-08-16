@@ -8,6 +8,11 @@ animator and their own work. This writes one `.preview.html` next to the bake:
 double-click it and the animation plays, with a scrubber, the per-group colours
 and a hit-test readout.
 
+Every literal in the page is ASCII or an HTML entity, and the payload is
+ASCII too because json.dumps escapes by default. Previews get stripped of
+their <head> to be embedded elsewhere, and without a charset declaration a
+stray em dash comes back as mojibake.
+
 Self-contained on purpose. The player is inlined rather than linked, because a
 module script will not load over `file://` -- browsers refuse the cross-origin
 request -- and an animator should not have to run a web server to look at a
@@ -76,7 +81,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__NAME__ — VecBake preview</title>
+<title>__NAME__ &mdash; VecBake preview</title>
 <style>
   :root{
     --bg:#131316; --panel:#1B1B20; --panel2:#232329; --rule:#32323A;
@@ -157,8 +162,8 @@ TEMPLATE = r"""<!doctype html>
       <span class="read" id="time">0.00 / 0.00 s</span>
       <button id="loop" class="on">Loop</button>
       <div class="seg" id="speed">
-        <button data-v="0.25">¼×</button><button data-v="0.5">½×</button>
-        <button data-v="1" class="on">1×</button><button data-v="2">2×</button>
+        <button data-v="0.25">&frac14;&times;</button><button data-v="0.5">&frac12;&times;</button>
+        <button data-v="1" class="on">1&times;</button><button data-v="2">2&times;</button>
       </div>
       <div class="seg" id="bg">
         <button data-v="dark" class="on">Dark</button>
@@ -175,18 +180,18 @@ TEMPLATE = r"""<!doctype html>
   <aside>
     <section>
       <h2>This bake</h2>
-      <div class="kv"><span>Elements</span><span id="s-els">—</span></div>
-      <div class="kv"><span>Drawn now</span><span id="s-drawn">—</span></div>
-      <div class="kv"><span>Peak drawn</span><span id="s-peak">—</span></div>
-      <div class="kv"><span>Duration</span><span id="s-dur">—</span></div>
-      <div class="kv"><span>Frames</span><span id="s-frames">—</span></div>
-      <div class="kv"><span>Canvas</span><span id="s-size">—</span></div>
+      <div class="kv"><span>Elements</span><span id="s-els">&mdash;</span></div>
+      <div class="kv"><span>Drawn now</span><span id="s-drawn">&mdash;</span></div>
+      <div class="kv"><span>Peak drawn</span><span id="s-peak">&mdash;</span></div>
+      <div class="kv"><span>Duration</span><span id="s-dur">&mdash;</span></div>
+      <div class="kv"><span>Frames</span><span id="s-frames">&mdash;</span></div>
+      <div class="kv"><span>Canvas</span><span id="s-size">&mdash;</span></div>
     </section>
 
     <section>
       <h2>Identify</h2>
       <div id="picked">click the artwork</div>
-      <p class="hint">Every element stays a real object while it moves — this is
+      <p class="hint">Every element stays a real object while it moves &mdash; this is
         the same hit test your page would use.</p>
     </section>
 
@@ -217,9 +222,11 @@ __PLAYER__
   // ---- stats ----
   $('s-els').textContent = player.elements.length;
   $('s-dur').textContent = fmt(player.duration) + ' s';
-  $('s-size').textContent = doc.w + '×' + doc.h;
+  // Plain ASCII on purpose. This page gets embedded elsewhere with its <head>
+  // stripped, and any non-ASCII literal then decodes as mojibake.
+  $('s-size').textContent = doc.w + 'x' + doc.h;
   $('s-frames').textContent = doc.fps
-    ? Math.round(player.duration * doc.fps) + ' @ ' + doc.fps + 'fps' : '—';
+    ? Math.round(player.duration * doc.fps) + ' @ ' + doc.fps + 'fps' : '&mdash;';
   let peak = 0;
 
   // ---- transport ----
