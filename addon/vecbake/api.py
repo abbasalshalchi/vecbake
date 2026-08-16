@@ -19,7 +19,7 @@ import re
 import bpy
 
 from . import bake as bake_module
-from . import emit_lerpa, emit_json, emit_lottie, emit_svg
+from . import emit_lerpa, emit_json, emit_lottie, emit_preview, emit_svg
 from .bake import BakeError, bake
 from .settings import BakeSettings
 
@@ -136,7 +136,7 @@ def _clip_row(name, doc):
     }
 
 
-ANIMATED = ("lerpa", "json", "lottie", "svg")
+ANIMATED = ("lerpa", "json", "lottie", "svg", "preview")
 
 # Which formats each output option actually reaches.
 #
@@ -152,7 +152,7 @@ ANIMATED = ("lerpa", "json", "lottie", "svg")
 #   lerpa_states   the resting states are embedded in the animated SVG alone
 CONSUMED_BY = {
     "bidirectional": frozenset({"json", "lottie"}),
-    "include_ids": frozenset({"lerpa", "json"}),
+    "include_ids": frozenset({"lerpa", "json", "preview"}),
     "pretty": frozenset({"lerpa", "json", "lottie"}),
     "lerpa_states": frozenset({"lerpa"}),
 }
@@ -316,6 +316,19 @@ def _bake_and_write(
             if "lottie" in formats:
                 path = os.path.join(directory, f"{name}.lottie.json")
                 files[path] = emit_lottie.write(doc, path, name=name, pretty=pretty)
+
+        # A file the animator can double-click. Written per camera, never per
+        # direction: it carries a scrubber, so watching the move backwards is
+        # something the page already does.
+        if "preview" in formats:
+            path = os.path.join(directory, f"{stem}.preview.html")
+            files[path] = emit_preview.write(
+                vec, path,
+                name=stem,
+                source=os.path.basename(bpy.data.filepath) or "",
+                include_ids=settings.include_ids,
+                coord_decimals=settings.effective_coord_decimals(),
+            )
 
         # One picture of the scene as it stands, with no animation attached to
         # it -- the current frame, the way Render Image means the current frame.
