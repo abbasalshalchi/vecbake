@@ -673,6 +673,10 @@ def bake_iter(context, settings: BakeSettings):
             "frame_start": start,
             "frame_end": end,
             "frame_step": step,
+            # Did every gap come out the same length? Always sampling the end
+            # frame means it sometimes does not, and the dense track encoding
+            # is only valid on an even grid -- see emit_json.to_dict.
+            "uniform_frames": len({b - a for a, b in zip(frames, frames[1:])}) <= 1,
             "objects": [p.name for p in plans.values()],
             "edge_mode": settings.edge_mode,
             "camera": cam.name,

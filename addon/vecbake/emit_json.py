@@ -115,13 +115,28 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
     palette: list[str] = []
     index: dict[str, int] = {}
 
-    # the uniform sample grid every dense track is implicitly keyed against
+    # The sample grid every dense track is implicitly keyed against. Dense
+    # encoding throws the timeline away and lets the reader rebuild it by
+    # dividing the duration evenly, so it is only correct when the bake really
+    # did sample evenly. A Step that does not divide the frame range leaves a
+    # short final gap -- 1..60 by 8 ends 57, 60 -- and resampling those keys
+    # onto an even grid interpolates every track at the wrong instants. On
+    # geometry that is a small drift; on opacity it invents fades, and on a
+    # resolved paint order it blends integer ranks into fractions and shuffles
+    # what is in front of what.
     depth_decimals = int(vec.meta.get("depth_decimals", 4))
     samples = int(vec.meta.get("frames", 0) or 0)
-    if samples > 1 and vec.duration > 0:
+    # Absent means "unknown", and unknown must not be read as "even". A bake
+    # that forgets to say -- or a VecScene assembled by hand -- then quietly
+    # gets the dense encoding and the resampling error that comes with it,
+    # which shows up as invented fades and blended paint ranks rather than as
+    # anything that looks like a missing flag. Sparse costs bytes; guessing
+    # costs correctness.
+    uniform = bool(vec.meta.get("uniform_frames", False))
+    if uniform and samples > 1 and vec.duration > 0:
         grid = [vec.duration * i / (samples - 1) for i in range(samples)]
     else:
-        grid = None
+        grid = None       # sparse carries its own times, so it stays exact
 
     def color_index(color):
         h = _hex(color)
