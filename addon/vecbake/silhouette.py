@@ -225,6 +225,14 @@ def _movers(elements, members, paths, obj, edges, a, b):
 
     seen = {(el.key, c) for verts in out.values() for el, c, *_r in verts}
     for el in elements:
+        # Same object only. `a` and `b` are mesh vertex indices and every object
+        # numbers its own from zero, so a bare id match sweeps in strokes from
+        # unrelated objects and hands them a target computed somewhere else
+        # entirely -- two parts a thousand pixels apart swapping corners. The
+        # edge index above is keyed by object for exactly this reason; this loop
+        # was the one place that forgot.
+        if el.key.split("/")[0] != obj:
+            continue
         path = paths.get(el.key)
         if path is None or el.is_closed() or len(path) < 2:
             continue
