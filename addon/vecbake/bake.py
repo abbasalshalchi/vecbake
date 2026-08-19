@@ -654,13 +654,22 @@ def bake_iter(context, settings: BakeSettings):
         occlusion_report = occlude.apply(elements, slots, frame_items, settings,
                                          len(frames), width, height)
 
+    order_report = {"held": 0, "unranked": 0}
     if settings.accurate_order:
+        # Which elements actually received a rank in which frame. Only what is
+        # drawn gets ranked, so this is not every element every frame, and the
+        # gaps have to be repaired before the tracks are reduced -- see
+        # order.hold_unranked() for what happens if they are not.
+        ranked = {el.key: np.zeros(len(frames), dtype=bool) for el in elements}
         for fi, items in enumerate(frame_items):
             if items:
                 resolved = order_mod.resolve(items, frame_ortho[fi])
                 for item, value in zip(items, resolved):
                     slots[item["key"]]["depth"][fi] = value
+                    ranked[item["key"]][fi] = True
             yield ("Resolving occlusion", fi + 1, len(frame_items))
+        held, never = order_mod.hold_unranked(slots, ranked)
+        order_report = {"held": held, "unranked": never}
 
     yield ("Reducing keyframes", 0, 1)
 
@@ -700,6 +709,10 @@ def bake_iter(context, settings: BakeSettings):
             # unmerged rather than drawn shuffled -- see merge.py.
             "occlusion_culled": occlusion_report["culled"],
             "occlusion_hidden_frames": occlusion_report["hidden"],
+            # Frames whose paint rank was held over from a drawn frame,
+            # and elements that never got one. The second must be 0.
+            "order_held_frames": order_report["held"],
+            "order_unranked": order_report["unranked"],
             "merged_fallback": merge_fallback,
             # Zero by construction now: anything unstable was retried unmerged.
             # A non-zero here would mean the retry itself failed.

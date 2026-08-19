@@ -603,3 +603,68 @@ def resolve(items, is_ortho=False, tol=1e-4):
     for rank, i in enumerate(ranking):
         out[i] = float(n - 1 - rank)
     return out
+
+
+def hold_unranked(slots, ranked):
+    """Carry each element's paint rank across the frames it was not ranked in.
+
+    `resolve()` only ranks what is actually drawn, because ranking is the
+    expensive pass and there is no point ordering something nobody sees. So an
+    element that is drawn for part of the clip and culled for the rest ends up
+    with an integer rank in some frames and, in the others, whatever was in the
+    slot beforehand -- its raw camera distance.
+
+    Those are not the same quantity. Ranks here run 0..n and mean "how many
+    elements are in front of this one"; a camera distance is metres. On the
+    Voyager probe every culled frame held ~10.0 while the ranks spanned 9..208,
+    and smaller means nearer, so an element leaving the frame dived from the
+    back of the scene to the very front. The player interpolates between keys,
+    so across the one-frame gap where it fades out it sweeps through every rank
+    in between, painting over geometry it belongs behind the whole way -- and
+    at partial opacity, because the visibility track is fading over the same
+    gap. That is the "shafts inside the hull flip into view" and the "things go
+    translucent even though nothing is translucent" report, and it is why
+    turning Backface Cull off made both disappear: with nothing culled per
+    frame, every element is ranked in every frame and the scale never breaks.
+
+    The value in a culled frame is unobservable -- the element is not drawn --
+    so any in-scale number will do, and the one that costs least is a copy of
+    the *nearest* ranked frame. Copying only forwards is not enough: it leaves
+    the far end of a culled run holding a stale rank, so an element that
+    disappears at rank 40 and comes back at 54 interpolates across those 14
+    ranks over the gap where it fades back in, arriving too far forward. Taking
+    whichever ranked frame is closer makes both ends of the run flat, which is
+    where the fades are, and puts the one step in the middle where nothing is
+    drawn. Runs of repeated values also delta-code to zeros, so the track gets
+    *smaller* rather than larger.
+
+    Returns (filled, never) -- frames repaired, and elements that carry a rank
+    in no frame at all. `never` should be zero; anything else means an element
+    reached the emitter on the distance scale.
+    """
+    filled = never = 0
+    for key, mask in ranked.items():
+        n = len(mask)
+        hits = np.nonzero(mask)[0]
+        if len(hits) == n:
+            continue
+        if len(hits) == 0:
+            # Visible somewhere but ranked nowhere. Its depths are all raw, so
+            # at least they agree with each other; leave them and report it.
+            if slots[key]["vis"].max() > 0.0:
+                never += 1
+            continue
+        pos = np.arange(n)
+        prev = np.where(mask, pos, -1)
+        np.maximum.accumulate(prev, out=prev)
+        nxt = np.minimum.accumulate(np.where(mask, pos, n)[::-1])[::-1]
+        # A run at either end of the clip has a ranked frame on one side only;
+        # FAR makes the missing side lose every comparison.
+        FAR = n + 1
+        d_prev = np.where(prev >= 0, pos - prev, FAR)
+        d_next = np.where(nxt < n, nxt - pos, FAR)
+        src = np.where(d_prev <= d_next, prev, nxt)
+        depth = slots[key]["depth"]
+        depth[:] = depth[src]             # fancy indexing copies before writing
+        filled += n - len(hits)
+    return filled, never
