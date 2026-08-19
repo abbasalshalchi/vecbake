@@ -136,7 +136,15 @@ TEMPLATE = r"""<!doctype html>
   .kv{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:3px 0}
   .kv span:last-child{font-family:var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
   .kv span:first-child{color:var(--soft)}
-  .grp{display:flex;align-items:center;gap:9px;padding:3px 0;font-size:12.5px}
+  .grp{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px}
+  .grp .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+           cursor:pointer;user-select:none}
+  .grp .nm:hover{color:var(--accent)}
+  .grp.solo{color:var(--accent)}
+  .grp.solo .nm{font-weight:650}
+  .grp .vis{padding:1px 7px;font-size:9.5px;font-family:var(--mono);
+            letter-spacing:.08em;flex:none;min-width:34px}
+  .grp.off{opacity:.45}
   .grp input{width:30px;height:22px;padding:0;border:1px solid var(--rule);background:none;
              cursor:pointer;flex:none;border-radius:2px}
   .grp span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -165,14 +173,21 @@ TEMPLATE = r"""<!doctype html>
         <button data-v="0.25">&frac14;&times;</button><button data-v="0.5">&frac12;&times;</button>
         <button data-v="1" class="on">1&times;</button><button data-v="2">2&times;</button>
       </div>
-      <div class="seg" id="bg">
+      <div class="seg" id="bg" title="What sits behind the artwork">
         <button data-v="dark" class="on">Dark</button>
         <button data-v="light">Light</button>
         <button data-v="check">Checker</button>
       </div>
       <div class="seg" id="fit">
-        <button data-v="contain" class="on">Contain</button>
-        <button data-v="cover">Cover</button>
+        <button data-v="contain" class="on"
+                title="Show the whole baked frame, letterboxed if it does not match this window">Fit</button>
+        <button data-v="cover"
+                title="Fill this window and crop whatever falls outside -- what a hero background does">Crop</button>
+      </div>
+      <div class="seg" id="seams"
+           title="Stroke every fill in its own colour to close antialiasing hairlines between touching shapes. Doubles the path work per frame.">
+        <button data-v="on" class="on">Seams</button>
+        <button data-v="off">No seams</button>
       </div>
     </div>
   </div>
@@ -255,6 +270,10 @@ __PLAYER__
   seg('speed', v => { player.speed = parseFloat(v); });
   seg('bg', v => { stage.dataset.bg = v; });
   seg('fit', v => { player.fit = v; player.resize(); });
+  // Seams cost a second path per fill. Worth it where fills share edges and
+  // antialiasing leaves hairlines between them; close to free to drop where
+  // they do not, which is most dense scenes.
+  seg('seams', v => { player.seamFix = (v === 'on'); player.render(player.time); });
 
   // ---- identify ----
   cv.addEventListener('pointerdown', e => {
@@ -273,23 +292,73 @@ __PLAYER__
     const row = document.createElement('label');
     row.className = 'grp';
     row.dataset.g = g;
-    row.innerHTML = `<input type="color" value="#cccccc"><span>${g}</span>`;
+    row.innerHTML = `<input type="color" value="#cccccc">` +
+      `<span class="nm" title="Show only this part, and keep it framed as the model turns">${g}</span>` +
+      `<button class="vis" title="Hide this part">on</button>`;
     row.querySelector('input').addEventListener('input', ev => {
       player.setGroupColor(g, ev.target.value);
       original.set(g, ev.target.value);
     });
+    row.querySelector('.nm').addEventListener('click', () => solo(g));
+    row.querySelector('.vis').addEventListener('click', () => toggleVis(g));
     bank.appendChild(row);
   });
   if (!(doc.groups || []).length) {
     bank.innerHTML = '<p class="hint">This bake has no named groups.</p>';
   }
+  // ---- solo and hide -------------------------------------------------
+  // Solo is the part-explorer gesture: isolate one group and keep re-framing
+  // it, because on a turntable the part swings across the frame as the model
+  // turns and a zoom set once stops pointing at it almost immediately.
+  let soloed = null;
+  const hidden = new Set();
+
+  function paintRows() {
+    document.querySelectorAll('.grp').forEach(r => {
+      const g = r.dataset.g;
+      r.classList.toggle('solo', soloed === g);
+      r.classList.toggle('off', hidden.has(g) || (soloed !== null && soloed !== g));
+      const b = r.querySelector('.vis');
+      if (b) b.textContent = hidden.has(g) ? 'off' : 'on';
+    });
+  }
+
+  function solo(g) {
+    soloed = (soloed === g) ? null : g;
+    if (soloed === null) {
+      player.isolateGroups(null);
+      hidden.forEach(h => player.setGroupOpacity(h, 0));
+      player.resize();                       // back to the fitted view
+    } else {
+      player.isolateGroups(soloed);
+      player.frameGroup(soloed, { padding: 0.18 });
+    }
+    paintRows();
+  }
+
+  function toggleVis(g) {
+    if (hidden.has(g)) { hidden.delete(g); player.setGroupOpacity(g, null); }
+    else { hidden.add(g); player.setGroupOpacity(g, 0); }
+    if (soloed !== null) { soloed = null; player.isolateGroups(null);
+                           hidden.forEach(h => player.setGroupOpacity(h, 0));
+                           player.resize(); }
+    paintRows();
+  }
+
   $('reset').addEventListener('click', () => {
     (doc.groups || []).forEach(g => player.setGroupColor(g, null));
     original.clear();
+    soloed = null; hidden.clear();
+    player.isolateGroups(null);
+    player.resize();
+    paintRows();
   });
 
   // ---- readouts ----
   function tick() {
+    // Re-frame every frame while soloing. This is the whole reason
+    // groupBounds takes a time: the part moves, so the framing has to.
+    if (soloed !== null) player.frameGroup(soloed, { padding: 0.18 });
     const d = player.visible;
     if (typeof d === 'number') {
       if (d > peak) peak = d;

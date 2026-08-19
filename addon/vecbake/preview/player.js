@@ -306,6 +306,12 @@ export class LerpaPlayer {
     this.overrides = new Array(this.palette.length).fill(null);
     this.elementColors = new Map();
     this.groupColors = new Map();
+    // Opacity overrides, same three-layer shape as colour. A part explorer has
+    // to isolate one assembly without re-baking anything, and zero is just the
+    // bottom of the range -- an element that ends up fully clear is skipped in
+    // _solve, so hiding a part is also the cheapest thing you can ask for.
+    this.elementAlphas = new Map();
+    this.groupAlphas = new Map();
 
     const els = doc.els, n = els.length, samples = doc.samples || 0;
     let total = 0;
@@ -385,6 +391,12 @@ export class LerpaPlayer {
     return this.overrides[el.color] || this.palette[el.color] || [0, 0, 0];
   }
 
+  _alphaScale(el) {
+    if (el.id && this.elementAlphas.has(el.id)) return this.elementAlphas.get(el.id);
+    if (this.groupAlphas.has(el.group)) return this.groupAlphas.get(el.group);
+    return 1;
+  }
+
   _css(el, shade) {
     // colour strings are the only per-frame allocation, so memoise against a
     // quantised shade
@@ -453,7 +465,8 @@ export class LerpaPlayer {
 
     for (i = 0; i < n; i++) {
       el = els[i];
-      const a = el.opacity ? el.opacity.scalar(t) : 1;
+      let a = el.opacity ? el.opacity.scalar(t) : 1;
+      a *= this._alphaScale(el);
       if (a <= 0.004) continue;
       el.alpha = a > 1 ? 1 : a;
       el.geo.points(t, scratch, el.offset);
@@ -670,6 +683,96 @@ export class LerpaPlayer {
     else this.elementColors.delete(id);
     this._invalidate();
     return this;
+  }
+
+  /** Fade or hide a whole named group. 0 hides it, 1 restores it.
+   *
+   * Multiplies the baked opacity rather than replacing it, so a part that the
+   * bake already fades keeps doing that at whatever level you set here. Pass
+   * null to drop the override.
+   */
+  setGroupOpacity(group, alpha) {
+    if (alpha === null || alpha === undefined) this.groupAlphas.delete(group);
+    else this.groupAlphas.set(group, alpha < 0 ? 0 : alpha);
+    this._invalidate();
+    return this;
+  }
+
+  setElementOpacity(id, alpha) {
+    if (alpha === null || alpha === undefined) this.elementAlphas.delete(id);
+    else this.elementAlphas.set(id, alpha < 0 ? 0 : alpha);
+    this._invalidate();
+    return this;
+  }
+
+  /** Show only these groups, dimming or hiding everything else.
+   *
+   * `groups` may be one name or a list. `rest` is what the others drop to --
+   * 0 removes them outright, 0.12 leaves them as context. Call with null to
+   * put everything back.
+   */
+  isolateGroups(groups, rest = 0) {
+    this.groupAlphas.clear();
+    if (groups !== null && groups !== undefined) {
+      const keep = new Set(Array.isArray(groups) ? groups : [groups]);
+      for (const g of this.groups) if (!keep.has(g)) this.groupAlphas.set(g, rest);
+    }
+    this._invalidate();
+    return this;
+  }
+
+  /** Where a group is on screen right now, in author coordinates.
+   *
+   * Returns {x, y, w, h} or null if the group draws nothing at `t`. This is
+   * what a part explorer needs and cannot compute for itself: on a turntable
+   * the selected part swings left and right as the model rotates, so a zoom
+   * that framed it once will not still be framing it a moment later.
+   *
+   * Evaluated into a private buffer rather than the shared scratch, so asking
+   * does not disturb whatever is currently drawn -- and it answers for hidden
+   * groups too, which is what lets you frame a part before revealing it.
+   */
+  groupBounds(group, t = this.time) {
+    const names = new Set(Array.isArray(group) ? group : [group]);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const el of this.elements) {
+      if (!names.has(el.group)) continue;
+      const need = el.npts * 2;
+      if (!this._probe || this._probe.length < need) this._probe = new Float32Array(need);
+      el.geo.points(t, this._probe, 0);
+      for (let i = 0; i < need; i += 2) {
+        const x = this._probe[i], y = this._probe[i + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (minX === Infinity) return null;
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /** Zoom and pan so a group fills the canvas, with `padding` as a fraction.
+   *
+   * Writes the same offX/offY/scaleX/scaleY that `resize` sets and `pick`
+   * reads, so hit testing keeps agreeing with what is drawn -- which a
+   * transform passed to `drawInto` would not. Note `resize` recomputes them,
+   * so re-frame after a resize.
+   *
+   * Call it each time you scrub and the frame tracks the part as it turns.
+   */
+  frameGroup(group, options = {}) {
+    const box = this.groupBounds(group, options.time === undefined ? this.time : options.time);
+    if (!box || !this.canvas) return null;
+    const pad = options.padding === undefined ? 0.12 : options.padding;
+    const cw = this.canvas.width / this.dpr, ch = this.canvas.height / this.dpr;
+    const s = Math.min(cw / (box.w * (1 + pad * 2) || 1),
+                       ch / (box.h * (1 + pad * 2) || 1));
+    this.scaleX = this.scaleY = s;
+    this.offX = cw / 2 - (box.x + box.w / 2) * s;
+    this.offY = ch / 2 - (box.y + box.h / 2) * s;
+    this.render(this.time);
+    return box;
   }
 
   /** Hit-test in client coordinates. Works during playback, because elements
