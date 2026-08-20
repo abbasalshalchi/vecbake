@@ -326,6 +326,7 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
 
     errors = {}
     tested = 0
+    available = 0
     try:
         for fi in frames:
             t = duration * fi / (n_frames - 1) if n_frames > 1 else 0.0
@@ -378,6 +379,7 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
                     seen.add(ident)
                     candidates.append((px, py, near[int(top[q])][0]))
 
+            available += len(candidates)
             if len(candidates) > budget:
                 keep = np.linspace(0, len(candidates) - 1, budget).astype(int)
                 candidates = [candidates[i] for i in keep]
@@ -414,10 +416,20 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
                 rec["diagnosis"] = _diagnose(items, is_ortho, rec["element"],
                                              rec["occluder"], px, py)
 
+    # The pixel counts are a sample, not a census, and the difference matters
+    # when reading them: a fault concentrated in one small region is reported at
+    # the sampling fraction, so 159 real pixels came back as 12. The ranking is
+    # unaffected -- every error is scaled the same -- but the absolute numbers
+    # only mean something next to this.
+    coverage = 100.0 * tested / max(available, 1)
     report = {
         "elements": len(vec.elements),
         "frames_checked": len(frames),
+        "overlap_pixels_available": available,
         "overlap_pixels_tested": tested,
+        "sampled_pct": round(coverage, 1),
+        "wrong_pixels_estimated_total": int(round(sum(r["pixels"] for r in ranked)
+                                                  * 100.0 / max(coverage, 1e-9))),
         "wrong_pixels": sum(r["pixels"] for r in ranked),
         "rate_pct": round(100.0 * sum(r["pixels"] for r in ranked) / max(tested, 1), 3),
         "errors": ranked,
@@ -432,12 +444,14 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
 def _print(report):
     print()
     print(f"checked {report['frames_checked']} frames, "
-          f"{report['overlap_pixels_tested']} overlap pixels, "
+          f"{report['overlap_pixels_tested']} of {report['overlap_pixels_available']} "
+          f"overlap pixels ({report['sampled_pct']}%), "
           f"{report['bake_seconds']}s bake / {report['total_seconds']}s total")
     if not report["errors"]:
         print("no occlusion errors found")
         return
-    print(f"{report['wrong_pixels']} wrong ({report['rate_pct']}% of what was tested), "
+    print(f"{report['wrong_pixels']} wrong ({report['rate_pct']}% of what was tested"
+          f" -- about {report['wrong_pixels_estimated_total']} across the whole overlap), "
           f"{len(report['errors'])} distinct")
     print()
     print(f"  {'element':<26} {'kind':<7} {'over':<18} {'px':>5} {'gap':>7}  cause")
