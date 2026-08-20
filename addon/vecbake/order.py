@@ -354,9 +354,68 @@ def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24)
         pick = np.linspace(0, len(qx) - 1, max_total).astype(np.int32)
         qx, qy = qx[pick], qy[pick]
     keep = _inside(fill, qx, qy)
-    if not keep.any():
+    if keep.any():
+        return qx[keep], qy[keep]
+
+    # Nothing landed inside. That does not mean they miss each other -- it can
+    # equally mean the fill is narrower than the step we walked the line with.
+    # An edge-on face is a sliver: feed-horn/f0 on the Voyager probe is 3.8px
+    # wide, and a 125px chain segment crossing it, sampled every 4px, put not
+    # one point on it. No samples, no constraint, and a bus edge is painted over
+    # a shaft standing 0.95 units in front of it.
+    #
+    # So clip the line to the polygon instead of hoping to hit it. This is the
+    # same fallback the fill-fill branch above already has, for the same reason.
+    cx, cy = [], []
+    for k in range(len(pts) - 1):
+        ax, ay = float(pts[k][0]), float(pts[k][1])
+        bx, by = float(pts[k + 1][0]), float(pts[k + 1][1])
+        for t0, t1 in _inside_spans(pts[k], pts[k + 1], fill["pts"]):
+            f = np.array([0.25, 0.5, 0.75])
+            t = t0 + (t1 - t0) * f
+            cx.append(ax + (bx - ax) * t)
+            cy.append(ay + (by - ay) * t)
+        if len(cx) * 3 >= max_total:
+            break
+    if not cx:
         return None
-    return qx[keep], qy[keep]
+    return np.concatenate(cx), np.concatenate(cy)
+
+
+def _inside_spans(a, b, poly):
+    """Parameter ranges of the segment a->b that lie inside `poly`.
+
+    Exact where sampling is a lottery: a segment crossing a shape enters and
+    leaves it at points we can solve for, however thin the shape is.
+    """
+    ax, ay = float(a[0]), float(a[1])
+    dx, dy = float(b[0]) - ax, float(b[1]) - ay
+    if dx * dx + dy * dy < 1e-18:
+        return []
+    cuts = [0.0, 1.0]
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        ex = float(poly[i][0]) - float(poly[j][0])
+        ey = float(poly[i][1]) - float(poly[j][1])
+        den = dx * ey - dy * ex
+        if abs(den) > 1e-12:
+            wx = float(poly[j][0]) - ax
+            wy = float(poly[j][1]) - ay
+            t = (wx * ey - wy * ex) / den
+            u = (wx * dy - wy * dx) / den
+            if 0.0 <= u <= 1.0 and 0.0 < t < 1.0:
+                cuts.append(t)
+        j = i
+    cuts.sort()
+    spans = []
+    for lo, hi in zip(cuts, cuts[1:]):
+        if hi - lo < 1e-9:
+            continue
+        m = 0.5 * (lo + hi)
+        if _inside(poly, np.array([ax + dx * m]), np.array([ay + dy * m]))[0]:
+            spans.append((lo, hi))
+    return spans
 
 
 # ---------------------------------------------------------------------------
