@@ -6,6 +6,7 @@ Paste into Blender's Python console (or the MCP bridge):
     reload()                 # re-import after editing the add-on
     bake()                   # bake + write to out/
     check()                  # audit the bake for occlusion errors
+    audit()                  # ray-cast every frame and list what is wrong
     install()                # copy into Blender's extensions folder
     scene(confirm=True)      # DESTRUCTIVE: wipes the scene for the test tower
 
@@ -76,6 +77,22 @@ def check(**kwargs):
         setattr(settings, key, value)
     ns = runpy.run_path(os.path.join(ROOT, "scripts", "validate_bake.py"))
     return ns["validate"](settings)
+
+
+def audit(**kwargs):
+    """Ray-cast the bake against the 3D scene and list every occlusion error.
+
+    Uses the panel's own settings unless overridden. See check_occlusion.py --
+    it reports what is wrong, where, and which of the three causes it is, so
+    the ones that are modelling rather than baker bugs say which face to split.
+
+        audit()                    # every frame
+        audit(frames=[0, 24])      # a couple
+        audit(budget=3000)         # more ray casts per frame
+    """
+    reload()
+    ns = runpy.run_path(os.path.join(ROOT, "scripts", "check_occlusion.py"))
+    return ns["run"](**kwargs)
 
 
 def install():

@@ -252,6 +252,44 @@ truth independently and should report zero violations, zero flips, zero cycles.
 
 ---
 
+## Auditing a bake
+
+`scripts/check_occlusion.py` ray-casts the finished bake against the 3D scene
+and lists every pixel painted with the wrong thing.
+
+```python
+exec(open(r'.../scripts/check_occlusion.py').read())
+run()                      # the panel's settings, every frame
+run(frames=[0, 24])        # or a few
+run(budget=3000)           # more ray casts per frame
+```
+
+It only tests pixels where two objects actually overlap on screen. That is not
+an optimisation, it is what makes it work at all: a stray line is a few dozen
+pixels in a few hundred thousand, and 7000 random samples came back clean on a
+bake with four real errors in it. Restricted to the overlaps, the same budget
+finds them.
+
+An element counts as wrong only where it is the top of the paint order, the
+nearest real surface belongs to another object, **and** that surface is nearer
+than the element's own object by more than a margin. The last condition is what
+keeps the list honest — a stroke has width, so half of it correctly hangs over
+its own silhouette, and identity alone would report every outline in the scene.
+
+Each error is diagnosed by re-deriving what the ordering pass had to work with:
+
+| cause | means |
+|---|---|
+| `no constraint` | the pair was never compared — a baker bug |
+| `order violated` | the constraint was right and got dropped to break a cycle |
+| `measured wrong` | the two elements *cross*, so one depth each cannot order them |
+| `occluder not drawn there` | the covering surface never reached the paint order — look at culling, not sorting |
+
+`measured wrong` is a modelling signal rather than something to fix in the
+baker, so the report names the face whose depth range spans the thing crossing
+it. Splitting that face is what gives the ordering the resolution to be right,
+and that is the artist's call.
+
 ## Reference
 
 ### Edge modes
