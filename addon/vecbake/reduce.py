@@ -167,4 +167,23 @@ def freeze_hidden(geo_samples, vis_samples):
             last_seen = geo_samples[i]
         elif not neighbour_visible and last_seen is not None:
             out[i] = last_seen
+
+    # Nothing above can fill a frame with no *earlier* pose to hold, and one
+    # sampler leaves frames genuinely empty: a merged fill writes no geometry
+    # at all in a frame whose outline is not one simple loop. An object that
+    # only resolves partway into the clip therefore arrives here with None in
+    # every frame before that, and reduce_points is handed a sample it cannot
+    # subtract -- "TypeError: 'NoneType' object is not iterable", a hard failure
+    # of the whole bake rather than one bad frame.
+    #
+    # Reach the other way for those. The caller has already dropped anything
+    # never visible, so at least one real pose exists; a frame nobody sees is
+    # free to borrow the nearest one.
+    if any(g is None for g in out):
+        have = [i for i, g in enumerate(out) if g is not None]
+        if not have:
+            return out                       # nothing to borrow; caller drops it
+        for i, g in enumerate(out):
+            if g is None:
+                out[i] = out[min(have, key=lambda k: abs(k - i))]
     return out

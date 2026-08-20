@@ -23,13 +23,21 @@ that covers it. That is the Voyager probe's stray line: bus/f8 spans 1.71 units
 of depth, measures 0.778 in front of the golden record over 274 samples, and
 drags its far edge bus/e14 (0.046 *behind* the disk) in front along with it.
 
-Both choices are wrong, because the cycle is real. They are not equally wrong.
-Violating the assertion lets a face cover the inner half of its own edge --
-measured at 47-50% of the edge's pixels, so the line reads thinner. Violating
-the occlusion constraint draws a whole line where there should be none. So the
-assertion is now the *first* thing spent, not the last. This file pins that
-answer, and pins the other half of it: a cycle is still needed before anything
-is given up at all.
+Spending the assertion first was tried, and reverted. In a still frame it looks
+like the cheaper error: the face covers the inner half of its own edge, 47-50%
+of its pixels, so the line just reads thinner. In motion it is worse than what
+it fixes. Whether the cycle exists depends on the frame, so the same edge loses
+the assertion in some frames and keeps it in others, and its width alternates --
+18 edges of 196 on the probe across 14 frames. Unprotecting only the assertions
+the measured graph already contradicts halves that, to 11; nothing reaches zero,
+because an assertion broken per frame is a width that changes per frame.
+
+So the assertion stays protected and the stray line stays with it. This file
+pins that, and pins why: not because the ordering is right, but because both
+answers are wrong and this is the one that holds still. The real fix is to stop
+a crossing line running through the middle of an element at all -- an element
+whose depth range spans the thing crossing it cannot be ordered against it by
+one scalar, whichever way the tie is broken.
 """
 
 import importlib.util
@@ -100,14 +108,15 @@ stats = dict(order.LAST_STATS)
 # larger value = painted earlier = further back
 check("the cycle is detected at all", stats["cycle_breaks"] >= 1,
       f"cycle_breaks={stats['cycle_breaks']}")
-check("the disk hides the edge that is behind it",
-      rank["edge"] > rank["disk"],
-      f"edge={rank['edge']} disk={rank['disk']}"
-      + ("" if rank["edge"] > rank["disk"] else "  <- stray line across the disk"))
-check("the face stays in front of the disk",
-      rank["face"] < rank["disk"], f"face={rank['face']} disk={rank['disk']}")
-check("something had to give, and it was the assertion",
-      stats["assertions_lost"] == 1, f"assertions_lost={stats['assertions_lost']}")
+check("the assertion survives the break, so the edge keeps its full width",
+      stats["assertions_lost"] == 0, f"assertions_lost={stats['assertions_lost']}")
+check("the edge stays with its own face",
+      rank["edge"] < rank["face"], f"edge={rank['edge']} face={rank['face']}")
+# And the cost of that, stated rather than hidden: the edge is painted over the
+# disk that covers it. Pinned so the trade is visible if anyone revisits it.
+check("...at the price of the stray line, which is the known trade",
+      rank["edge"] < rank["disk"],
+      f"edge={rank['edge']} disk={rank['disk']} -- the artifact this cannot fix")
 
 # --- nothing is spent without a cycle -------------------------------------
 # Assertions go first *within a cycle*. Outside one they are untouched, which
@@ -135,22 +144,11 @@ check("...with the edge still over its own face",
 check("...and the nearer fill still in front",
       r2["a"] < r2["b"], f"a={r2['a']} b={r2['b']}")
 
-# --- the policy has to be stated, not inferred ----------------------------
-# Assertions keep the full depth span as their weight. That no longer decides
-# assertion-versus-measured -- the explicit sort key does -- but it still orders
-# assertions among themselves, so the best-supported coincidence is spent last.
+# --- the policy has to stay stated ----------------------------------------
 src = open(os.path.join(ADDON, "order.py"), encoding="utf-8").read()
-check("assertions are still weighted at the full span",
-      "add_edge(i, j, span)" in src)
-check("...and are no longer excluded from the drop pool outright",
-      "not in asserted] or live" not in src)
-# Weight alone does not express the preference: assertions weigh `span`, so
-# they sort last and the drop slice only reaches one when a tenth of the
-# component runs past every measured edge. That is component size, not policy,
-# and it leaves the three-element cycle above broken. The ordering has to be
-# explicit.
-check("the drop order is explicit, not left to the weight sort",
-      "sorted(live, key=lambda e: ((e[1], e[2]) not in asserted" in src)
+check("assertions are weighted at the full span", "add_edge(i, j, span)" in src)
+check("...and are drawn from last, so measured evidence is spent first",
+      "not in asserted] or live" in src)
 
 print()
 print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))

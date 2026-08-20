@@ -550,36 +550,37 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # the evidence in the scene, in a single pass. The sort already puts
             # the least-supported constraints first; just take that many.
             live.sort(key=lambda item: item[0])
-            # Spend assertions first, cheapest-visible-error first.
+            # Spend measured constraints before asserted ones. An assertion is a
+            # geometric fact -- the edge lies on the face -- so it outranks any
+            # amount of sampled evidence, and every cycle through one also runs
+            # through a stroke->fill edge that can go instead. Weight alone is
+            # not enough to express that: a component dominated by assertions
+            # exhausts its few measured edges partway through the slice and the
+            # rest of the budget comes out of the facts.
             #
-            # The reasoning used to be that a cycle through an assertion always
-            # runs through a stroke->fill edge that can go instead. It does --
-            # but that edge is sometimes the one holding a line behind the thing
-            # that hides it, and giving it up is far from free. A face raked
-            # steeply away from the camera spans a lot of depth, so it measures
-            # as being in front of something its own far edge is behind; the
-            # assertion then drags the edge forward with it and the line is
-            # painted across a surface that covers it. The cycle is real and
-            # something has to give, so compare what each choice costs on
-            # screen: violating the assertion lets a face eat the inner half of
-            # its own edge -- measured at 47-50% of the edge's pixels, a line
-            # that reads thinner -- while violating the occlusion constraint
-            # draws a whole line where there should be none. The thin line is
-            # the cheaper wrong answer.
+            # Spending assertions first was tried, to fix a stray line: a face
+            # raked steeply away from the camera spans a lot of depth, measures
+            # as being in front of something its own far edge is behind, and
+            # drags that edge in front along with it. Breaking the assertion
+            # does fix it, and the still-frame cost looked cheap -- the face
+            # covers the inner half of its own edge, 47-50% of its pixels.
             #
-            # Reported as a stray line across the golden record disk on the
-            # Voyager probe: bus/f8 spans 1.71 units of depth, measures 0.778 in
-            # front of the disk over 274 samples, and carried its far edge
-            # bus/e14 -- which is 0.046 *behind* the disk -- along with it.
+            # It is not cheap in motion, which is the only way anyone sees this.
+            # Whether the cycle exists at all depends on the frame, so the same
+            # edge loses the assertion in some frames and keeps it in others and
+            # its width alternates: 18 edges of 196 on the Voyager probe, over
+            # 14 frames. A line that changes thickness as the camera moves is a
+            # worse artefact than the one being fixed, and unlike it, it is
+            # everywhere rather than in one place. Unprotecting only the
+            # assertions the measured graph already contradicts halves it, to
+            # 11, and no arrangement reaches zero: an assertion that is broken
+            # per frame is a width that changes per frame.
             #
-            # It has to be an explicit ordering, not just dropping the old
-            # filter. Assertions weigh `span`, so weight alone sorts them last
-            # and the slice below only ever reaches one in a component big
-            # enough for a tenth of it to run past every measured edge. That
-            # fixed the probe by luck of component size and left the minimal
-            # three-element cycle -- face, disk, and the face's own far edge --
-            # broken exactly as before.
-            pool = sorted(live, key=lambda e: ((e[1], e[2]) not in asserted, e[0]))
+            # A crossing pair cannot be ordered correctly by one scalar in any
+            # case. The fix is to stop the crossing line running through the
+            # middle of an element -- split the oversized face -- not to shuffle
+            # which of the two wrong answers is chosen. See test_order_cycle.py.
+            pool = [e for e in live if (e[1], e[2]) not in asserted] or live
             for w, src, node in pool[:max(1, len(pool) // 10)]:
                 if node in after[src]:
                     after[src].discard(node)

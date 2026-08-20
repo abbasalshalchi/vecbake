@@ -426,7 +426,7 @@ def _writes_reverse(props) -> bool:
     return props.bidirectional and _used(props, "bidirectional")
 
 
-def _summary(stats, files=None, bakes=1):
+def _summary(stats, files=None, bakes=1, scenes=()):
     text = (
         f"{stats['elements']} elements "
         f"({stats['strokes']} strokes, {stats['fills']} fills), "
@@ -438,7 +438,31 @@ def _summary(stats, files=None, bakes=1):
     if files:
         total = sum(files.values())
         text += f", {total / 1024:.1f} KB"
+    note = _merge_note(scenes)
+    if note:
+        text += " — " + note
     return text
+
+
+def _merge_note(scenes):
+    """Say so when Merge Fills quietly did not apply.
+
+    An object whose outline is not one stable ring is re-sampled unmerged
+    rather than drawn shuffled, which is the right call and completely
+    invisible: the setting stays ticked and the object comes back as one fill
+    per face, shaded per face. Someone then reasonably asks how a merged object
+    can have faces at all. On the Voyager probe 9 of 11 objects fell back and
+    nothing said a word.
+    """
+    fell = set()
+    for vec in scenes:
+        fell.update((getattr(vec, "meta", None) or {}).get("merged_fallback") or ())
+    if not fell:
+        return ""
+    listed = ", ".join(sorted(fell)[:3])
+    if len(fell) > 3:
+        listed += f" +{len(fell) - 3} more"
+    return f"{len(fell)} could not merge ({listed})"
 
 
 class VECBAKE_OT_analyze(Operator):
@@ -538,7 +562,9 @@ class VECBAKE_OT_export(Operator):
         except StopIteration as finished:
             result = finished.value
             self._finish(context)
-            props.last_stats = _summary(result["stats"], result["files"], result["bakes"])
+            props.last_stats = _summary(
+                result["stats"], result["files"], result["bakes"],
+                scenes=[o["scene"] for o in result.get("outputs", ()) if o.get("scene")])
             props.progress_text = ""
             self.report({"INFO"}, f"VecBake: {props.last_stats} -> {props.out_dir}")
             return {"FINISHED"}
@@ -598,7 +624,9 @@ class VECBAKE_OT_export(Operator):
         finally:
             wm.progress_end()
 
-        props.last_stats = _summary(result["stats"], result["files"], result["bakes"])
+        props.last_stats = _summary(
+            result["stats"], result["files"], result["bakes"],
+            scenes=[o["scene"] for o in result.get("outputs", ()) if o.get("scene")])
         self.report({"INFO"}, f"VecBake: {props.last_stats} -> {props.out_dir}")
         return {"FINISHED"}
 
