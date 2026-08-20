@@ -260,12 +260,36 @@ truth independently and should report zero violations, zero flips, zero cycles.
 |---|---|
 | `HIDDEN` | edges touching a front-facing face — the usual choice |
 | `SHARP` | creases above **Angle**, plus silhouette and open edges |
+| `SHADING` | the same, but the angle is the object's own Smooth by Angle |
 | `BOUNDARY` | silhouette and open edges only |
 | `WIRE` | every edge, see-through |
 
 `SHARP` is how you get a dense mesh down to a few hundred strokes. Silhouette is
 always included — without it a smooth curved surface loses its outline and reads
 as a hole. Edges marked Sharp in the mesh are always kept.
+
+`SHADING` is `SHARP` with the threshold taken from the object instead of the
+panel, so the strokes are the edges the viewport is already shading hard, and
+the two cannot drift apart when one is edited and the other forgotten. It is the
+edge-side twin of `Curves > Blender Shading`.
+
+Part of this already worked and it is worth knowing which part. The baker reads
+the *evaluated* mesh, and a Smooth by Angle modifier writes `sharp_edge` onto
+its output, so `SHARP` has always picked those up — marked-sharp edges are kept
+whatever the angle says. What `SHADING` adds is the cases the modifier is not:
+
+* **shade-flat with no modifier** reports 0°, so every edge that actually bends
+  is a crease. A 32-sided cylinder keeps all 32 barrel seams, which `SHARP` at
+  any threshold above 11.25° throws away.
+* **shade-smooth** reports 180°, so nothing is a crease and only the silhouette
+  survives — where `SHARP` would wireframe a smooth-shaded cube.
+* **a face set to flat** inside an otherwise smooth mesh is outlined all round,
+  matching what the viewport draws.
+
+Coplanarity is respected at 0°: flat-shading a plane looks exactly like
+smoothing it, so an edge between two coplanar faces is never drawn. Without that
+guard the float comparison alone puts a stroke down the middle of every flat
+panel — a 6×6 shade-flat grid goes from 24 strokes to 84.
 
 **Always Freestyle Edges** / **Always Crease Edges** force edges into the
 drawing whatever the mode selected — useful for hand-marking lines a geometric
@@ -423,7 +447,7 @@ path with no special case at the join.
 |---|---|
 | **Off** | nothing — straight segments, as baked |
 | **Smooth** | every vertex that is not a hard corner |
-| **Smooth by Angle** | the **2D** turn angle on screen, against **Curve Angle** |
+| **Screen Angle** | the **2D** turn angle on screen, against **Curve Angle** |
 | **Blender Shading** | the object's own shading — see below |
 
 **No mode ever smooths a hard corner** (a turn over 80°), because a curve
@@ -435,6 +459,10 @@ does. The limit keeps quads (90°) and triangles (120°) flat while still
 rounding a cylinder as coarse as five sides (72°). Faceted hard-surface shapes
 that fall under it — a hex nut at 60° — are what **Blender Shading** is for:
 they are normally shade-flat, and it leaves them alone.
+
+**Screen Angle** was called *Smooth by Angle* until it sat two rows above an
+entry that reads Blender's modifier of that exact name and this one does not.
+It is named for what it measures now.
 
 **Blender Shading** follows what the object is already set to: shade-smooth
 curves throughout, shade-flat stays straight, and a *Smooth by Angle* modifier

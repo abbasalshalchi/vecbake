@@ -894,17 +894,48 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         edge_shown = np.ones(ne, dtype=bool)
     elif mode == "BOUNDARY":
         edge_shown = silhouette | (boundary & reachable)
-    elif mode == "SHARP":
+    elif mode in ("SHARP", "SHADING"):
         # Creases steeper than the threshold, plus silhouette and open edges.
         # Silhouette has to be included or a smooth curved surface loses its
         # outline entirely and reads as a hole.
+        #
+        # The two modes differ only in where the threshold comes from. SHARP
+        # takes the panel's Angle. SHADING takes whatever Blender is already
+        # shading the object with, so the drawn edges are the ones the viewport
+        # is drawing hard -- a Smooth by Angle modifier hands over its own
+        # angle, and the two stay in step when it is changed. The degenerate
+        # cases fall out of the same arithmetic: shade-flat reports 0 degrees,
+        # which makes every non-coplanar edge a crease, and shade-smooth
+        # reports 180, which makes none of them one and leaves the silhouette.
+        limit = plan.shade_angle if mode == "SHADING" else plan.crease_angle
         crease = np.zeros(ne, dtype=bool)
         if ne and nf and plan.edge_has_pair.any():
             pair = plan.edge_has_pair
             na = world_n[plan.edge_face_a[pair]]
             nb = world_n[plan.edge_face_b[pair]]
-            cos_limit = math.cos(math.radians(plan.crease_angle))
-            crease[pair] = np.einsum("ij,ij->i", na, nb) < cos_limit
+            # Nudged off the exact cosine so a 0-degree threshold means "not
+            # coplanar" rather than "not bit-identical": two faces of a flat
+            # surface dot to 1 - 1e-16, which is below cos(0) and would put a
+            # crease down the middle of every flat panel in the scene.
+            cos_limit = math.cos(math.radians(limit)) - 1e-9
+            dot = np.einsum("ij,ij->i", na, nb)
+            crease[pair] = dot < cos_limit
+            if mode == "SHADING" and len(plan.adj_edge):
+                # A face set to flat shades hard the whole way round whatever
+                # the angle says, so its edges are creases as well -- otherwise
+                # the mode disagrees with the viewport on any mesh that mixes
+                # shade-flat faces into a smooth one.
+                #
+                # Still only where the surface actually bends. Flat shading a
+                # plane looks exactly like smoothing it, so an edge between two
+                # coplanar faces is invisible however it is shaded, and drawing
+                # it puts a stroke down the middle of every flat panel: a
+                # 6x6 shade-flat grid went from 24 strokes to 84.
+                bends = np.zeros(ne, dtype=bool)
+                bends[pair] = dot < 1.0 - 1e-9
+                flat = np.zeros(ne, dtype=bool)
+                np.logical_or.at(flat, plan.adj_edge, plan.face_sharp[plan.adj_face])
+                crease |= flat & bends
         edge_shown = (crease | plan.edge_marked_sharp | boundary | silhouette) & (reachable | boundary)
     else:  # HIDDEN
         edge_shown = reachable | boundary

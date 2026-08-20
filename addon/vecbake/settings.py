@@ -37,6 +37,10 @@ class BakeSettings:
                                   # WIRE   = every edge, see-through
                                   # BOUNDARY = silhouette + open/boundary edges
                                   # SHARP = creases over crease_angle, + silhouette
+                                  # SHADING = same, but the angle is the object's
+                                  #   own Smooth by Angle; shade-flat faces count
+                                  #   as creases all round, shade-smooth leaves
+                                  #   only the silhouette
     crease_angle: float = 30.0    # degrees between adjacent faces, SHARP mode
     backface_cull: bool = True
 

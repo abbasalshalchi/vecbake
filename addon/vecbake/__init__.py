@@ -34,6 +34,37 @@ from . import api, bake as bake_mod, emit_json, emit_lottie, emit_svg, ir, reduc
 from .bake import BakeError
 from .settings import BakeSettings
 
+
+def _shading_hint(context):
+    """What Blender Smooth by Angle will actually use, for the objects in scope.
+
+    The threshold lives on each object, not in the panel, so the row has to
+    report rather than offer. Objects disagreeing with each other is normal and
+    is the point of the mode -- say so instead of picking one to display.
+    """
+    objs = [o for o in getattr(context, "selected_objects", ()) if o.type == "MESH"]
+    if not objs:
+        active = getattr(context, "active_object", None)
+        objs = [active] if active is not None and active.type == "MESH" else []
+    if not objs:
+        return "Angle comes from each object's own modifier"
+
+    angles = []
+    for obj in objs:
+        deg = bake_mod._smooth_by_angle(obj)
+        angles.append(round(deg, 1) if deg is not None else None)
+    unique = {a for a in angles}
+    if len(unique) == 1:
+        only = angles[0]
+        if only is None:
+            return "No Smooth by Angle here — flat shades every edge, smooth only the outline"
+        return f"Using {only:g}° from Smooth by Angle"
+    named = sorted(a for a in unique if a is not None)
+    shown = ", ".join(f"{a:g}°" for a in named)
+    if None in unique:
+        shown += " (some objects have none)"
+    return f"Per object: {shown}"
+
 __all__ = ["api", "bake_mod", "emit_json", "emit_lottie", "emit_svg", "ir", "reduce", "BakeSettings"]
 
 bake_and_write = api.bake_and_write
@@ -108,6 +139,12 @@ class VECBAKE_PG_settings(PropertyGroup):
             ("SHARP", "Sharp Edges", "Only creases sharper than the angle threshold, plus "
                                      "silhouette and open edges. The way to get a dense mesh "
                                      "down to a few hundred strokes"),
+            ("SHADING", "Blender Smooth by Angle", "Like Sharp Edges, but the angle is the "
+                                                   "object's own Smooth by Angle modifier, so "
+                                                   "the strokes match the edges the viewport "
+                                                   "shades hard. Shade-flat faces are outlined "
+                                                   "all round; a fully shade-smooth object "
+                                                   "keeps only its silhouette"),
             ("BOUNDARY", "Silhouette", "Silhouette and open edges only -- far fewer strokes"),
             ("WIRE", "Wireframe", "Every edge, see-through"),
         ],
@@ -126,9 +163,13 @@ class VECBAKE_PG_settings(PropertyGroup):
             ("NONE", "Off", "Straight segments between every point, as baked"),
             ("SMOOTH", "Smooth", "Bend through every point. A baked circle comes out "
                                  "round instead of faceted"),
-            ("ANGLE", "Smooth by Angle", "Bend only where the line turns by less than "
-                                         "the threshold, measured on screen in 2D. "
-                                         "Corners stay sharp"),
+            # Named for what it measures, not for Blender's modifier of almost
+            # the same name -- this one never reads it. "Blender Shading" below
+            # is the entry that does, and having both called Smooth by Angle
+            # made the panel unreadable.
+            ("ANGLE", "Screen Angle", "Bend only where the line turns by less than "
+                                      "the threshold, measured on screen in 2D. "
+                                      "Corners stay sharp"),
             ("SHADING", "Blender Shading", "Follow the object's own shading: shade-smooth "
                                            "curves throughout, shade-flat stays straight, "
                                            "and Smooth by Angle uses its angle against the "
@@ -645,6 +686,8 @@ class VECBAKE_PT_panel(Panel):
         box.prop(props, "edge_mode")
         if props.edge_mode == "SHARP":
             box.prop(props, "crease_angle")
+        elif props.edge_mode == "SHADING":
+            box.label(text=_shading_hint(context), icon="MOD_SMOOTH")
 
         # Everything that decides what is *not* drawn, in one place. They stack:
         # each one removes a different reason geometry cannot be seen, and the
