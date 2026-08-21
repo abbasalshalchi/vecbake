@@ -30,7 +30,7 @@ from bpy.props import (
 )
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import api, bake as bake_mod, emit_json, emit_lottie, emit_svg, ir, reduce, settings as settings_mod
+from . import api, audit, bake as bake_mod, emit_json, emit_lottie, emit_svg, ir, reduce, settings as settings_mod
 from .bake import BakeError
 from .settings import BakeSettings
 
@@ -344,6 +344,17 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "Ship the compact form")
 
     last_stats: StringProperty(name="Last Result", default="")
+    # The audit's findings, kept as text so the panel can list them without a
+    # second data structure. One finding per line: element | kind | over | px |
+    # cause. Cleared on every bake so a stale verdict is never shown next to
+    # fresh output.
+    audit_rows: StringProperty(name="Audit", default="", options={"SKIP_SAVE"})
+    audit_summary: StringProperty(name="Audit summary", default="", options={"SKIP_SAVE"})
+    audit_frames: IntProperty(
+        name="Frames", default=8, min=1, max=240,
+        description="How many frames to sample, spread evenly across the range. "
+                    "Every overlap pixel in each is tested, so this is the whole "
+                    "cost -- start low and raise it if something looks suspicious")
 
     # live progress, mirrored into the panel and the status bar so it survives
     # switching away from Blender -- the cursor readout does not
@@ -498,6 +509,68 @@ def _redraw(context):
         for area in window.screen.areas:
             if area.type in {"VIEW_3D", "PROPERTIES"}:
                 area.tag_redraw()
+
+
+class VECBAKE_OT_audit(Operator):
+    """Bake, then ray-cast the result against the scene and list what is drawn wrong
+
+    Finds the errors a person finds by staring at frames, which is the only way
+    they have been found so far. Only pixels where two objects overlap are
+    tested -- everywhere else there is nothing to be wrong about -- so it is
+    fast enough to run before shipping a scene.
+    """
+
+    bl_idname = "vecbake.audit"
+    bl_label = "Check Occlusion"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        props = context.scene.vecbake
+        try:
+            settings = props.to_bake_settings(context)
+            report = audit.run(settings=settings, context=context,
+                               frames=_audit_frames(context, props),
+                               budget=100000, verbose=False)
+        except BakeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        errors = report["errors"]
+        props.audit_rows = "\n".join(
+            "{}|{}|{}|{}|{}".format(
+                r["element"], r["kind"], r["occluder"], r["pixels"],
+                (r.get("diagnosis") or {}).get("cause", "-"))
+            for r in errors[:8])
+        if errors:
+            props.audit_summary = (
+                f"{report['wrong_pixels']} wrong of "
+                f"{report['overlap_pixels_tested']} overlap px, "
+                f"{len(errors)} distinct")
+        elif report["overlap_pixels_tested"]:
+            props.audit_summary = (
+                f"clean -- {report['overlap_pixels_tested']} overlap px checked")
+        else:
+            # Not the same as clean, and saying so saves a puzzled minute: an
+            # ordering error needs two objects overlapping on screen, so a
+            # single-object scene has nothing to be wrong about and a pass here
+            # means nothing was looked at.
+            props.audit_summary = "nothing to check -- no two objects overlap on screen"
+        self.report({"INFO"}, "VecBake audit: " + props.audit_summary)
+        return {"FINISHED"}
+
+
+def _audit_frames(context, props):
+    """Spread the sample evenly across whatever range will be baked."""
+    scene = context.scene
+    if props.use_scene_range:
+        start, end, step = scene.frame_start, scene.frame_end, props.frame_step
+    else:
+        start, end, step = props.frame_start, props.frame_end, props.frame_step
+    count = max(1, len(range(start, end + 1, max(1, step))))
+    want = min(props.audit_frames, count)
+    if want <= 1:
+        return [0]
+    return [round(i * (count - 1) / (want - 1)) for i in range(want)]
 
 
 class VECBAKE_OT_export(Operator):
@@ -794,6 +867,23 @@ class VECBAKE_PT_panel(Panel):
         row.operator("vecbake.analyze", icon="INFO")
         row.operator("vecbake.export", icon="EXPORT")
 
+        # --- audit ----------------------------------------------------------
+        # Occlusion errors are a few dozen pixels in a few hundred thousand, so
+        # they are found by eye or not at all. This is the "or not at all" half.
+        box, grid = self._section(layout, "Audit", "ZOOM_SELECTED")
+        row = box.row(align=True)
+        row.enabled = not props.baking
+        row.prop(props, "audit_frames")
+        row.operator("vecbake.audit", icon="VIEWZOOM")
+        if props.audit_summary:
+            clean = props.audit_summary.startswith("clean")
+            box.label(text=props.audit_summary,
+                      icon="CHECKMARK" if clean else "ERROR")
+        for line in filter(None, props.audit_rows.split("\n")):
+            key, kind, over, px, cause = (line.split("|") + [""] * 5)[:5]
+            box.label(text=f"{key} ({kind}) over {over} -- {px}px, {cause}",
+                      icon="DOT")
+
         if props.baking:
             # The cursor readout vanishes the moment Blender loses focus, so
             # the same progress is mirrored here and in the status bar.
@@ -810,6 +900,7 @@ class VECBAKE_PT_panel(Panel):
 classes = (
     VECBAKE_PG_settings,
     VECBAKE_OT_analyze,
+    VECBAKE_OT_audit,
     VECBAKE_OT_export,
     VECBAKE_PT_panel,
 )
