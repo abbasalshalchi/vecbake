@@ -484,6 +484,27 @@ export class LerpaPlayer {
   _paint(ctx, t, count) {
     const els = this.elements, scratch = this.scratch, order = this.order;
     let el, j = 0;
+
+    // The seam a fill leaves against its neighbour is a *rasteriser* artifact:
+    // it is one device pixel wide however far the view is zoomed out. seamWidth
+    // is in scene units, so under the view transform it shrinks with everything
+    // else -- at "Fit" on a 1600x1000 scene in a browser panel the scale is
+    // about 0.575, and a 0.7 seam stroke lands 0.4 device pixels wide, closing
+    // nothing. The seam then lets whatever was painted *behind* show through,
+    // which reads as a stray line sitting on top of the thing that should hide
+    // it. Reported as "a stroke from the bus is glitching in front of the feed
+    // horn": bus/c1_0 was correctly painted first, at depth 48 against the
+    // shaft's 9 and 13, and showed through the hairline where two shaft faces
+    // abut at x=800.
+    //
+    // So take whichever is wider: the authored width, or one device pixel.
+    let seamW = this.seamWidth;
+    if (typeof ctx.getTransform === "function") {
+      const m = ctx.getTransform();
+      const scale = Math.hypot(m.a, m.b) || 1;
+      const onePixel = 1 / scale;
+      if (onePixel > seamW) seamW = onePixel;
+    }
     while (j < count) {
       el = els[order[j]];
       if (el.kind === STROKE) {
@@ -519,7 +540,7 @@ export class LerpaPlayer {
           // abutting polygons leave an antialiased hairline in every 2D
           // rasteriser; stroking each fill with its own colour closes it
           ctx.strokeStyle = ctx.fillStyle;
-          ctx.lineWidth = this.seamWidth;
+          ctx.lineWidth = seamW;
           ctx.stroke();
         }
         j++;

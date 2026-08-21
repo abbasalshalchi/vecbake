@@ -616,7 +616,12 @@ class VECBAKE_OT_export(Operator):
                 settings=props.to_bake_settings(context),
                 formats=formats,
                 pretty=props.pretty,
-                report=lambda i, n: wm.progress_update(int(100 * i / max(1, n))),
+                # bake_and_write reports (phase, done, total). Taking two here
+                # meant bpy.ops.vecbake.export() died on its first progress
+                # tick -- the modal path the button uses never calls this, so
+                # only scripted and headless bakes ever hit it.
+                report=lambda phase, done, total: wm.progress_update(
+                    int(100 * done / max(1, total))),
             )
         except BakeError as exc:
             self.report({"ERROR"}, str(exc))
