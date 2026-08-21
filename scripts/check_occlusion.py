@@ -97,12 +97,23 @@ def _poly_mask(g, gx, gy):
     return inside
 
 
-def _stroke_mask(g, width, gx, gy):
-    """Pixels within half a stroke width of the polyline."""
+def _stroke_mask(g, width, gx, gy, closed=False):
+    """Pixels within half a stroke width of the polyline.
+
+    `closed` matters more than it looks. A chain that comes back on itself is
+    emitted with `cl:1` and the player calls closePath(), so it draws one more
+    segment than the point list spells out -- the wrap from the last point back
+    to the first. Walking the explicit segments alone leaves that one invisible
+    to every check built on this, and it is not a short one: on the Voyager
+    probe the bus rim's closing segment runs 126px straight across the feed-horn
+    shaft. Three separate audits reported the frame clean because of it.
+    """
     mask = np.zeros(gx.shape, dtype=bool)
     half = max(width, 1.0) / 2.0 + 0.35        # +half a pixel for coverage
-    for k in range(0, len(g) - 2, 2):
-        ax, ay, bx, by = g[k], g[k + 1], g[k + 2], g[k + 3]
+    spans = [(g[k], g[k + 1], g[k + 2], g[k + 3]) for k in range(0, len(g) - 2, 2)]
+    if closed and len(g) >= 4:
+        spans.append((g[-2], g[-1], g[0], g[1]))
+    for ax, ay, bx, by in spans:
         dx, dy = bx - ax, by - ay
         span = dx * dx + dy * dy
         if span < 1e-12:
@@ -115,7 +126,8 @@ def _stroke_mask(g, width, gx, gy):
 def _element_mask(el, g, gx, gy):
     if el.kind in FILL_KINDS:
         return _poly_mask(g, gx, gy)
-    return _stroke_mask(g, getattr(el, "width", 1.6) or 1.6, gx, gy)
+    return _stroke_mask(g, getattr(el, "width", 1.6) or 1.6, gx, gy,
+                        bool(getattr(el, "closed", False)))
 
 
 def _bbox(g):

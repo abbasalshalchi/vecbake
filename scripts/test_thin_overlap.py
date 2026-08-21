@@ -124,6 +124,44 @@ check("a line that misses reports nothing", miss == [], f"{miss}")
 along = order._inside_spans(np.array([0.0, 0.0]), np.array([0.0, 0.0]), square)
 check("a zero-length segment is not divided by zero", along == [])
 
+# --- a closed chain draws one more segment than it lists ------------------
+# The player calls closePath(), so the wrap from the last point back to the
+# first is stroked like any other segment. resolve() walked range(len(pts)-1)
+# and never saw it, so a chain overlapping a fill *only* along that segment got
+# no constraint at all and was ordered by seed alone. On the Voyager probe that
+# was the bus rim over the feed-horn shaft: 126px of line, a full unit of depth
+# on the wrong side of it, and every audit calling the frame clean.
+ring = dict(key="ring", kind=0, seed=5.0,
+            pts=np.array([[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]),
+            depths=np.array([9.0, 9.0, 9.0, 9.0]), closed=True, on_faces=())
+# a fill sitting only on the closing edge, x=0 -> the segment [0,100]->[0,0]
+onClosing = dict(key="onClosing", kind=order.FILL_KIND, seed=4.0,
+                 pts=np.array([[-6.0, 40.0], [6.0, 40.0], [6.0, 60.0], [-6.0, 60.0]]),
+                 depths=np.array([4.0, 4.0, 4.0, 4.0]))
+prep([ring, onClosing])
+check("a closed chain's wrap segment is sampled",
+      order._shared_samples(onClosing, ring) is not None,
+      "None means the pair is never constrained")
+
+open_ring = dict(ring)
+open_ring["closed"] = False
+open_ring["key"] = "open"
+check("...and an open one still is not, since it does not draw that segment",
+      order._shared_samples(onClosing, dict(open_ring)) is None)
+
+res = order.resolve([dict(ring), dict(onClosing)], is_ortho=True)
+check("the nearer fill is drawn over the ring's closing segment",
+      res[0] > res[1], f"ring={res[0]} fill={res[1]}")
+
+# depths must interpolate along the wrap too, not snap to the nearest listed leg
+ramp = dict(key="ramp", kind=0, seed=5.0,
+            pts=np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
+            depths=np.array([1.0, 1.0, 1.0, 9.0]), closed=True, on_faces=())
+prep([ramp])
+mid = order._depths_at(ramp, np.array([0.0]), np.array([5.0]), True)[0]
+check("depth is interpolated along the closing segment",
+      4.0 < mid < 6.0, f"got {mid:.2f} halfway between 9.0 and 1.0")
+
 print()
 print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))
 raise SystemExit(1 if fails else 0)

@@ -78,6 +78,9 @@ def _depths_at(item, qx, qy, is_ortho):
         return v if is_ortho else 1.0 / np.maximum(v, 1e-9)
 
     pts, d = item["pts"], item["depths"]
+    if item.get("closed") and len(pts) > 2:
+        pts = np.vstack([pts, pts[:1]])
+        d = np.concatenate([d, d[:1]])
     A = pts[:-1]
     AB = pts[1:] - A
     denom = (AB * AB).sum(axis=1)
@@ -239,6 +242,24 @@ def _bbox_of(item):
     return (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max())
 
 
+def _segments(item):
+    """Point pairs the player actually strokes, closing segment included.
+
+    A chain that comes back on itself is emitted closed, and the player calls
+    closePath(), so it draws one segment more than the point list spells out.
+    Walking `range(len(pts) - 1)` misses it, and that segment is not a detail:
+    on the Voyager probe the bus rim's closing segment runs 126px straight
+    across the feed-horn shaft, so the pair was never sampled, never
+    constrained, and the rim was painted over a shaft a full unit in front of
+    it. Nothing caught it, because every checker walked the points the same way.
+    """
+    pts = item["pts"]
+    spans = [(pts[k], pts[k + 1]) for k in range(len(pts) - 1)]
+    if item.get("closed") and len(pts) > 2:
+        spans.append((pts[-1], pts[0]))
+    return spans
+
+
 def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24):
     """Screen points covered by both elements, or None.
 
@@ -330,9 +351,9 @@ def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24)
     fx0, fx1, fy0, fy1 = _bbox_of(fill)
 
     xs, ys = [], []
-    for k in range(len(pts) - 1):
-        ax, ay = pts[k]
-        bx, by = pts[k + 1]
+    for a, b in _segments(seg):
+        ax, ay = a
+        bx, by = b
         if (max(ax, bx) < fx0 or min(ax, bx) > fx1
                 or max(ay, by) < fy0 or min(ay, by) > fy1):
             continue                      # this segment never reaches the fill
@@ -367,10 +388,10 @@ def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24)
     # So clip the line to the polygon instead of hoping to hit it. This is the
     # same fallback the fill-fill branch above already has, for the same reason.
     cx, cy = [], []
-    for k in range(len(pts) - 1):
-        ax, ay = float(pts[k][0]), float(pts[k][1])
-        bx, by = float(pts[k + 1][0]), float(pts[k + 1][1])
-        for t0, t1 in _inside_spans(pts[k], pts[k + 1], fill["pts"]):
+    for a, b in _segments(seg):
+        ax, ay = float(a[0]), float(a[1])
+        bx, by = float(b[0]), float(b[1])
+        for t0, t1 in _inside_spans(a, b, fill["pts"]):
             f = np.array([0.25, 0.5, 0.75])
             t = t0 + (t1 - t0) * f
             cx.append(ax + (bx - ax) * t)

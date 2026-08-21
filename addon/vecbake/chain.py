@@ -521,6 +521,11 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                         "key": key, "kind": 0, "seed": seed,
                         "pts": xy[final_path], "depths": depths[final_path],
                         "on_faces": on_faces,
+                        # The player closes the path, so it draws one more
+                        # segment than the point list spells out. Without this
+                        # the ordering pass never sees that segment and never
+                        # constrains anything it crosses -- see order.py.
+                        "closed": closed,
                     })
 
     if not added:
