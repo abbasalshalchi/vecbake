@@ -31,6 +31,7 @@ from . import follow
 from . import merge
 from . import occlude
 from . import order as order_mod
+from . import parallel
 from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
 from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_bounded
@@ -651,8 +652,10 @@ def bake_iter(context, settings: BakeSettings):
     occlusion_report = {"culled": 0, "hidden": 0, "cells": 0}
     if settings.occlusion_cull and settings.fills:
         yield ("Culling hidden fills", 0, 1)
-        occlusion_report = occlude.apply(elements, slots, frame_items, settings,
-                                         len(frames), width, height)
+        cull_notes: list = []
+        occlusion_report = parallel.cull_hidden(
+            elements, slots, frame_items, settings, len(frames), width, height,
+            workers=settings.order_workers, report=cull_notes.append)
 
     order_report = {"held": 0, "unranked": 0}
     if settings.accurate_order:
@@ -661,15 +664,31 @@ def bake_iter(context, settings: BakeSettings):
         # gaps have to be repaired before the tracks are reduced -- see
         # order.hold_unranked() for what happens if they are not.
         ranked = {el.key: np.zeros(len(frames), dtype=bool) for el in elements}
-        for fi, items in enumerate(frame_items):
-            if items:
-                resolved = order_mod.resolve(items, frame_ortho[fi])
-                for item, value in zip(items, resolved):
-                    slots[item["key"]]["depth"][fi] = value
-                    ranked[item["key"]][fi] = True
-            yield ("Resolving occlusion", fi + 1, len(frame_items))
+        # Frames are resolved in worker processes and land as they finish, so
+        # the counter is how many are done rather than how far along the clip
+        # we are. Empty frames never reach the pool and are counted here.
+        done = sum(1 for items in frame_items if not items)
+        yield ("Resolving occlusion", done, len(frame_items))
+        rows = []
+        # Why the pass ran the way it did -- how many workers, or why none.
+        # Worth carrying into the stats: this is the phase that dominates a
+        # dense bake, and "it quietly fell back to one core" is otherwise
+        # indistinguishable from "the scene got harder".
+        notes: list = list(cull_notes) if settings.occlusion_cull and settings.fills else []
+        for fi, resolved, stats in parallel.imap_resolve(
+                frame_items, frame_ortho, workers=settings.order_workers,
+                report=notes.append):
+            for item, value in zip(frame_items[fi], resolved):
+                slots[item["key"]]["depth"][fi] = value
+                ranked[item["key"]][fi] = True
+            rows.append(stats)
+            done += 1
+            yield ("Resolving occlusion", done, len(frame_items))
+        order_mod.LAST_STATS.clear()
+        order_mod.LAST_STATS.update(parallel.merge_stats(rows))
         held, never = order_mod.hold_unranked(slots, ranked)
-        order_report = {"held": held, "unranked": never}
+        order_report = {"held": held, "unranked": never,
+                        "pool": "; ".join(notes)}
 
     yield ("Reducing keyframes", 0, 1)
 
@@ -713,6 +732,7 @@ def bake_iter(context, settings: BakeSettings):
             # and elements that never got one. The second must be 0.
             "order_held_frames": order_report["held"],
             "order_unranked": order_report["unranked"],
+            "order_pool": order_report.get("pool", ""),
             "merged_fallback": merge_fallback,
             # Zero by construction now: anything unstable was retried unmerged.
             # A non-zero here would mean the retry itself failed.

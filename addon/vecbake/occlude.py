@@ -64,19 +64,114 @@ def _inside(px, py, xs, ys):
     return inside
 
 
+def frame_grid(settings, width, height):
+    """The coverage grid, as plain numbers a worker process can be handed."""
+    cell = float(max(1.0, settings.occlusion_px))
+    gw = max(1, int(round(width / cell)))
+    gh = max(1, int(round(height / cell)))
+    return {"gw": gw, "gh": gh, "cw": width / gw, "ch": height / gh}
+
+
+def frame_coverage(live, grid):
+    """Walk one frame's fills near to far. Returns (keys that showed, hidden).
+
+    `live` is `(key, vis, geo)` per visible fill, **already sorted nearest
+    first** -- the sort needs the depth slots, which stay in the baker.
+
+    Split out of `apply` so it can run in a worker: every frame's answer
+    depends only on that frame, and the two counters `apply` keeps are a union
+    and a sum over frames. Nothing here touches a slot, which is what makes it
+    safe to run somewhere the slots do not exist. See parallel.py.
+    """
+    gw, gh, cw, chh = grid["gw"], grid["gh"], grid["cw"], grid["ch"]
+    cx = (np.arange(gw) + 0.5) * cw
+    cy = (np.arange(gh) + 0.5) * chh
+
+    cover = np.zeros((gh, gw), dtype=bool)
+    full = False
+    seen = []
+    hidden = 0
+
+    for key, vis, v in live:
+        if not v:
+            seen.append(key)                  # no geometry to judge -- keep it
+            continue
+        xs = np.asarray(v[0::2], dtype=np.float64)
+        ys = np.asarray(v[1::2], dtype=np.float64)
+
+        x0 = max(0, int(np.floor(xs.min() / cw)))
+        x1 = min(gw, int(np.ceil(xs.max() / cw)))
+        y0 = max(0, int(np.floor(ys.min() / chh)))
+        y1 = min(gh, int(np.ceil(ys.max() / chh)))
+        if x1 <= x0 or y1 <= y0:
+            # Outside the canvas, which is Cull Offscreen's decision, not
+            # this one. It deliberately keeps a margin so geometry crossing
+            # the frame edge still draws; counting these as hidden would
+            # overrule that and pop things at the border.
+            seen.append(key)
+            continue
+
+        block = cover[y0:y1, x0:x1]           # a view, so |= writes through
+
+        # Two early outs, and they are the whole reason this is affordable
+        # on a dense scene. Once the near geometry has filled the grid,
+        # everything behind it costs one bounding box test and no polygon
+        # work at all.
+        if full or block.all():
+            hidden += 1
+            continue
+
+        gx, gy = np.meshgrid(cx[x0:x1], cy[y0:y1])
+        hit = _inside(gx.ravel(), gy.ravel(), xs, ys).reshape(gy.shape)
+        if not hit.any():
+            seen.append(key)                  # thinner than one cell -- keep it
+            continue
+
+        if not (hit & ~block).any():
+            hidden += 1
+            continue
+
+        seen.append(key)
+        if vis >= 0.999:                      # only an opaque fill hides things
+            block |= hit
+            if cover.all():
+                full = True
+
+    return seen, hidden
+
+
+def live_fills(fills, slots, fi):
+    """This frame's visible fills as `(key, vis, geo)`, nearest first."""
+    live = [el for el in fills if slots[el.key]["vis"][fi] > 0.0]
+    # Nearest first. Bigger depth is further away -- see ir.Element.
+    live.sort(key=lambda el: slots[el.key]["depth"][fi])
+    return [(el.key, float(slots[el.key]["vis"][fi]), slots[el.key]["geo"][fi])
+            for el in live]
+
+
+def finish(fills, seen, hidden, slots, frame_items, grid):
+    """Remove the fills that showed nothing, in any frame, anywhere."""
+    # Nothing above touched a slot. Only fills that showed nothing in any frame
+    # are removed, and they are removed everywhere at once -- so no element
+    # ever gains a fade, and no element is ordered in one frame and not another.
+    gone = {el.key for el in fills if el.key not in seen}
+    for key in gone:
+        slots[key]["vis"][:] = 0.0
+    if gone and frame_items:
+        for items in frame_items:
+            if items:
+                items[:] = [it for it in items if it["key"] not in gone]
+    return {"culled": len(gone), "hidden": hidden,
+            "cells": grid["gw"] * grid["gh"]}
+
+
 def apply(elements, slots, frame_items, settings, nframes, width, height):
     """Zero the visibility of every fill hidden in every frame.
 
     `_finish` drops elements whose visibility never rises above zero, so
     clearing the flag is all the removal that is needed here.
     """
-    cell = float(max(1.0, settings.occlusion_px))
-    gw = max(1, int(round(width / cell)))
-    gh = max(1, int(round(height / cell)))
-    cw = width / gw
-    chh = height / gh
-    cx = (np.arange(gw) + 0.5) * cw
-    cy = (np.arange(gh) + 0.5) * chh
+    grid = frame_grid(settings, width, height)
 
     fills = [el for el in elements if el.kind == FILL]
     if not fills:
@@ -93,75 +188,15 @@ def apply(elements, slots, frame_items, settings, nframes, width, height):
     # for those frames leaves its depth as a raw camera distance while every
     # ordered element carries an integer rank, and interpolating between the
     # two is meaningless. Both faults read as flicker.
-    seen = {el.key: 0 for el in fills}
+    seen: set = set()
     hidden = 0
 
     for fi in range(nframes):
-        live = [el for el in fills if slots[el.key]["vis"][fi] > 0.0]
+        live = live_fills(fills, slots, fi)
         if not live:
             continue
-        # Nearest first. Bigger depth is further away -- see ir.Element.
-        live.sort(key=lambda el: slots[el.key]["depth"][fi])
+        showed, count = frame_coverage(live, grid)
+        seen.update(showed)
+        hidden += count
 
-        cover = np.zeros((gh, gw), dtype=bool)
-        full = False
-
-        for el in live:
-            slot = slots[el.key]
-            v = slot["geo"][fi]
-            if not v:
-                seen[el.key] += 1             # no geometry to judge -- keep it
-                continue
-            xs = np.asarray(v[0::2], dtype=np.float64)
-            ys = np.asarray(v[1::2], dtype=np.float64)
-
-            x0 = max(0, int(np.floor(xs.min() / cw)))
-            x1 = min(gw, int(np.ceil(xs.max() / cw)))
-            y0 = max(0, int(np.floor(ys.min() / chh)))
-            y1 = min(gh, int(np.ceil(ys.max() / chh)))
-            if x1 <= x0 or y1 <= y0:
-                # Outside the canvas, which is Cull Offscreen's decision, not
-                # this one. It deliberately keeps a margin so geometry crossing
-                # the frame edge still draws; counting these as hidden would
-                # overrule that and pop things at the border.
-                seen[el.key] += 1
-                continue
-
-            block = cover[y0:y1, x0:x1]       # a view, so |= writes through
-
-            # Two early outs, and they are the whole reason this is affordable
-            # on a dense scene. Once the near geometry has filled the grid,
-            # everything behind it costs one bounding box test and no polygon
-            # work at all.
-            if full or block.all():
-                hidden += 1
-                continue
-
-            gx, gy = np.meshgrid(cx[x0:x1], cy[y0:y1])
-            hit = _inside(gx.ravel(), gy.ravel(), xs, ys).reshape(gy.shape)
-            if not hit.any():
-                seen[el.key] += 1             # thinner than one cell -- keep it
-                continue
-
-            if not (hit & ~block).any():
-                hidden += 1
-                continue
-
-            seen[el.key] += 1
-            if slot["vis"][fi] >= 0.999:      # only an opaque fill hides things
-                block |= hit
-                if cover.all():
-                    full = True
-
-    # Nothing above touched a slot. Only fills that showed nothing in any frame
-    # are removed, and they are removed everywhere at once -- so no element
-    # ever gains a fade, and no element is ordered in one frame and not another.
-    gone = {k for k, n in seen.items() if n == 0}
-    for key in gone:
-        slots[key]["vis"][:] = 0.0
-    if gone and frame_items:
-        for items in frame_items:
-            if items:
-                items[:] = [it for it in items if it["key"] not in gone]
-
-    return {"culled": len(gone), "hidden": hidden, "cells": gw * gh}
+    return finish(fills, seen, hidden, slots, frame_items, grid)

@@ -213,6 +213,12 @@ class VECBAKE_PG_settings(PropertyGroup):
         description="Work out true occlusion order per frame using plane tests "
                     "instead of centroid depth. Costs bake time, nothing at runtime, "
                     "and stops large floors slicing through objects standing on them")
+    order_workers: IntProperty(
+        name="Order Workers", default=0, min=0, max=64,
+        description="How many processes share out Resolve Paint Order, which is "
+                    "most of a dense bake. Zero uses one per core, less one for "
+                    "Blender. Set it to 1 to run the pass in Blender itself -- "
+                    "slower, and the way to check a result the pool produced")
 
     stroke_color: FloatVectorProperty(name="Stroke Colour", subtype="COLOR", size=3,
                                       min=0.0, max=1.0, default=(0.00605, 0.00605, 0.00857),
@@ -388,6 +394,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.occlusion_cull = self.occlusion_cull
         s.occlusion_px = self.occlusion_px
         s.accurate_order = self.accurate_order
+        s.order_workers = self.order_workers
         s.stroke_color = tuple(self.stroke_color)
         s.stroke_width = self.stroke_width
         s.stroke_source = self.stroke_source
@@ -777,6 +784,8 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "always_freestyle")
         grid.prop(props, "always_crease")
         grid.prop(props, "accurate_order")
+        if props.accurate_order:
+            grid.prop(props, "order_workers")
         grid.prop(props, "chain_edges")
         if props.chain_edges:
             grid.prop(props, "chain_junctions")

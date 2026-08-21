@@ -118,6 +118,7 @@ class BakeSettings:
     # --- misc -------------------------------------------------------------
     depth_bias: float = 1e-4      # pulls edges in front of their own faces
     accurate_order: bool = True   # resolve true paint order offline (see order.py)
+    order_workers: int = 0        # processes for that pass; 0 picks from the machine
     include_ids: bool = True
     lerpa_states: bool = True       # embed the resting states in the animated SVG
 
