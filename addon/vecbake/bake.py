@@ -1210,7 +1210,17 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 slot = slots[f"{plan.name}/m{r}"]
                 li = pick.get(r)
                 if li is None or li >= len(loops) or len(loops[li]) < 3:
-                    slot["vis"][fi] = 0.0        # no loop for this slot here
+                    # No loop for this slot: the object has turned away, or it
+                    # shows fewer regions this frame than at its busiest.
+                    #
+                    # Holding the last outline through this was tried, to stop
+                    # parts blinking when the walk failed. It is the wrong
+                    # answer twice over: it hid a real defect -- coincident
+                    # endpoints not welding, so the loop could not close -- and
+                    # it froze part_004 in place for 59 frames of 60, which
+                    # reads worse than the blink it replaced. The walk is fixed;
+                    # this is now only what it says.
+                    slot["vis"][fi] = 0.0
                     continue
                 poly = loops[li]
                 pos, arcs, pts = outline_mod.follow(

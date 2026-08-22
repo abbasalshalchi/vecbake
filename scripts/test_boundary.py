@@ -191,6 +191,77 @@ check("a single loop is always a region",
       boundary.classify(boundary.outline_of([quad(0, 0, 5, 5)],
                                             *edges_of([quad(0, 0, 5, 5)]))) == [True])
 
+# --- two pieces meeting at one corner must meet at one node ---------------
+# The failure this fixes: two faces contribute the same corner, and the same
+# vertex projected along two paths differs in its last bits -- 1.7e-5 px,
+# measured on test_ell. Keyed by rounding, that corner became two nodes of
+# degree one, the walk could not close the loop, and the whole part vanished
+# for that frame. It failed on 12 of 24 frames on a 16-vertex shape.
+def nudge(poly, eps):
+    """The same polygon, with every coordinate off by a hair."""
+    return poly + np.array([[eps, -eps]] * len(poly))
+
+a = quad(0, 0, 10, 10)
+b = nudge(quad(10, 0, 20, 10), 1.7e-5)     # touches a's right edge, imprecisely
+faces = [a, b]
+loops = boundary.outline_of(faces, *edges_of(faces))
+check("two faces touching along an imprecise edge still give one loop",
+      len(loops) == 1, f"{len(loops)} loops")
+if loops:
+    check("...enclosing both of them", abs(area(loops[0]) - 200.0) < 0.01,
+          f"{area(loops[0]):.3f} vs 200")
+
+# and a corner join, which is what test_ell actually does
+c = quad(0, 0, 10, 10)
+e = nudge(quad(10, 10, 20, 20), 2e-5)
+faces = [c, e]
+loops = boundary.outline_of(faces, *edges_of(faces))
+check("two faces meeting at one imprecise corner still walk",
+      len(loops) >= 1, f"{len(loops)} loops")
+check("...covering both squares",
+      abs(sum(area(L) for L in loops) - 200.0) < 0.01,
+      f"{sum(area(L) for L in loops):.3f} vs 200")
+
+# a drift wider than the weld must NOT be merged -- these are different points
+far = [quad(0, 0, 10, 10), quad(10.5, 0, 20, 10)]
+loops = boundary.outline_of(far, *edges_of(far))
+check("faces that genuinely do not touch stay two loops", len(loops) == 2,
+      f"{len(loops)} loops")
+
+# --- one missing piece must not lose the whole outline --------------------
+# The boundary can come back a piece short where geometry is exactly tangent.
+# part_012 produced 35 correct pieces over 36 nodes with 34 properly paired,
+# and returning nothing for that frame made the part vanish. A chain that is
+# nearly closed is an outline; a chain whose ends are far apart is not.
+# one small piece of a long boundary, which is the real case: part_012 lost a
+# piece of a few pixels from an outline about a hundred across
+# a square whose sides are cut into eight pieces each
+corners = [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)]
+fine = np.asarray([
+    (np.array(corners[i]) + (np.array(corners[(i + 1) % 4]) - np.array(corners[i])) * (k / 8))
+    for i in range(4) for k in range(8)])
+segs, owners = edges_of([fine])
+pieces = boundary.split_at_crossings(segs)[0]
+short = boundary.walk_loops(np.delete(pieces, 5, axis=0))
+check("an outline missing one small piece is closed, not discarded",
+      len(short) == 1, f"{len(short)} loops")
+if short:
+    check("...and encloses about the right area",
+          abs(area(short[0]) - 6400.0) < 60.0, f"{area(short[0]):.0f} vs 6400")
+
+# a gap of a quarter of the shape is not a missing piece, it is a missing side
+gappy = boundary.walk_loops(np.delete(
+    boundary.split_at_crossings(edges_of([quad(0, 0, 40, 40)])[0])[0], 0, axis=0))
+check("a gap the size of a whole side is refused", len(gappy) == 0,
+      f"{len(gappy)} loops")
+
+# two far-apart fragments are not one outline and must not be joined
+frag = np.array([[[0.0, 0.0], [10.0, 0.0]], [[10.0, 0.0], [10.0, 10.0]],
+                 [[500.0, 500.0], [510.0, 500.0]]])
+check("distant fragments are not welded into an invented loop",
+      all(area(L) < 200.0 for L in boundary.walk_loops(frag)),
+      str([round(area(L)) for L in boundary.walk_loops(frag)]))
+
 # --- degenerate input must not raise --------------------------------------
 check("no faces gives no loops", boundary.outline_of([], np.zeros((0, 2, 2)), []) == [])
 check("a zero-area face does not hang",

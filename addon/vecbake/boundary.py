@@ -38,14 +38,50 @@ import math
 
 import numpy as np
 
-# Endpoints are matched by rounding to this many decimals. Coordinates are in
-# pixels, so a millionth of a pixel is far below anything the bake can mean,
-# and far above the drift of an intersection computed two different ways.
-QUANT = 6
+# How far apart two endpoints may be and still be the same point. Coordinates
+# are in pixels and the bake's own tolerance is 0.35, so a thousandth of a
+# pixel is far below anything it can mean.
+#
+# It is not arbitrary at the bottom end either. Two pieces meeting at one
+# corner arrive from different faces, and the same vertex projected along two
+# paths differs in its last bits: 1.7e-5 px, measured. Rounding to 1e-6 -- the
+# first thing this did -- split such a corner into two nodes of degree one, the
+# walk could not close the loop, and the whole part vanished for that frame.
+#
+# Rounding to a coarser grid does not fix it. Two points 1.7e-5 apart still
+# land in different cells whenever they straddle a boundary, so the failure
+# comes back at a lower rate and looks like bad luck. Snapping to a shared
+# representative is what actually makes "the same point" mean the same thing.
+WELD = 1e-3
+
+# How far apart an open chain's two ends may be, as a fraction of the chain's
+# own extent, before closing it would be inventing geometry rather than
+# completing it.
+CLOSE_GAP = 0.25
 
 
-def _key(p):
-    return (round(float(p[0]), QUANT), round(float(p[1]), QUANT))
+class _Weld:
+    """Gives every endpoint within WELD of each other one shared key.
+
+    A dict on rounded coordinates alone cannot do this -- that is a grid, and a
+    grid cuts somewhere. Each point is looked up against the nine cells around
+    it, so a neighbour just over a cell boundary is still found.
+    """
+
+    def __init__(self, eps=WELD):
+        self.eps = eps
+        self.cells: dict = {}
+
+    def key(self, p):
+        x, y = float(p[0]), float(p[1])
+        cx, cy = int(x // self.eps), int(y // self.eps)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for kx, ky in self.cells.get((cx + dx, cy + dy), ()):
+                    if abs(kx - x) <= self.eps and abs(ky - y) <= self.eps:
+                        return (kx, ky)
+        self.cells.setdefault((cx, cy), []).append((x, y))
+        return (x, y)
 
 
 def split_at_crossings(segs):
@@ -182,41 +218,86 @@ def walk_loops(pieces, min_points=3):
     """
     if not len(pieces):
         return []
+    weld = _Weld()
+    ends = [(weld.key(p), weld.key(q)) for p, q in pieces]
     nodes = {}
-    for idx, (p, q) in enumerate(pieces):
-        for end, other in ((p, q), (q, p)):
-            nodes.setdefault(_key(end), []).append((idx, np.asarray(end), np.asarray(other)))
+    for idx, (ka, kb) in enumerate(ends):
+        for k, other in ((ka, kb), (kb, ka)):
+            nodes.setdefault(k, []).append((idx, np.asarray(k), np.asarray(other)))
 
     used = np.zeros(len(pieces), dtype=bool)
     loops = []
-    for start_idx in range(len(pieces)):
-        if used[start_idx]:
+
+    def step(cur, prev):
+        """The next unused piece at `cur`, taking the sharpest turn available."""
+        back = math.atan2(prev[1] - cur[1], prev[0] - cur[0])
+        best, best_turn = None, None
+        for idx, _end, other in nodes.get(tuple(cur), ()):
+            if used[idx]:
+                continue
+            turn = (math.atan2(other[1] - cur[1], other[0] - cur[0]) - back) % (2 * math.pi)
+            if best_turn is None or turn < best_turn:
+                best, best_turn = (idx, other), turn
+        return best
+
+    for seed in range(len(pieces)):
+        if used[seed]:
             continue
-        p, q = pieces[start_idx]
-        loop = [np.asarray(p)]
-        cur, prev = np.asarray(q), np.asarray(p)
-        used[start_idx] = True
-        guard = len(pieces) + 2
-        while guard > 0:
-            guard -= 1
-            if _key(cur) == _key(loop[0]):
+        ka, kb = ends[seed]
+        used[seed] = True
+        loop = [np.asarray(ka), np.asarray(kb)]
+        closed = False
+
+        # Grow forward, then backward from the seed. Both directions matter:
+        # a seed landing in the middle of an open chain would otherwise walk
+        # one way, stop at the break, and leave the rest to be found as a
+        # second fragment -- two half outlines where there is one.
+        cur, prev = np.asarray(kb), np.asarray(ka)
+        for _ in range(len(pieces) + 1):
+            if tuple(cur) == ka:
+                closed = True
+                loop.pop()
                 break
-            loop.append(cur)
-            here = nodes.get(_key(cur), [])
-            back = math.atan2(prev[1] - cur[1], prev[0] - cur[0])
-            best, best_turn = None, None
-            for idx, end, other in here:
-                if used[idx]:
-                    continue
-                turn = (math.atan2(other[1] - cur[1], other[0] - cur[0]) - back) % (2 * math.pi)
-                if best_turn is None or turn < best_turn:
-                    best, best_turn = (idx, other), turn
-            if best is None:
-                break                      # a dangling end: not a closed loop
-            used[best[0]] = True
-            prev, cur = cur, best[1]
-        if len(loop) >= min_points and _key(cur) == _key(loop[0]):
-            loops.append(np.asarray(loop))
+            nxt = step(cur, prev)
+            if nxt is None:
+                break
+            used[nxt[0]] = True
+            prev, cur = cur, nxt[1]
+            loop.append(np.asarray(cur))
+
+        if not closed:
+            head, after = np.asarray(ka), np.asarray(kb)
+            for _ in range(len(pieces) + 1):
+                nxt = step(head, after)
+                if nxt is None:
+                    break
+                used[nxt[0]] = True
+                after, head = head, nxt[1]
+                loop.insert(0, np.asarray(head))
+                if tuple(head) == tuple(loop[-1]):
+                    closed = True
+                    loop.pop()
+                    break
+
+        if len(loop) < min_points:
+            continue
+        if not closed:
+            # The chain ran out of pieces without returning to its start. That
+            # is one missing piece, not a missing outline: on part_012 the
+            # boundary came back as 35 correct pieces over 36 nodes, 34 of them
+            # properly paired, and discarding the lot lost the part for that
+            # frame. An open chain of boundary pieces is an outline that needs
+            # closing, and a fill closes implicitly anyway.
+            #
+            # Only across a gap small next to the shape itself. A wide gap
+            # means these pieces do not describe one region, and joining them
+            # would invent an edge that is nowhere in the geometry.
+            span = np.asarray(loop)
+            extent = float(np.hypot(*(span.max(axis=0) - span.min(axis=0))))
+            gap = float(np.hypot(*(span[-1] - span[0])))
+            if extent <= 0.0 or gap > CLOSE_GAP * extent:
+                continue
+        loops.append(np.asarray(loop))
     return loops
 
 
@@ -277,9 +358,10 @@ def outline_of(faces, candidates, owners):
     # the same boundary and it really is a boundary -- and leaving both in
     # gives the walk a node of degree three where the boundary has degree two,
     # which it cannot get past. One piece of boundary, one segment.
+    weld = _Weld()
     seen, unique = set(), []
     for p, q in kept:
-        a, b = _key(p), _key(q)
+        a, b = weld.key(p), weld.key(q)
         edge = (a, b) if a <= b else (b, a)
         if edge in seen or a == b:
             continue
