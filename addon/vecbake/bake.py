@@ -25,6 +25,7 @@ import numpy as np
 import bpy
 from mathutils import Vector
 
+from . import boundary as boundary_mod
 from . import chain as chain_mod
 from . import curves
 from . import follow
@@ -281,9 +282,16 @@ class ObjectPlan:
         # Slots for the merged outline. `outline_n` is fixed before the pass
         # that writes geometry; `outline_need` is what the measuring pass
         # found this object actually wants -- see bake_iter.
-        self.outline_n = None
-        self.outline_need = 0
-        self.outline_prev = None   # (arc fractions, points) of the last frame
+        # One merged element per loop of the object's screen boundary. An
+        # object covers one region usually, two when it has a hole or splits
+        # in the projection. `outline_ns` is the point count per loop, fixed
+        # before the pass that writes geometry; the rest is what the measuring
+        # pass found -- see bake_iter.
+        self.outline_ns = None      # [npts per loop] once measured
+        self.outline_fill = None    # [True=region, False=hole] per loop
+        self.outline_need = {}      # loop index -> most points any frame wants
+        self.outline_sign = {}      # loop index -> [+1/-1 seen per frame]
+        self.outline_prev = {}      # loop index -> (arc fractions, points)
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -534,7 +542,9 @@ def bake_iter(context, settings: BakeSettings):
                         plan = ObjectPlan(obj, me, settings)
                         if obj.name in no_merge:
                             plan.merge_fill = False
-                        plan.outline_n = outline_slots.get(obj.name)
+                        got = outline_slots.get(obj.name)
+                        if got:
+                            plan.outline_ns, plan.outline_fill = got
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
                     else:
@@ -556,7 +566,7 @@ def bake_iter(context, settings: BakeSettings):
     merge_fallback: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
-    outline_slots: dict[str, int] = {}
+    outline_slots: dict[str, tuple] = {}
     try:
         yield from sample_pass()
 
@@ -570,19 +580,34 @@ def bake_iter(context, settings: BakeSettings):
         # recorded, per object, the largest point count any single frame's
         # outline earned at the dissolve tolerance. That is the count, and now
         # it is known the geometry can be written.
-        wanted = {name: p.outline_need for name, p in plans.items()
+        wanted = {name: p for name, p in plans.items()
                   if p.fills and p.merge_fill and name not in no_merge}
         if wanted:
-            # An object no frame ever gave a ring for has nothing to merge.
-            # That is the shape whose outline is not one simple loop -- two
-            # separate loops, or a genus above zero -- and also a closed solid
-            # with Backface Cull off, where every edge has two drawn faces and
-            # there is no silhouette to find at all. Those fall back.
-            # `need < 3` is "no usable ring in any frame"; `need < 0` is
-            # "a ring, but one that crosses itself on screen".
-            merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
+            # An object with no loop in any frame has nothing to merge: an
+            # outline that is not one simple region, or a closed solid with
+            # Backface Cull off, where every edge has two drawn faces and
+            # there is no boundary to find at all.
+            merge_fallback = sorted(n for n, p in wanted.items() if not p.outline_need)
             no_merge.update(merge_fallback)
-            outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
+            for name, p in wanted.items():
+                if name in no_merge:
+                    continue
+                ranks = sorted(p.outline_need)
+                # A loop that appears in only a handful of frames is not worth
+                # an element for the whole clip: it costs a point count in
+                # every frame to draw in three. The largest region always
+                # stays.
+                keep = [r for r in ranks
+                        if r == 0 or len(p.outline_sign.get(r, ())) >= 0.15 * len(frames)]
+                if not keep:
+                    continue
+                outline_slots[name] = (
+                    [max(3, p.outline_need[r]) for r in keep],
+                    # region or hole, by what it was in most of the frames it
+                    # appeared in -- one odd frame must not decide the kind of
+                    # an element that exists for the whole clip
+                    [sum(p.outline_sign.get(r, (1,))) >= 0 for r in keep],
+                )
 
             plans.clear()
             elements.clear()
@@ -731,13 +756,19 @@ def bake_iter(context, settings: BakeSettings):
             "follow_points": follow_report["points"],
             "silhouette_corners": follow_report["silhouettes"],
             "merged_fills": sum(1 for p in plans.values()
-                                if p.fills and p.merge_fill and p.outline_n),
+                                if p.fills and p.merge_fill and p.outline_ns),
+            # Objects whose outline is more than one loop -- a hole, or a
+            # shape that splits into separate regions on screen.
+            "merged_multi_loop": sum(1 for p in plans.values()
+                                     if p.outline_ns and len(p.outline_ns) > 1),
+            "merged_holes": sum(1 for p in plans.values() if p.outline_fill
+                                for f in p.outline_fill if not f),
             # Points each merged outline ended up carrying. Worth reporting:
             # this is the number the whole feature turns on, and a count near
             # an object's vertex total means its outline is genuinely that
             # complicated rather than that the measuring pass failed.
-            "merged_slots": {n: p.outline_n for n, p in sorted(plans.items())
-                             if p.outline_n},
+            "merged_slots": {n: list(p.outline_ns) for n, p in sorted(plans.items())
+                             if p.outline_ns},
             "occlusion_culled": occlusion_report["culled"],
             "occlusion_hidden_frames": occlusion_report["hidden"],
             # Frames whose paint rank was held over from a drawn frame,
@@ -755,6 +786,39 @@ def bake_iter(context, settings: BakeSettings):
     return vec
 
 
+def screen_loops(plan, facing, xy):
+    """The loops of this object's outline on screen, largest region first.
+
+    Silhouette edges are the candidates -- an edge between two drawn faces has
+    the object on both sides and cannot bound it -- and boundary.outline_of
+    cuts them at their crossings and drops whatever turns out to be interior.
+    That is what makes a fold, a branch and a hole ordinary rather than three
+    separate defeats. See boundary.py.
+    """
+    idx = np.nonzero(facing)[0]
+    if not len(idx):
+        return []
+    polys = []
+    for f in idx:
+        lo = int(plan.loop_start[f])
+        polys.append(xy[plan.loop_verts[lo:lo + int(plan.loop_total[f])]])
+    where = np.full(plan.nfaces, -1, dtype=np.int64)
+    where[idx] = np.arange(len(idx))
+
+    edges = merge.silhouette_edges(plan, facing)
+    if len(edges) < 3:
+        return []
+    ev = plan.edge_verts[edges]
+    segs = np.stack([xy[ev[:, 0]], xy[ev[:, 1]]], axis=1)
+    a, b = plan.edge_face_a[edges], plan.edge_face_b[edges]
+    a_ok = (a >= 0) & facing[np.maximum(a, 0)]
+    owners = where[np.where(a_ok, a, np.maximum(b, 0))]
+    keep = owners >= 0
+    if not keep.any():
+        return []
+    return boundary_mod.outline_of(polys, segs[keep], owners[keep])
+
+
 def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
     def new_slot(key, npts):
         slots[key] = {
@@ -768,31 +832,32 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
             "npts": npts,
         }
 
-    if plan.fills and plan.merge_fill:
-        # One element for the whole object, carrying as many points as the
-        # busiest frame's outline needs. That number is a per-frame fact and an
-        # element's point count is not, so it comes from the measuring pass --
-        # see bake_iter. Without one there is nothing to go on but an upper
-        # bound, and every vertex is an upper bound.
-        key = f"{plan.name}/m"
-        elements.append(
-            Element(
-                key=key,
-                kind=FILL,
-                npts=plan.outline_n or plan.nverts,
-                group=plan.group,
-                color=plan.face_color[0] if plan.nfaces else 0,
-                # The outline draws its own silhouette. Nothing else can: which
-                # edges are on it changes every frame, so as strokes it costs
-                # one element per edge that ever qualifies -- 554 of them for
-                # the lab sphere, which has no sharp edge at all. Sharp edges
-                # are unaffected and stay ordinary strokes; they are fixed by
-                # topology and already cost one element each.
-                width=settings.stroke_width if settings.strokes else 0.0,
-                edge_color=plan.stroke_color if settings.strokes else None,
+    if plan.fills and plan.merge_fill and plan.outline_ns:
+        # One element per loop of the screen boundary. Usually one; two when
+        # the object has a hole, or splits into separate regions from some
+        # angles. The count and each loop's point total are per-clip facts and
+        # come from the measuring pass -- see bake_iter.
+        for r, npts in enumerate(plan.outline_ns):
+            key = f"{plan.name}/m{r}"
+            fill = plan.outline_fill[r]
+            elements.append(
+                Element(
+                    key=key,
+                    # A hole is not a region: filling it would paint over
+                    # whatever shows through. It is still an edge the viewer
+                    # sees, so it is drawn as a closed stroke instead.
+                    kind=FILL if fill else STROKE,
+                    npts=npts,
+                    group=plan.group,
+                    color=(plan.face_color[0] if (fill and plan.nfaces)
+                           else plan.stroke_color),
+                    width=settings.stroke_width if (settings.strokes or not fill) else 0.0,
+                    edge_color=(plan.stroke_color
+                                if (fill and settings.strokes) else None),
+                    closed=not fill,
+                )
             )
-        )
-        new_slot(key, plan.outline_n or plan.nverts)
+            new_slot(key, npts)
     elif plan.fills:
         for fidx in range(plan.nfaces):
             npts = int(plan.loop_total[fidx])
@@ -1034,65 +1099,59 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     cull = settings.cull_offscreen
 
     if plan.fills and plan.merge_fill:
-        key = f"{plan.name}/m"
-        slot = slots[key]
-        loop = None
-        if face_facing.any():
-            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
-        if loop is None:
-            # No usable ring this frame -- nothing drawn, or a shape whose
-            # outline is not one simple loop. Leave the slot empty; freezing
-            # takes care of holding the last good frame.
-            slot["vis"][fi] = 0.0
-        elif plan.outline_n is None:
-            # Measuring pass. Record how many points this frame's outline earns
-            # and write nothing: the element does not have its final point
-            # count yet, so there is no slot of the right width to write into.
-            poly = outline_mod.polyline(loop, xy)
-            if not outline_mod.is_simple(poly):
-                # The ring closes in 3D but crosses itself on screen: a
-                # non-convex part whose silhouette folds behind its own body.
-                # Resampling cannot untangle what the loop already is, and a
-                # merged fill of it draws as a knot, so this object does not
-                # merge at all. Marked for the whole clip, because the point
-                # count and the representation are both fixed before sampling.
-                plan.outline_need = -1
-            elif plan.outline_need >= 0:
-                plan.outline_need = max(
-                    plan.outline_need,
+        loops = screen_loops(plan, face_facing, xy) if face_facing.any() else []
+        if plan.outline_ns is None:
+            # Measuring pass. Record how many loops this object shows, whether
+            # each is a region or a hole, and how many points each earns. No
+            # geometry is written: the elements do not exist yet, because
+            # their count and widths are what is being measured.
+            kinds = boundary_mod.classify(loops)
+            for r, poly in enumerate(loops):
+                plan.outline_sign.setdefault(r, []).append(1 if kinds[r] else -1)
+                plan.outline_need[r] = max(
+                    plan.outline_need.get(r, 0),
                     len(outline_mod.choose(poly, settings.dissolve_px)))
-            slot["vis"][fi] = 0.0
         else:
-            poly = outline_mod.polyline(loop, xy)
-            # Carry last frame's positions rather than choosing afresh. On a
-            # smooth outline every candidate deviates by nearly the same amount
-            # -- 0.33px of spread across the lab sphere's whole ring -- so
-            # choosing from scratch re-assigned a third of the slots every
-            # frame for no reason, and a slot that jitters by its own spacing
-            # costs a keyframe in every frame of the clip. The carried set is
-            # measured against the real outline first and only kept if it is
-            # inside tolerance, so accuracy is not what is being traded.
-            pos, arcs, pts = outline_mod.follow(
-                poly, plan.outline_n, settings.dissolve_px, plan.outline_prev)
-            plan.outline_prev = (arcs, pts)
-            visible = True
-            if cull:
-                visible = not (
-                    pts[:, 0].max() < lo_x or pts[:, 0].min() > hi_x
-                    or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
-                )
             vis_faces = np.nonzero(face_visible)[0]
-            slot["geo"][fi] = pts.ravel().tolist()
-            slot["vis"][fi] = float(plan.face_alpha[vis_faces].max()) if visible else 0.0
-            slot["depth"][fi] = float(face_depth[vis_faces].mean())
-            slot["shade"][fi] = (float(face_shade[vis_faces].mean())
-                                 if plan.shading else 1.0)
-            if visible and collect is not None:
-                lv_loop = np.asarray(loop, dtype=np.int64)
-                collect.append({
-                    "key": key, "kind": 1, "seed": slot["depth"][fi],
-                    "pts": xy[lv_loop], "depths": depth[lv_loop],
-                })
+            base_depth = float(face_depth[vis_faces].mean()) if len(vis_faces) else 0.0
+            shade = (float(face_shade[vis_faces].mean())
+                     if (plan.shading and len(vis_faces)) else 1.0)
+            alpha = float(plan.face_alpha[vis_faces].max()) if len(vis_faces) else 0.0
+            for r, npts in enumerate(plan.outline_ns):
+                slot = slots[f"{plan.name}/m{r}"]
+                if r >= len(loops) or len(loops[r]) < 3:
+                    slot["vis"][fi] = 0.0        # fewer loops this frame
+                    continue
+                poly = loops[r]
+                pos, arcs, pts = outline_mod.follow(
+                    poly, npts, settings.dissolve_px, plan.outline_prev.get(r))
+                plan.outline_prev[r] = (arcs, pts)
+                visible = True
+                if cull:
+                    visible = not (
+                        pts[:, 0].max() < lo_x or pts[:, 0].min() > hi_x
+                        or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
+                    )
+                slot["geo"][fi] = pts.ravel().tolist()
+                slot["vis"][fi] = alpha if visible else 0.0
+                # Smaller loops sit on top: a hole is drawn over the region it
+                # is cut out of, and a nested region over its surround. One
+                # step of the depth budget is enough to settle it and small
+                # enough not to reorder this object against anything else.
+                slot["depth"][fi] = base_depth - r * 1e-4 * max(abs(base_depth), 1.0)
+                slot["shade"][fi] = shade
+            if collect is not None and face_facing.any():
+                for r, npts in enumerate(plan.outline_ns):
+                    slot = slots[f"{plan.name}/m{r}"]
+                    if slot["vis"][fi] > 0.0 and slot["geo"][fi]:
+                        g = np.asarray(slot["geo"][fi], dtype=np.float64).reshape(-1, 2)
+                        collect.append({
+                            "key": f"{plan.name}/m{r}",
+                            "kind": 1 if plan.outline_fill[r] else 0,
+                            "seed": float(slot["depth"][fi]),
+                            "pts": g,
+                            "depths": np.full(len(g), float(slot["depth"][fi])),
+                        })
     elif plan.fills:
         lv = plan.loop_verts
         for fidx in range(nf):

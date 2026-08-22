@@ -169,6 +169,28 @@ check("collinear overlapping segments are cut at each other's ends",
       len(boundary.split_at_crossings(same)[0]) == 4,
       f"{len(boundary.split_at_crossings(same)[0])} pieces")
 
+# --- region or hole is containment, never winding -------------------------
+# A loop's direction here comes from whichever segment the walk started on,
+# and projected mesh edges are wound every which way, so orientation decides
+# nothing. Hand-built faces happen to be consistent, which is exactly how a
+# winding test passes here and fails on a real mesh.
+faces = [quad(0, 0, 12, 3), quad(0, 9, 12, 12), quad(0, 0, 3, 12), quad(9, 0, 12, 12)]
+loops = boundary.outline_of(faces, *edges_of(faces))
+kinds = boundary.classify(loops)
+check("the outer loop is a region", kinds and kinds[0] is True)
+check("the loop inside it is a hole", len(kinds) == 2 and kinds[1] is False)
+
+flipped = [L[::-1].copy() for L in loops]
+check("reversing every loop changes nothing", boundary.classify(flipped) == kinds,
+      f"{boundary.classify(flipped)} vs {kinds}")
+
+faces = [quad(0, 0, 10, 10), quad(20, 0, 30, 10)]
+side = boundary.classify(boundary.outline_of(faces, *edges_of(faces)))
+check("two loops side by side are both regions", side == [True, True], str(side))
+check("a single loop is always a region",
+      boundary.classify(boundary.outline_of([quad(0, 0, 5, 5)],
+                                            *edges_of([quad(0, 0, 5, 5)]))) == [True])
+
 # --- degenerate input must not raise --------------------------------------
 check("no faces gives no loops", boundary.outline_of([], np.zeros((0, 2, 2)), []) == [])
 check("a zero-area face does not hang",

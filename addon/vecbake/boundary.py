@@ -293,6 +293,32 @@ def outline_of(faces, candidates, owners):
     return loops
 
 
+def classify(loops):
+    """For each loop, is it a region the object covers, or a hole in one?
+
+    Not by winding. A loop's direction here is inherited from whichever mesh
+    edge the walk happened to start on, and mesh edges on screen are wound
+    every which way once projected -- so orientation says nothing. It reads as
+    working on synthetic input only because faces built by hand come out
+    consistently wound.
+
+    Containment is the real question, and it is the definition: a hole is a
+    loop that lies inside another loop of the same object. Loops arrive
+    largest first, so anything a bigger one contains is a hole in it, and two
+    loops side by side are two regions.
+    """
+    out = []
+    for i, loop in enumerate(loops):
+        c = loop.mean(axis=0)
+        inside_bigger = False
+        for j in range(i):
+            if bool(_inside(np.array([c[0]]), np.array([c[1]]), loops[j])[0]):
+                inside_bigger = True
+                break
+        out.append(not inside_bigger)
+    return out
+
+
 def _area(loop):
     x, y = loop[:, 0], loop[:, 1]
     return abs(float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum())) / 2.0
