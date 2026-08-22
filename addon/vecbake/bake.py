@@ -41,7 +41,14 @@ from .settings import BakeSettings
 
 
 # How near edge-on a face has to be before its facing is treated as unsettled
-# and held over from the previous frame. A cosine, so roughly 1.7 degrees.
+# and held over from the previous frame, as a cosine. About 1.7 degrees.
+#
+# This holds a *painting* decision steady; it must never reach the silhouette.
+# Widening it to 7 degrees, on the theory that it had to exceed the camera's
+# 6-degree-a-frame turn to catch anything, doubled the merged outlines that
+# blink out -- 677 gaps to 1449. Holding a face front when it has turned away
+# leaves the front set inconsistent with the geometry, and the union boundary
+# built from that set has no loop to find. See face_facing below.
 FACING_BAND = 0.03
 
 
@@ -960,6 +967,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     nf = plan.nfaces
     world_n = world_c = None
     face_front = np.ones(nf, dtype=bool)
+    front_now = face_front          # no faces: nothing to be behind anything
     face_depth = np.zeros(nf, dtype=np.float64)
     face_ok = np.ones(nf, dtype=bool)
     face_shade = np.ones(nf, dtype=np.float64)
@@ -1050,7 +1058,19 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     #                         result, this time with the cull still on.
     #
     # Neither says anything about where the object's outline is. See merge.py.
-    face_facing = face_ok & face_front
+    # Exact, never the hysteresis band: this is a question about where the
+    # solid turns away from the camera, and that has a right answer. A face
+    # held front after it has turned contributes a back-facing polygon to the
+    # union, its boundary pieces come back covered, and the walk finds nothing
+    # -- part_077 lost its outline on every fifth frame of the orbit, once per
+    # facet of a twelve-sided tube, in exactly the frames where one facet sat
+    # inside the band.
+    #
+    # Nor does the exact cut flicker here, which is the whole reason merging
+    # is worth doing: a face joins or leaves the front set with zero projected
+    # area, so the union boundary moves continuously through the crossing even
+    # though the set of faces under it changes.
+    face_facing = face_ok & front_now
 
     # ---- edges ----------------------------------------------------------
     ne = plan.nedges
