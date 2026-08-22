@@ -206,9 +206,21 @@ def _drive(keys, build_job, do_here, workers=0, report=None, tag="work"):
                     path = os.path.join(folder, RESULT % key)
                     if not os.path.exists(path):
                         continue
-                    with open(path, "rb") as fh:
-                        payload = pickle.load(fh)
-                    os.remove(path)
+                    # The name appearing does not mean the handle is free.
+                    # Windows can still be finishing the worker's os.replace
+                    # onto it, and an open in that window fails with
+                    # PermissionError rather than blocking. It is transient by
+                    # construction -- the writer is on its way out -- so leave
+                    # the file for the next poll instead of failing the bake.
+                    try:
+                        with open(path, "rb") as fh:
+                            payload = pickle.load(fh)
+                    except (PermissionError, OSError, EOFError):
+                        continue
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass              # read already; a stray file is swept
                     done.add(key)
                     progressed = True
                     # A frame that raised in a worker is done here instead.
