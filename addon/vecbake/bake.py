@@ -40,11 +40,9 @@ from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_b
 from .settings import BakeSettings
 
 
-# How much of the scene's depth one merged element may span before its single
-# depth stops being able to represent it. Measured on the Voyager probe: the
-# median part spans 0.7% of the scene and the 90th percentile 2.3%, so this
-# excludes the dozen genuinely deep parts and nothing else.
-MERGE_DEPTH_LIMIT = 0.05
+# How near edge-on a face has to be before its facing is treated as unsettled
+# and held over from the previous frame. A cosine, so roughly 1.7 degrees.
+FACING_BAND = 0.03
 
 
 class BakeError(Exception):
@@ -304,6 +302,9 @@ class ObjectPlan:
         # scalar per element, so a part spanning a lot of depth cannot be
         # placed correctly against anything that interleaves with it.
         self.depth_span = 0.0
+        # Last frame's facing per face, for the hysteresis that stops edges
+        # blinking as a face crosses exactly edge-on.
+        self.prev_front = None
         self.depth_lo = float("inf")
         self.depth_hi = float("-inf")
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
@@ -621,8 +622,20 @@ def bake_iter(context, settings: BakeSettings):
             hi = max((p.depth_hi for p in plans.values()
                       if p.depth_hi > float("-inf")), default=1.0)
             scene_depth = max(hi - lo, 1e-6)
+            # Off by default, and the reason is a trade rather than a bug.
+            # Un-merging a part puts its silhouette strokes back, and a
+            # silhouette stroke blinks by construction: the edge enters and
+            # leaves the silhouette set as the object turns. On the Voyager
+            # probe un-merging the 13 deepest parts fixed the dish's ordering
+            # and took flicker from 3.9% of elements to 15.8%, 680 of the new
+            # blinking strokes being the dish alone.
+            #
+            # The fix for a part too deep to carry one depth is to split it in
+            # the mesh, where both halves then merge cleanly and each gets its
+            # own depth. This is here for the cases where that is not possible.
+            limit = float(getattr(settings, "merge_depth_limit", 0.0) or 0.0)
             deep = sorted(n for n, p in wanted.items()
-                          if p.depth_span / scene_depth > MERGE_DEPTH_LIMIT)
+                          if limit > 0.0 and p.depth_span / scene_depth > limit)
             merge_fallback = sorted(set(merge_fallback) | set(deep))
             merge_deep = deep
             no_merge.update(merge_fallback)
@@ -969,7 +982,29 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         else:
             to_face = world_c - cam_pos
             facing = np.einsum("ij,ij->i", world_n, to_face)
-        face_front = facing < 0.0
+        # Which way a face points, as a cosine rather than a raw dot, so the
+        # threshold means the same thing at every distance and object size.
+        reach = np.linalg.norm(to_face, axis=1) if not is_ortho else np.ones(nf)
+        cos_face = facing / np.maximum(reach, 1e-12)
+        front_now = cos_face < 0.0
+
+        # Hysteresis, and it is the single biggest source of flicker in a
+        # turning clip. `facing < 0` is a hard cut, so a face within a
+        # hair of edge-on crosses it back and forth frame after frame, and
+        # every stroke that borders it blinks on and off: 1347 of the 1530
+        # elements flickering on the Voyager probe were plain edges doing
+        # exactly this, and unmerged it was 3514.
+        #
+        # Inside the band a face keeps whatever it was, so it takes a real
+        # turn to change state rather than numerical noise. The band is
+        # about 1.7 degrees -- far below anything that reads as a facing
+        # change, and the geometry there is a sliver either way.
+        if plan.prev_front is not None and len(plan.prev_front) == nf:
+            face_front = np.where(np.abs(cos_face) < FACING_BAND,
+                                  plan.prev_front, front_now)
+        else:
+            face_front = front_now
+        plan.prev_front = face_front.copy()
 
         # per-face mean depth / visibility, via segmented reduction over loops
         lv = plan.loop_verts

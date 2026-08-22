@@ -213,6 +213,16 @@ class VECBAKE_PG_settings(PropertyGroup):
         description="Work out true occlusion order per frame using plane tests "
                     "instead of centroid depth. Costs bake time, nothing at runtime, "
                     "and stops large floors slicing through objects standing on them")
+    merge_depth_limit: FloatProperty(
+        name="Unmerge Deep Parts", default=0.0, min=0.0, max=1.0,
+        subtype="FACTOR",
+        description="Draw a merged part's faces separately when the part spans "
+                    "more than this fraction of the scene's depth. A merged fill "
+                    "carries one depth, which cannot place a deep part against "
+                    "anything that passes through it -- but un-merging brings "
+                    "back its silhouette strokes, and those blink as edges enter "
+                    "and leave the silhouette. Splitting the part in the mesh "
+                    "fixes both. Zero never unmerges")
     order_workers: IntProperty(
         name="Order Workers", default=0, min=0, max=64,
         description="How many processes share out Resolve Paint Order, which is "
@@ -395,6 +405,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.occlusion_px = self.occlusion_px
         s.accurate_order = self.accurate_order
         s.order_workers = self.order_workers
+        s.merge_depth_limit = self.merge_depth_limit
         s.stroke_color = tuple(self.stroke_color)
         s.stroke_width = self.stroke_width
         s.stroke_source = self.stroke_source
@@ -781,6 +792,8 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "strokes", toggle=True)
         grid.prop(props, "fills", toggle=True)
         grid.prop(props, "merge_fills", toggle=True)
+        if props.merge_fills:
+            grid.prop(props, "merge_depth_limit")
         grid.prop(props, "always_freestyle")
         grid.prop(props, "always_crease")
         grid.prop(props, "accurate_order")
