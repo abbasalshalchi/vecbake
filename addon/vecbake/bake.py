@@ -578,6 +578,8 @@ def bake_iter(context, settings: BakeSettings):
             # separate loops, or a genus above zero -- and also a closed solid
             # with Backface Cull off, where every edge has two drawn faces and
             # there is no silhouette to find at all. Those fall back.
+            # `need < 3` is "no usable ring in any frame"; `need < 0` is
+            # "a ring, but one that crosses itself on screen".
             merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
             no_merge.update(merge_fallback)
             outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
@@ -1047,9 +1049,18 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # and write nothing: the element does not have its final point
             # count yet, so there is no slot of the right width to write into.
             poly = outline_mod.polyline(loop, xy)
-            plan.outline_need = max(
-                plan.outline_need,
-                len(outline_mod.choose(poly, settings.dissolve_px)))
+            if not outline_mod.is_simple(poly):
+                # The ring closes in 3D but crosses itself on screen: a
+                # non-convex part whose silhouette folds behind its own body.
+                # Resampling cannot untangle what the loop already is, and a
+                # merged fill of it draws as a knot, so this object does not
+                # merge at all. Marked for the whole clip, because the point
+                # count and the representation are both fixed before sampling.
+                plan.outline_need = -1
+            elif plan.outline_need >= 0:
+                plan.outline_need = max(
+                    plan.outline_need,
+                    len(outline_mod.choose(poly, settings.dissolve_px)))
             slot["vis"][fi] = 0.0
         else:
             poly = outline_mod.polyline(loop, xy)

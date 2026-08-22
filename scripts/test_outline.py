@@ -289,6 +289,36 @@ check("alignment cuts how far a slot moves between frames",
       drift_aligned <= drift_raw,
       f"{drift_raw:.1f}px unaligned -> {drift_aligned:.1f}px aligned")
 
+# --- a loop that crosses itself cannot be merged at all -------------------
+# The invariant "monotone slots cannot self-intersect" is about the
+# *resampling*. It says nothing about the loop being resampled. walk_loop
+# returns a ring of mesh edges that closes in 3D, and on a non-convex part the
+# silhouette folds behind the body so the ring crosses itself once projected --
+# 45% of the Voyager probe's merged outlines did, and drew as tangled blobs.
+# Every shape above is convex, which is exactly why none of them caught it.
+check("a circle is simple", outline.is_simple(circle(50.0, 24)))
+check("a rectangle is simple", outline.is_simple(rect(120.0, 60.0, 4)))
+check("a triangle is simple", outline.is_simple(np.array([[0., 0.], [9., 0.], [4., 8.]])))
+
+# a bowtie: the classic self-crossing quad
+bowtie = np.array([[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]])
+check("a bowtie is caught", not outline.is_simple(bowtie))
+
+# a figure-eight, which is what a folded silhouette actually looks like
+eight = []
+for k in range(40):
+    th = 2 * math.pi * k / 40
+    eight.append((60.0 * math.sin(2 * th), 40.0 * math.sin(th)))
+check("a figure-eight is caught", not outline.is_simple(np.asarray(eight)))
+
+# a concave but simple outline must still be allowed through: the point is to
+# reject tangles, not concavity
+ell = np.array([[0., 0.], [60., 0.], [60., 20.], [20., 20.], [20., 60.], [0., 60.]])
+check("a concave L is still simple", outline.is_simple(ell))
+check("...and its own resampling stays inside tolerance",
+      outline.max_error(outline.pad_to(outline.choose(ell, TOL), ell, 6), ell) <= TOL)
+
+
 # --- degenerate input must not raise -------------------------------------
 tiny = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
 check("a triangle survives", len(outline.pad_to(outline.choose(tiny, TOL), tiny, 3)) == 3)

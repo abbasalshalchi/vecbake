@@ -352,3 +352,45 @@ def follow(poly, n, tol, prev=None):
     if prev is not None and len(prev[1]) == n:
         pos = align(pos, poly, prev[1])
     return pos, arc_of(pos, poly), evaluate(pos, poly)
+
+
+def is_simple(poly):
+    """Does this closed polyline avoid crossing itself?
+
+    `walk_loop` returns a ring of mesh edges, and a ring in 3D is not a simple
+    polygon once projected. On a non-convex part the silhouette folds behind
+    the body and the fold crosses the outer boundary on screen -- 45% of the
+    Voyager probe's merged outlines did so in at least one frame, drawing as
+    tangled blobs.
+
+    Monotone slot positions guarantee the *resampling* adds no crossing. They
+    cannot remove one the loop already had, so this is what decides whether an
+    object can be merged at all.
+
+    All segment pairs at once. A silhouette ring runs to a few hundred edges,
+    so the quadratic is a few tens of thousands of comparisons in numpy -- far
+    cheaper than the frame that produced it.
+    """
+    m = len(poly)
+    if m < 4:
+        return True
+    a = poly
+    b = np.roll(poly, -1, axis=0)
+    i, j = np.triu_indices(m, k=2)
+    # Neighbouring segments share an endpoint, and so do the first and last.
+    keep = ~((i == 0) & (j == m - 1))
+    i, j = i[keep], j[keep]
+    if not len(i):
+        return True
+    p, p2 = a[i], b[i]
+    q, q2 = a[j], b[j]
+
+    def side(o, e, pt):
+        return ((e[:, 0] - o[:, 0]) * (pt[:, 1] - o[:, 1])
+                - (e[:, 1] - o[:, 1]) * (pt[:, 0] - o[:, 0]))
+
+    d1, d2 = side(p, p2, q), side(p, p2, q2)
+    d3, d4 = side(q, q2, p), side(q, q2, p2)
+    # Proper crossings only: touching at a shared endpoint is how a polygon is
+    # built, and a collinear graze is not a tangle.
+    return not bool((((d1 > 0) != (d2 > 0)) & ((d3 > 0) != (d4 > 0))).any())
