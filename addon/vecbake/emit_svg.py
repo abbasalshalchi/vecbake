@@ -120,7 +120,17 @@ def render_inner(vec: VecScene, time=None, decimals=2, class_prefix="vb", seam_f
         if el.kind == FILL:
             fill = _hex(el.color, shade)
             attrs.append(f'fill="{fill}"')
-            if seam_fix and opacity > 0.999:
+            if el.edge_color is not None and el.width > 0.0 and opacity > 0.999:
+                # A merged outline draws its own silhouette, so the resting
+                # states have to draw it too. Without this the static SVG that
+                # every .lerpa embeds would show these shapes unoutlined while
+                # the animation shows them outlined -- and the player hands off
+                # between the two, so the line would blink at the ends of a
+                # clip. Wider than the seam hairline it replaces, so it closes
+                # that as well. See outline.py.
+                attrs.append(f'stroke="{_hex(el.edge_color)}"')
+                attrs.append(f'stroke-width="{_fmt(el.width, 2)}"')
+            elif seam_fix and opacity > 0.999:
                 # close the antialiasing hairline between abutting polygons,
                 # exactly as the Canvas player does
                 #
