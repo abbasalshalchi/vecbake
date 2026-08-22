@@ -40,6 +40,13 @@ from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_b
 from .settings import BakeSettings
 
 
+# How much of the scene's depth one merged element may span before its single
+# depth stops being able to represent it. Measured on the Voyager probe: the
+# median part spans 0.7% of the scene and the 90th percentile 2.3%, so this
+# excludes the dozen genuinely deep parts and nothing else.
+MERGE_DEPTH_LIMIT = 0.05
+
+
 class BakeError(Exception):
     pass
 
@@ -292,6 +299,13 @@ class ObjectPlan:
         self.outline_need = {}      # loop index -> most points any frame wants
         self.outline_sign = {}      # loop index -> [+1/-1 seen per frame]
         self.outline_prev = {}      # loop index -> (arc fractions, points)
+        # How much camera depth this object occupies, and where. A merged fill
+        # carries one depth for the whole part, and painter's order has one
+        # scalar per element, so a part spanning a lot of depth cannot be
+        # placed correctly against anything that interleaves with it.
+        self.depth_span = 0.0
+        self.depth_lo = float("inf")
+        self.depth_hi = float("-inf")
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -564,6 +578,7 @@ def bake_iter(context, settings: BakeSettings):
             yield ("Sampling", fi + 1, len(frames))
 
     merge_fallback: list[str] = []
+    merge_deep: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
     outline_slots: dict[str, tuple] = {}
@@ -588,6 +603,28 @@ def bake_iter(context, settings: BakeSettings):
             # Backface Cull off, where every edge has two drawn faces and
             # there is no boundary to find at all.
             merge_fallback = sorted(n for n, p in wanted.items() if not p.outline_need)
+
+            # A merged fill is one polygon carrying one depth, and painter's
+            # order has one scalar per element. That is fine for a bolt, whose
+            # near and far side are a pixel apart, and wrong for the high-gain
+            # dish, which spans 11.3 of the scene's 24.4 units: everything
+            # passing between its near rim and its far rim is then ordered
+            # against a single average and comes out on the wrong side.
+            #
+            # Unmerged, that dish was 682 face fills each with its own depth,
+            # and the ordering pass could interleave them correctly. So the
+            # few parts deep enough to matter keep their faces; the rest --
+            # the great majority, whose own span is under a percent of the
+            # scene -- merge as before.
+            lo = min((p.depth_lo for p in plans.values()
+                      if p.depth_lo < float("inf")), default=0.0)
+            hi = max((p.depth_hi for p in plans.values()
+                      if p.depth_hi > float("-inf")), default=1.0)
+            scene_depth = max(hi - lo, 1e-6)
+            deep = sorted(n for n, p in wanted.items()
+                          if p.depth_span / scene_depth > MERGE_DEPTH_LIMIT)
+            merge_fallback = sorted(set(merge_fallback) | set(deep))
+            merge_deep = deep
             no_merge.update(merge_fallback)
             for name, p in wanted.items():
                 if name in no_merge:
@@ -781,6 +818,9 @@ def bake_iter(context, settings: BakeSettings):
             # longer on this list -- slots are positions around the loop now,
             # which are monotone by construction -- see outline.py.
             "merged_fallback": merge_fallback,
+            # Of those, the ones held back for spanning too much depth for a
+            # single painter's-order scalar rather than for their shape.
+            "merged_too_deep": merge_deep,
         }
     )
     return vec
@@ -1100,6 +1140,11 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
 
     if plan.fills and plan.merge_fill:
         loops = screen_loops(plan, face_facing, xy) if face_facing.any() else []
+        if nv and in_front.any():
+            seen = depth[in_front]
+            plan.depth_span = max(plan.depth_span, float(seen.max() - seen.min()))
+            plan.depth_lo = min(plan.depth_lo, float(seen.min()))
+            plan.depth_hi = max(plan.depth_hi, float(seen.max()))
         if plan.outline_ns is None:
             # Measuring pass. Record how many loops this object shows, whether
             # each is a region or a hole, and how many points each earns. No
@@ -1117,12 +1162,22 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             shade = (float(face_shade[vis_faces].mean())
                      if (plan.shading and len(vis_faces)) else 1.0)
             alpha = float(plan.face_alpha[vis_faces].max()) if len(vis_faces) else 0.0
+            # Slot -> loop, by where each loop is rather than how big it is.
+            # Ranking by area swaps two loops the moment they change places,
+            # and both elements then jump the width of the object.
+            prev_pts = {r: (plan.outline_prev[r][1] if r in plan.outline_prev else None)
+                        for r in range(len(plan.outline_ns))}
+            if any(v is not None for v in prev_pts.values()):
+                pick = boundary_mod.match_loops(loops, prev_pts)
+            else:
+                pick = {r: r for r in range(min(len(loops), len(plan.outline_ns)))}
             for r, npts in enumerate(plan.outline_ns):
                 slot = slots[f"{plan.name}/m{r}"]
-                if r >= len(loops) or len(loops[r]) < 3:
-                    slot["vis"][fi] = 0.0        # fewer loops this frame
+                li = pick.get(r)
+                if li is None or li >= len(loops) or len(loops[li]) < 3:
+                    slot["vis"][fi] = 0.0        # no loop for this slot here
                     continue
-                poly = loops[r]
+                poly = loops[li]
                 pos, arcs, pts = outline_mod.follow(
                     poly, npts, settings.dissolve_px, plan.outline_prev.get(r))
 
@@ -1139,12 +1194,24 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 # seen exactly edge-on is meant to disappear. The simplicity
                 # test is the real guard -- a loop that crosses itself is never
                 # drawn, whatever its area.
-                x, y = pts[:, 0], pts[:, 1]
-                covers = abs(float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum())) / 2.0
-                if covers < 1.0 or not outline_mod.is_simple(pts):
-                    slot["vis"][fi] = 0.0
-                    continue
-                plan.outline_prev[r] = (arcs, pts)
+                if outline_mod.is_simple(pts):
+                    plan.outline_prev[r] = (arcs, pts)
+                else:
+                    # Hold the last good outline rather than blink out. Hiding
+                    # was the first attempt and it is worse than the fault it
+                    # avoids: a part that hovers near degenerate toggles every
+                    # frame or two, and 24 flips over a 60-frame clip reads as
+                    # the part flickering out of existence. One stale frame
+                    # does not read as anything.
+                    #
+                    # An area test was here too, hiding anything under a pixel.
+                    # It is gone: a sub-pixel polygon draws nothing either way,
+                    # so hiding it bought no fidelity and cost the same flicker.
+                    held = plan.outline_prev.get(r)
+                    if held is None:
+                        slot["vis"][fi] = 0.0     # nothing yet to hold
+                        continue
+                    arcs, pts = held
                 visible = True
                 if cull:
                     visible = not (

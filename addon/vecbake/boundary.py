@@ -319,6 +319,50 @@ def classify(loops):
     return out
 
 
+def match_loops(loops, previous):
+    """Assign this frame's loops to the slots last frame's loops occupied.
+
+    Loops arrive largest first, and taking that order as the slot order is
+    wrong the moment two of them change places -- the elements swap geometry
+    and both jump the width of the object. On the Voyager probe part_001/m1
+    moved 3205px in one frame that way, on a loop of four points.
+
+    Size is not identity; position is. Each loop takes the free slot whose
+    loop was nearest to it last frame, largest first, so the slot follows the
+    region rather than the ranking. `previous` maps slot -> the points it held;
+    slots with no history, and loops with no slot left, fall back to order.
+
+    Returns a list as long as `previous` is wide: slot -> loop index, or None
+    where that slot has nothing this frame.
+    """
+    order = sorted(range(len(loops)), key=lambda i: -_area(loops[i]))
+    slots = list(previous.keys())
+    out = {}
+    taken = set()
+    for i in order:
+        here = loops[i].mean(axis=0)
+        best, best_d = None, None
+        for sl in slots:
+            if sl in taken or previous.get(sl) is None:
+                continue
+            d = float(np.hypot(*(previous[sl].mean(axis=0) - here)))
+            if best_d is None or d < best_d:
+                best, best_d = sl, d
+        if best is not None:
+            out[best] = i
+            taken.add(best)
+    # anything unmatched drops into the lowest free slot, which is what a
+    # first frame does for every loop
+    free = [sl for sl in slots if sl not in taken]
+    for i in order:
+        if i in out.values():
+            continue
+        if not free:
+            break
+        out[free.pop(0)] = i
+    return out
+
+
 def _area(loop):
     x, y = loop[:, 0], loop[:, 1]
     return abs(float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum())) / 2.0
