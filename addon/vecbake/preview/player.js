@@ -339,6 +339,11 @@ export class LerpaPlayer {
         smooth: decodeSmooth(e.sm, e.n),
         // fills always close; a stroke only when it chained into a ring
         closed: e.k !== STROKE || e.cl === 1,
+        // A fill that carries its own outline colour draws its silhouette as
+        // well as filling it. Absent on every per-face fill, and absent from
+        // files written before merged outlines existed -- which then render as
+        // they always did, filled with no line.
+        outline: (e.k !== STROKE && e.oc !== undefined && e.w > 0) ? e.oc : null,
         offset,
         alpha: 0,
         css: null,
@@ -536,7 +541,16 @@ export class LerpaPlayer {
         // Not on a translucent fill: globalAlpha applies per draw call, so a
         // stroke over its own fill blends twice along the boundary and rings
         // the shape in a darker outline. emit_svg.py skips it too, to match.
-        if (this.seamFix && el.alpha > 0.999) {
+        if (el.outline !== null && el.outline !== undefined && el.alpha > 0.999) {
+          // A merged outline draws its own silhouette. It has to come from the
+          // fill: which mesh edges are on a silhouette changes every frame, so
+          // as strokes it costs one element per edge that ever qualifies. This
+          // also closes the seam, being wider than the hairline that would.
+          const oc = this.overrides[el.outline] || this.palette[el.outline] || [0, 0, 0];
+          ctx.strokeStyle = `rgb(${oc[0] | 0},${oc[1] | 0},${oc[2] | 0})`;
+          ctx.lineWidth = Math.max(el.width * this.lineScale, seamW);
+          ctx.stroke();
+        } else if (this.seamFix && el.alpha > 0.999) {
           // abutting polygons leave an antialiased hairline in every 2D
           // rasteriser; stroking each fill with its own colour closes it
           ctx.strokeStyle = ctx.fillStyle;

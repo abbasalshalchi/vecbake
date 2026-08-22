@@ -162,6 +162,14 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
             item["w"] = round(el.width, 2)
             if el.closed:
                 item["cl"] = 1        # a stroke that joins back to its start
+        elif el.edge_color is not None and el.width > 0.0:
+            # A fill that draws its own outline -- the merged silhouette. Both
+            # fields are needed: the width says to draw it at all, and the
+            # colour is not the fill's, so it cannot be inferred. A reader that
+            # knows neither field still gets the fill, without its line, which
+            # is what every older player will do.
+            item["w"] = round(el.width, 2)
+            item["oc"] = color_index(el.edge_color)
         if el.shade is not None:
             item["S"] = _encode_track(el.shade, 3, grid)
         smooth = _encode_smooth(el.smooth)

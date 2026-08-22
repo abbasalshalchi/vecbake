@@ -77,6 +77,13 @@ class Element:
     # is what lets a rim be one continuous curve rather than an arc with two
     # straightened ends. See chain._trace.
     closed: bool = False
+    # Fills only. A merged outline is the object's silhouette, so it is the one
+    # fill worth drawing a real line around -- and the line has to come from
+    # the fill itself, because the silhouette is not a fixed set of mesh edges
+    # and cannot be emitted as strokes without one element per edge per frame
+    # it qualifies. None means the fill is drawn with no outline, which is what
+    # every per-face fill wants. See outline.py.
+    edge_color: object = None
     geo: Track = None          # vector track, flat xy pairs, pixel space
     opacity: Track = None      # scalar 0..1
     depth: Track = None        # scalar, camera-space distance (bigger = further)

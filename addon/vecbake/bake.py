@@ -780,10 +780,17 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
                 npts=plan.outline_n or plan.nverts,
                 group=plan.group,
                 color=plan.face_color[0] if plan.nfaces else 0,
-                width=0.0,
+                # The outline draws its own silhouette. Nothing else can: which
+                # edges are on it changes every frame, so as strokes it costs
+                # one element per edge that ever qualifies -- 554 of them for
+                # the lab sphere, which has no sharp edge at all. Sharp edges
+                # are unaffected and stay ordinary strokes; they are fixed by
+                # topology and already cost one element each.
+                width=settings.stroke_width if settings.strokes else 0.0,
+                edge_color=plan.stroke_color if settings.strokes else None,
             )
         )
-        new_slot(key, plan.nverts)
+        new_slot(key, plan.outline_n or plan.nverts)
     elif plan.fills:
         for fidx in range(plan.nfaces):
             npts = int(plan.loop_total[fidx])
@@ -922,6 +929,20 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         reachable = np.ones(ne, dtype=bool)
 
     mode = plan.edge_mode
+    # A merged outline draws this object's silhouette itself, so emitting the
+    # silhouette edges as strokes as well is the same line twice -- at one
+    # element per edge that ever qualifies. That is the whole cost: the lab
+    # sphere has no sharp edge at all and still spent 554 stroke elements, one
+    # for each edge the silhouette crossed at some point in the spin.
+    #
+    # Only the silhouette term goes. Creases, edges marked sharp and open
+    # boundaries are fixed by topology, chain into a handful of elements, and
+    # are exactly the interior detail a silhouette cannot express -- a
+    # cylinder's cap rims, and any edge that stops partway across the shape.
+    merged_outline = bool(plan.fills and plan.merge_fill)
+    if merged_outline:
+        silhouette = np.zeros(ne, dtype=bool)
+
     if mode == "WIRE":
         edge_shown = np.ones(ne, dtype=bool)
     elif mode == "BOUNDARY":
