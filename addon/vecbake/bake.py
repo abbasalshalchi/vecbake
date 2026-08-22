@@ -1125,6 +1125,25 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 poly = loops[r]
                 pos, arcs, pts = outline_mod.follow(
                     poly, npts, settings.dissolve_px, plan.outline_prev.get(r))
+
+                # Turned edge-on, a part's outline collapses to a sliver, and
+                # at that scale the boundary walk degenerates -- the step taken
+                # either side of a piece to ask what covers it is wider than
+                # the shape itself. 13 of 308 merged elements on the Voyager
+                # probe tangled in exactly those frames, most of them with a
+                # minimum area of zero.
+                #
+                # A shape covering less than a pixel is not worth drawing
+                # wrong. Hide it for the frame instead: the visibility track
+                # already exists, freeze_hidden holds the geometry, and a part
+                # seen exactly edge-on is meant to disappear. The simplicity
+                # test is the real guard -- a loop that crosses itself is never
+                # drawn, whatever its area.
+                x, y = pts[:, 0], pts[:, 1]
+                covers = abs(float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum())) / 2.0
+                if covers < 1.0 or not outline_mod.is_simple(pts):
+                    slot["vis"][fi] = 0.0
+                    continue
                 plan.outline_prev[r] = (arcs, pts)
                 visible = True
                 if cull:
