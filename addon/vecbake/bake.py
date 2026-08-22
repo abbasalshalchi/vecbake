@@ -894,6 +894,22 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         face_drawn = np.ones(nf, dtype=bool)
     face_visible = face_ok & face_drawn
 
+    # Which faces *point* at the camera, as opposed to which get painted. The
+    # silhouette is the boundary between the two sides of a solid, so it is
+    # this that defines it -- and only this. Deriving it from face_visible ties
+    # it to two settings it has no business depending on:
+    #
+    #   Backface Cull off  -> face_drawn is all True, so every interior edge of
+    #                         a closed solid has two drawn faces, none has one,
+    #                         and the silhouette set comes back empty. No frame
+    #                         yields a ring, so every merge falls back.
+    #   a see-through material -> face_drawn is front | see_through, which
+    #                         draws both sides of that object for the same
+    #                         result, this time with the cull still on.
+    #
+    # Neither says anything about where the object's outline is. See merge.py.
+    face_facing = face_ok & face_front
+
     # ---- edges ----------------------------------------------------------
     ne = plan.nedges
     ev = plan.edge_verts
@@ -1019,8 +1035,8 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         key = f"{plan.name}/m"
         slot = slots[key]
         loop = None
-        if face_visible.any():
-            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_visible))
+        if face_facing.any():
+            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
         if loop is None:
             # No usable ring this frame -- nothing drawn, or a shape whose
             # outline is not one simple loop. Leave the slot empty; freezing
