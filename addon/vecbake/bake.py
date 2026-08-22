@@ -31,6 +31,7 @@ from . import follow
 from . import merge
 from . import occlude
 from . import order as order_mod
+from . import outline as outline_mod
 from . import parallel
 from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
@@ -277,7 +278,12 @@ class ObjectPlan:
         # how a merged and an unmerged bake of the same object can be cut
         # between without the facets popping in.
         self.shading = bool(obj.get("vecbake_shading", settings.shading))
-        self.merged = None            # a merge.MergedPath, built on first sample
+        # Slots for the merged outline. `outline_n` is fixed before the pass
+        # that writes geometry; `outline_need` is what the measuring pass
+        # found this object actually wants -- see bake_iter.
+        self.outline_n = None
+        self.outline_need = 0
+        self.outline_prev = None
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -528,6 +534,7 @@ def bake_iter(context, settings: BakeSettings):
                         plan = ObjectPlan(obj, me, settings)
                         if obj.name in no_merge:
                             plan.merge_fill = False
+                        plan.outline_n = outline_slots.get(obj.name)
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
                     else:
@@ -547,33 +554,34 @@ def bake_iter(context, settings: BakeSettings):
             yield ("Sampling", fi + 1, len(frames))
 
     merge_fallback: list[str] = []
+    # How many points each merged outline turned out to need. Empty on the
+    # measuring pass, filled before the pass that writes geometry.
+    outline_slots: dict[str, int] = {}
     try:
         yield from sample_pass()
 
-        # A merged fill commits its slot order on the first frame that yields a
-        # ring. Rotate far enough and the silhouette's *cyclic order* changes,
-        # not just which vertices are on it, and a vertex pops out into a slot
-        # that is no longer in the right place -- the outline crosses itself and
-        # the shape collapses. There is no way to fix that after the fact: an
-        # element's point count is fixed before sampling starts.
+        # A merged fill is baked in two passes, and the reason is arithmetic:
+        # an element declares its point count once, for the whole clip, but an
+        # outline's length is a per-frame fact. The old code resolved that by
+        # spending a slot on every mesh vertex -- an upper bound nothing can
+        # exceed, and 482 of them to draw the lab sphere's circle.
         #
-        # So sample again with those objects unmerged. One retry is enough --
-        # they have no merged path the second time, so nothing can re-trigger.
-        # Two ways a merged fill fails, and both end here.
-        #
-        # `not stable` is the outline losing its slot order, above. `merged is
-        # None` is subtler: no frame ever produced a ring at all. That happens
-        # to a closed solid with Backface Cull off, because the silhouette test
-        # looks for edges with exactly one *drawn* face and culling is what
-        # hides the other one -- with both drawn, every edge has two and there
-        # is no silhouette to find. Left alone the object simply never appears.
-        merge_fallback = sorted(
-            name for name, p in plans.items()
-            if p.fills and p.merge_fill
-            and (p.merged is None or not p.merged.stable)
-        )
-        if merge_fallback:
+        # So measure first. The pass above wrote no merged geometry; it only
+        # recorded, per object, the largest point count any single frame's
+        # outline earned at the dissolve tolerance. That is the count, and now
+        # it is known the geometry can be written.
+        wanted = {name: p.outline_need for name, p in plans.items()
+                  if p.fills and p.merge_fill and name not in no_merge}
+        if wanted:
+            # An object no frame ever gave a ring for has nothing to merge.
+            # That is the shape whose outline is not one simple loop -- two
+            # separate loops, or a genus above zero -- and also a closed solid
+            # with Backface Cull off, where every edge has two drawn faces and
+            # there is no silhouette to find at all. Those fall back.
+            merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
             no_merge.update(merge_fallback)
+            outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
+
             plans.clear()
             elements.clear()
             slots.clear()
@@ -607,12 +615,11 @@ def bake_iter(context, settings: BakeSettings):
         element_verts = dict(chain_report.get("paths") or {})
         for plan in plans.values():
             if plan.fills and plan.merge_fill:
-                # The slot order is only settled once sampling has run, which
-                # it has by the time we get here. Handing it over lets the
-                # curve classifier measure angles on the merged ring in 3D
-                # like it does for any other path.
-                if plan.merged is not None and plan.merged.order is not None:
-                    element_verts[f"{plan.name}/m"] = plan.merged.order
+                # Nothing to hand the curve classifier. A merged outline's
+                # points are positions *on* the loop now, not mesh vertices, so
+                # there is no vertex index to measure a 3D angle at -- and the
+                # 2D outline is already reduced to the points its shape earns.
+                pass
             elif plan.fills:
                 for fidx in range(plan.nfaces):
                     # NOT `start` -- that name holds the bake's first frame and
@@ -722,10 +729,13 @@ def bake_iter(context, settings: BakeSettings):
             "follow_points": follow_report["points"],
             "silhouette_corners": follow_report["silhouettes"],
             "merged_fills": sum(1 for p in plans.values()
-                                if p.fills and p.merge_fill and p.merged is not None),
-            # Objects whose outline stopped running around the slots in the
-            # order the first frame fixed, and were therefore re-sampled
-            # unmerged rather than drawn shuffled -- see merge.py.
+                                if p.fills and p.merge_fill and p.outline_n),
+            # Points each merged outline ended up carrying. Worth reporting:
+            # this is the number the whole feature turns on, and a count near
+            # an object's vertex total means its outline is genuinely that
+            # complicated rather than that the measuring pass failed.
+            "merged_slots": {n: p.outline_n for n, p in sorted(plans.items())
+                             if p.outline_n},
             "occlusion_culled": occlusion_report["culled"],
             "occlusion_hidden_frames": occlusion_report["hidden"],
             # Frames whose paint rank was held over from a drawn frame,
@@ -733,11 +743,11 @@ def bake_iter(context, settings: BakeSettings):
             "order_held_frames": order_report["held"],
             "order_unranked": order_report["unranked"],
             "order_pool": order_report.get("pool", ""),
+            # Objects with no single silhouette loop to merge: two separate
+            # loops, or a genus above zero. Losing the slot *order* is no
+            # longer on this list -- slots are positions around the loop now,
+            # which are monotone by construction -- see outline.py.
             "merged_fallback": merge_fallback,
-            # Zero by construction now: anything unstable was retried unmerged.
-            # A non-zero here would mean the retry itself failed.
-            "merged_unstable": sum(1 for p in plans.values()
-                                   if p.merged is not None and not p.merged.stable),
         }
     )
     return vec
@@ -757,15 +767,17 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
         }
 
     if plan.fills and plan.merge_fill:
-        # One element for the whole object. It carries a slot per vertex, not
-        # per outline point, because the outline's length is a per-frame fact
-        # and an element's point count is not -- see merge.py.
+        # One element for the whole object, carrying as many points as the
+        # busiest frame's outline needs. That number is a per-frame fact and an
+        # element's point count is not, so it comes from the measuring pass --
+        # see bake_iter. Without one there is nothing to go on but an upper
+        # bound, and every vertex is an upper bound.
         key = f"{plan.name}/m"
         elements.append(
             Element(
                 key=key,
                 kind=FILL,
-                npts=plan.nverts,
+                npts=plan.outline_n or plan.nverts,
                 group=plan.group,
                 color=plan.face_color[0] if plan.nfaces else 0,
                 width=0.0,
@@ -993,10 +1005,26 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # outline is not one simple loop. Leave the slot empty; freezing
             # takes care of holding the last good frame.
             slot["vis"][fi] = 0.0
+        elif plan.outline_n is None:
+            # Measuring pass. Record how many points this frame's outline earns
+            # and write nothing: the element does not have its final point
+            # count yet, so there is no slot of the right width to write into.
+            poly = outline_mod.polyline(loop, xy)
+            plan.outline_need = max(
+                plan.outline_need,
+                len(outline_mod.choose(poly, settings.dissolve_px)))
+            slot["vis"][fi] = 0.0
         else:
-            if plan.merged is None:
-                plan.merged = merge.MergedPath(plan.nverts)
-            pts = plan.merged.points(loop, xy)
+            poly = outline_mod.polyline(loop, xy)
+            chosen = outline_mod.choose(poly, settings.dissolve_px, plan.outline_n)
+            pos = outline_mod.pad_to(chosen, poly, plan.outline_n)
+            # Roll the slots to sit where they sat last frame. Which vertex the
+            # refinement picks first is arbitrary and moves as the shape turns;
+            # left alone every point would tour the outline between frames and
+            # the reducer would have to key all of it.
+            pos = outline_mod.align(pos, poly, plan.outline_prev)
+            pts = outline_mod.evaluate(pos, poly)
+            plan.outline_prev = pts
             visible = True
             if cull:
                 visible = not (

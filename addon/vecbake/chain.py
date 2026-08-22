@@ -336,9 +336,12 @@ def thin_fills(plans, elements, slots, frame_items, vertex_cache, settings, nfra
             continue
 
         candidates = []
-        if plan.merge_fill and plan.merged is not None and plan.merged.order is not None:
-            candidates.append((f"{plan.name}/m", list(plan.merged.order)))
-        elif not plan.merge_fill:
+        # A merged outline is not offered here. Thinning works on vertex
+        # indices -- which edges of the mesh a point sits on -- and a merged
+        # outline's points are positions around the silhouette loop, not
+        # vertices. It also has nothing to gain: outline.choose() already keeps
+        # only the points the shape's own error earns, at this same tolerance.
+        if not plan.merge_fill:
             for fidx in range(plan.nfaces):
                 s = int(plan.loop_start[fidx])
                 e = s + int(plan.loop_total[fidx])
