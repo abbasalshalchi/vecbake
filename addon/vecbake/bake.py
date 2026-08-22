@@ -1222,10 +1222,21 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # and both elements then jump the width of the object.
             prev_pts = {r: (plan.outline_prev[r][1] if r in plan.outline_prev else None)
                         for r in range(len(plan.outline_ns))}
+            loop_kind = boundary_mod.classify(loops)
             if any(v is not None for v in prev_pts.values()):
-                pick = boundary_mod.match_loops(loops, prev_pts)
+                pick = boundary_mod.match_loops(loops, prev_pts, loop_kind,
+                                                plan.outline_fill)
             else:
-                pick = {r: r for r in range(min(len(loops), len(plan.outline_ns)))}
+                # First frame: still by kind, so a hole never opens the clip in
+                # the fill's slot and hands it the wrong outline to follow.
+                pick, free = {}, list(range(len(plan.outline_ns)))
+                for li in range(len(loops)):
+                    want = bool(loop_kind[li]) if li < len(loop_kind) else True
+                    sl = next((r for r in free if bool(plan.outline_fill[r]) == want), None)
+                    if sl is None:
+                        continue
+                    free.remove(sl)
+                    pick[sl] = li
             for r, npts in enumerate(plan.outline_ns):
                 slot = slots[f"{plan.name}/m{r}"]
                 li = pick.get(r)

@@ -262,6 +262,38 @@ check("distant fragments are not welded into an invented loop",
       all(area(L) < 200.0 for L in boundary.walk_loops(frag)),
       str([round(area(L)) for L in boundary.walk_loops(frag)]))
 
+# --- a ring's two loops share a centroid ----------------------------------
+# Nearest-centroid matching alone cannot tell an outer boundary from the hole
+# inside it: both centroids sit at the middle of the ring, so the distance test
+# is noise and the two slots trade places frame after frame. On the Voyager
+# probe part_025 swapped every single frame, so its fill drew the hole's
+# outline and its hole drew the fill's. Kind is what separates them.
+outer = quad(0.0, 0.0, 100.0, 100.0)
+hole = quad(30.0, 30.0, 70.0, 70.0)
+kinds = boundary.classify([outer, hole])
+check("a ring is one region and one hole", kinds == [True, False], str(kinds))
+
+# Both centroids sit within half a pixel of the middle, so which slot is
+# "nearest" turns on noise: here the outer boundary has drifted a hair past
+# the hole's old centre, and matching on position alone hands the fill's slot
+# to the hole and the hole's slot to the fill.
+prev = {0: quad(0.0, 0.0, 100.0, 100.0),       # region, centre 50.0
+        1: quad(31.0, 30.0, 71.0, 70.0)}       # hole,   centre 51.0
+moved = [quad(1.2, 0.0, 101.2, 100.0),         # region, centre 51.2
+         quad(30.4, 30.0, 70.4, 70.0)]         # hole,   centre 50.4
+plain = boundary.match_loops(moved, prev)
+typed = boundary.match_loops(moved, prev, boundary.classify(moved), [True, False])
+check("position alone swaps a ring's two slots", plain == {1: 0, 0: 1}, str(plain))
+check("kind keeps the region in the region's slot", typed == {0: 0, 1: 1},
+      f"typed={typed} untyped={plain}")
+
+# a frame where only the hole survives must leave the fill's slot empty rather
+# than hand it a hole to draw
+only_hole = [quad(30.0, 30.0, 70.0, 70.0)]
+check("a lone hole does not fall into the fill's slot",
+      boundary.match_loops(only_hole, prev, [True], [True, False]) == {0: 0},
+      str(boundary.match_loops(only_hole, prev, [True], [True, False])))
+
 # --- degenerate input must not raise --------------------------------------
 check("no faces gives no loops", boundary.outline_of([], np.zeros((0, 2, 2)), []) == [])
 check("a zero-area face does not hang",

@@ -401,7 +401,7 @@ def classify(loops):
     return out
 
 
-def match_loops(loops, previous):
+def match_loops(loops, previous, loop_kind=None, slot_kind=None):
     """Assign this frame's loops to the slots last frame's loops occupied.
 
     Loops arrive largest first, and taking that order as the slot order is
@@ -414,18 +414,34 @@ def match_loops(loops, previous):
     region rather than the ranking. `previous` maps slot -> the points it held;
     slots with no history, and loops with no slot left, fall back to order.
 
-    Returns a list as long as `previous` is wide: slot -> loop index, or None
-    where that slot has nothing this frame.
+    Position is not enough on its own either. A ring's outer boundary and its
+    hole share a centroid, so the distance test between them is noise, and on
+    the Voyager probe part_025 traded the two every single frame: the fill
+    took the hole's outline, the hole took the fill's, and both jumped. What
+    separates them is what they *are*, which containment already answers and
+    the slot already fixed for the whole clip. A region only ever matches a
+    region slot and a hole only a hole slot; a loop with no slot of its kind
+    free is simply not drawn this frame.
+
+    Returns slot -> loop index, for the slots that have a loop this frame.
     """
     order = sorted(range(len(loops)), key=lambda i: -_area(loops[i]))
     slots = list(previous.keys())
+
+    def compatible(sl, i):
+        if loop_kind is None or slot_kind is None:
+            return True
+        if i >= len(loop_kind) or sl >= len(slot_kind):
+            return True
+        return bool(loop_kind[i]) == bool(slot_kind[sl])
+
     out = {}
     taken = set()
     for i in order:
         here = loops[i].mean(axis=0)
         best, best_d = None, None
         for sl in slots:
-            if sl in taken or previous.get(sl) is None:
+            if sl in taken or previous.get(sl) is None or not compatible(sl, i):
                 continue
             d = float(np.hypot(*(previous[sl].mean(axis=0) - here)))
             if best_d is None or d < best_d:
@@ -433,15 +449,17 @@ def match_loops(loops, previous):
         if best is not None:
             out[best] = i
             taken.add(best)
-    # anything unmatched drops into the lowest free slot, which is what a
-    # first frame does for every loop
+    # anything unmatched drops into the lowest free slot of its own kind,
+    # which is what a first frame does for every loop
     free = [sl for sl in slots if sl not in taken]
     for i in order:
         if i in out.values():
             continue
-        if not free:
-            break
-        out[free.pop(0)] = i
+        pick = next((sl for sl in free if compatible(sl, i)), None)
+        if pick is None:
+            continue
+        free.remove(pick)
+        out[pick] = i
     return out
 
 
