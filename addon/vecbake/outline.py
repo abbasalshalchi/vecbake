@@ -163,29 +163,46 @@ def pad_to(keep, poly, n):
     return np.asarray(pos, dtype=np.float64)
 
 
+def _between(pa, pb, m):
+    """The true vertices lying strictly between two positions: (first, count).
+
+    A point at fraction 0 *is* its vertex and must not be measured against its
+    own chord; a point partway along a segment leaves that segment's start
+    vertex behind it. Getting this wrong reports zero error for outlines that
+    miss by half the shape.
+    """
+    lo = int(pa[0]) + 1
+    end = int(pb[0])
+    hi = end + 1 if pb[1] > 0 else end
+    return lo, (hi - lo) % m
+
+
+def _chord_error(pa, pb, pta, ptb, poly):
+    """Worst distance from the outline to the chord joining two positions."""
+    m = len(poly)
+    lo, span = _between(pa, pb, m)
+    if span < 1:
+        return 0.0
+    idx = (lo + np.arange(span)) % m
+    return float(_seg_distance(poly[idx], pta, ptb).max())
+
+
+def span_errors(positions, poly):
+    """Per-span deviation of the resampled outline from the real one."""
+    k = len(positions)
+    if k < 2:
+        return np.zeros(max(k, 1))
+    pts = evaluate(positions, poly)
+    return np.array([_chord_error(positions[j], positions[(j + 1) % k],
+                                  pts[j], pts[(j + 1) % k], poly)
+                     for j in range(k)])
+
+
 def max_error(positions, poly):
     """How far the resampled outline strays from the true one, in pixels."""
-    pts = evaluate(positions, poly)
-    m = len(poly)
-    worst = 0.0
-    k = len(positions)
-    for j in range(k):
-        # The true vertices lying strictly between resampled point j and j+1.
-        # A point at fraction 0 *is* its vertex and must not be measured
-        # against its own chord; a point partway along a segment leaves that
-        # segment's start vertex behind it. Getting this wrong reports zero
-        # error for outlines that miss by half the shape.
-        nxt = (j + 1) % k
-        lo = int(positions[j, 0]) + 1
-        end = int(positions[nxt, 0])
-        hi = end + 1 if positions[nxt, 1] > 0 else end
-        span = (hi - lo) % m
-        if span < 1:
-            continue
-        between = (lo + np.arange(span)) % m
-        d = _seg_distance(poly[between], pts[j], pts[nxt])
-        worst = max(worst, float(d.max()))
-    return worst
+    if not len(positions):
+        return 0.0
+    return float(span_errors(positions, poly).max())
 
 
 def align(positions, poly, previous):
@@ -232,3 +249,106 @@ def slots_needed(frames, tol, cap=None, floor=3):
             continue
         need = max(need, len(choose(poly, tol, cap)))
     return need if cap is None else min(need, int(cap))
+
+
+# ---------------------------------------------------------------------------
+# carrying an outline from one frame to the next
+# ---------------------------------------------------------------------------
+#
+# `choose` decides afresh every frame, and on a smooth outline that is a coin
+# toss. Every candidate on a circle deviates by nearly the same amount -- on
+# the lab sphere's 58-vertex ring the whole spread is 0.33px -- so which vertex
+# wins is arbitrary, and it flips as the shape turns. Measured: 32% of the
+# chosen set changed per frame, a third of the slots re-assigned for no reason
+# at all.
+#
+# The cost is not a wrong shape; the outline was correct every frame. It is
+# that each slot's *path* becomes a jitter of about one slot spacing, so the
+# reducer cannot drop a single keyframe. The sphere's silhouette is a
+# stationary circle and its track still carried a key in all 24 frames, at 15px
+# of recorded movement per frame that never happened.
+#
+# So carry the previous frame's positions instead, and re-derive only when they
+# stop being good enough. Near-ties then resolve in favour of staying put,
+# which is the whole fix.
+#
+# Positions travel as *normalised arc length*, not as segment indices: the ring
+# has a different vertex count from one frame to the next -- 58 then 59 on the
+# sphere -- so an index means nothing across the gap, while "62% of the way
+# round" means the same thing on both.
+
+
+def arc_table(poly):
+    """Cumulative arc length around the closed loop, and its total."""
+    seg = np.linalg.norm(np.roll(poly, -1, axis=0) - poly, axis=1)
+    return np.concatenate([[0.0], np.cumsum(seg)]), float(seg.sum())
+
+
+def arc_of(positions, poly):
+    """Positions -> where they sit around the loop, as fractions in [0, 1)."""
+    cum, total = arc_table(poly)
+    if total <= 0.0:
+        return np.zeros(len(positions))
+    idx = positions[:, 0].astype(np.int64) % len(poly)
+    here = cum[idx] + positions[:, 1] * (cum[idx + 1] - cum[idx])
+    return (here / total) % 1.0
+
+
+def at_arc(s, poly):
+    """Fractions in [0, 1) -> positions on this loop. The inverse of arc_of."""
+    cum, total = arc_table(poly)
+    m = len(poly)
+    if total <= 0.0:
+        return np.zeros((len(s), 2))
+    want = (np.asarray(s, dtype=np.float64) % 1.0) * total
+    idx = np.clip(np.searchsorted(cum, want, side="right") - 1, 0, m - 1)
+    span = np.maximum(cum[idx + 1] - cum[idx], 1e-12)
+    return np.stack([idx.astype(np.float64), (want - cum[idx]) / span], axis=1)
+
+
+def nearest_arc(poly, point):
+    """Where on the loop the given point lands, as a fraction in [0, 1).
+
+    The anchor for carrying a set forward. `walk_loop` starts its ring at
+    whichever vertex it happened to reach first, so the *origin* of arc length
+    moves between frames even when nothing else does. Re-finding one known
+    point pins it.
+    """
+    a = poly
+    b = np.roll(poly, -1, axis=0)
+    ab = b - a
+    denom = np.einsum("ij,ij->i", ab, ab)
+    denom = np.where(denom > 0, denom, 1e-12)
+    u = np.clip(np.einsum("ij,ij->i", point - a, ab) / denom, 0.0, 1.0)
+    foot = a + u[:, None] * ab
+    k = int(np.argmin(np.linalg.norm(foot - point, axis=1)))
+    cum, total = arc_table(poly)
+    if total <= 0.0:
+        return 0.0
+    return float((cum[k] + u[k] * (cum[k + 1] - cum[k])) / total) % 1.0
+
+
+def follow(poly, n, tol, prev=None):
+    """This frame's `n` positions, staying where they were where it can.
+
+    `prev` is `(fractions, points)` as returned last frame. Returns the same
+    pair plus the positions, so a caller can hand it straight back.
+
+    Re-deriving is not avoided at the cost of accuracy: the carried set is
+    measured against the real outline first and only kept if it is inside
+    `tol`. When the shape has changed enough that it is not -- a cylinder
+    turning edge-on, a corner arriving -- the frame is chosen from scratch and
+    rolled to sit as close to the old one as it can.
+    """
+    if prev is not None:
+        prev_s, prev_pts = prev
+        if len(prev_s) == n and len(poly) >= 3:
+            shift = nearest_arc(poly, prev_pts[0]) - prev_s[0]
+            carried = at_arc(prev_s + shift, poly)
+            if max_error(carried, poly) <= tol:
+                return carried, arc_of(carried, poly), evaluate(carried, poly)
+
+    pos = pad_to(choose(poly, tol, n), poly, n)
+    if prev is not None and len(prev[1]) == n:
+        pos = align(pos, poly, prev[1])
+    return pos, arc_of(pos, poly), evaluate(pos, poly)

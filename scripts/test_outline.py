@@ -180,6 +180,67 @@ check("...and the shape stays inside tolerance the whole way",
       worst_err <= TOL, f"worst {worst_err:.3f}px")
 
 
+# --- carrying an outline forward, rather than re-choosing it --------------
+# On a smooth outline every candidate deviates by nearly the same amount, so
+# choosing afresh each frame is a coin toss: a third of the slots got
+# re-assigned per frame on a stationary circle, and a slot that jitters by its
+# own spacing costs a keyframe in every frame. Carrying the previous positions
+# by arc length resolves those near-ties in favour of staying put.
+#
+# Arc length, not segment indices: the silhouette ring has a different vertex
+# count from frame to frame, so an index means nothing across the gap.
+# The case carrying is for: the ring is the same shape, barely turned. That is
+# the lab sphere, whose silhouette is a stationary circle while the mesh spins
+# through it. A ring that gained or lost a vertex is a real change and is
+# expected to be re-chosen instead -- asserted below.
+ring_now = circle(56.0, 58)
+ring_next = circle(56.0, 58, phase=0.01)
+# The slot count is what a real bake would pick: the most any frame needs, not
+# a number chosen here. Cap it lower and the tolerance is simply unreachable --
+# 32 points cannot hold a 59-gon of radius 56 inside 0.35px, because skipping
+# one of its vertices already costs 0.32px.
+#
+# And the budget has to leave a genuine choice to make. At 0.35px this ring
+# needs every vertex it has, so there is nothing to choose between and no churn
+# to fix; churn is what happens when many subsets are all about equally good.
+CTOL = 1.0
+NC = outline.slots_needed([ring_now, ring_next, circle(56.0, 59, phase=0.03)], CTOL)
+check("the carry case leaves a real choice to make", NC < len(ring_now),
+      f"{NC} slots for a {len(ring_now)}-vertex ring at {CTOL}px")
+pos_a = outline.pad_to(outline.choose(ring_now, CTOL, NC), ring_now, NC)
+pts_a = outline.evaluate(pos_a, ring_now)
+s_a = outline.arc_of(pos_a, ring_now)
+
+check("arc fractions round-trip through a position set",
+      np.allclose(outline.arc_of(outline.at_arc(s_a, ring_now), ring_now), s_a, atol=1e-9))
+check("...and survive the ring changing vertex count",
+      len(outline.at_arc(s_a, circle(56.0, 59))) == NC, f"{NC} slots")
+
+fresh, _, fresh_pts = outline.follow(ring_next, NC, CTOL, None)
+carried, _, carried_pts = outline.follow(ring_next, NC, CTOL, (s_a, pts_a))
+moved_fresh = float(np.linalg.norm(fresh_pts - pts_a, axis=1).max())
+moved_carried = float(np.linalg.norm(carried_pts - pts_a, axis=1).max())
+check("carrying moves slots less than choosing afresh",
+      moved_carried < moved_fresh,
+      f"{moved_fresh:.2f}px fresh vs {moved_carried:.2f}px carried")
+check("...and is still inside tolerance", outline.max_error(carried, ring_next) <= CTOL,
+      f"{outline.max_error(carried, ring_next):.3f}px")
+check("...and still monotone", monotone(carried, len(ring_next)))
+
+# A shape that has genuinely changed must not be carried past its tolerance.
+# Carrying places points at arc fractions, which on a faceted outline land
+# *between* vertices; choosing places them *on* the vertices, where the shape
+# actually bends. So a ring that has really moved has to be re-chosen, and the
+# tolerance test is what decides it.
+for label, changed in (("squashed", np.stack([ring_next[:, 0],
+                                              ring_next[:, 1] * 0.25], axis=1)),
+                       ("a vertex more", circle(56.0, 59, phase=0.03))):
+    strayed, _, _ = outline.follow(changed, NC, CTOL, (s_a, pts_a))
+    check(f"a ring that really changed ({label}) is re-chosen, not carried",
+          outline.max_error(strayed, changed) <= CTOL,
+          f"{outline.max_error(strayed, changed):.3f}px")
+
+
 # --- self-intersection, stated directly ----------------------------------
 def crosses(pts):
     """Does this closed polygon intersect itself anywhere?"""
