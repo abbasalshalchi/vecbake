@@ -22,7 +22,7 @@
 // disk right now. The baked .preview.html inlines a *copy* of the player, so
 // a player fix only reaches it by re-baking -- 14 minutes here. This page has
 // no such copy: reload it and you are testing the current player.
-import { LerpaPlayer, fetchDocument } from './player.js';
+import { LerpaPlayer, fetchDocument } from '../lerpa/src/player.js';
 const src = new URLSearchParams(location.search).get('f') || 'v3-merge.lerpa_cam.svg';
 const cv = document.getElementById('cv');
 const doc = await fetchDocument(src);

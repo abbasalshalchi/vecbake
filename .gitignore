@@ -51,3 +51,8 @@ demo/
 # the history. Kept on disk, just not in git.
 out/
 snapshots/
+
+# The play harness imports the player from lerpa/src; a copy beside it would
+# drift silently.
+tools/player.js
+

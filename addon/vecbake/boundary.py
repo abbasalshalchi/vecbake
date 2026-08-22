@@ -128,11 +128,21 @@ def split_at_crossings(segs):
         # overlap along a shared line -- a fin sitting on a box, two bars in a
         # row. Those have to be cut at each other's endpoints or the pieces
         # never line up and the walk cannot get past the join.
-        scale = max(float(np.hypot(*di)), 1.0)
+        scale = max(float(np.hypot(*di)), 1e-12)
         for k in np.nonzero(~ok)[0]:
             jj = int(j[k])
             off = (aj[k] - ai)
-            if abs(di[0] * off[1] - di[1] * off[0]) > 1e-9 * scale:
+            # Perpendicular distance, not a bare cross product. Dividing by
+            # the segment's own length is what makes this a distance at all;
+            # without it the test read "further than a billionth of a pixel,
+            # scaled", and two facets sharing a mesh edge sit further apart
+            # than that after projection -- the drift is around 1.7e-5px,
+            # which is why WELD is 1e-3. So they were called different lines,
+            # never cut against each other, and both survived: part_022's
+            # right edge existed twice, once whole and once in fragments, and
+            # the walk took the whole one and left the fragments hanging off
+            # the ring as a spur that doubled back across it.
+            if abs(di[0] * off[1] - di[1] * off[0]) / scale > WELD:
                 continue                    # parallel but not the same line
             dd = float(di @ di)
             if dd > 0:

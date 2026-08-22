@@ -61,6 +61,7 @@ to be right, and that is the artist's call, not the baker's.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import numpy as np
 
@@ -316,6 +317,12 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
 
     started = time.perf_counter()
     if diagnose:
+        # The diagnosis works by watching what the ordering pass was given, and
+        # it can only watch a call made in this process. Once ordering moved to
+        # a worker pool the spy stopped firing and every fault came back with
+        # no cause -- silently, because a missing diagnosis reads the same as
+        # an undiagnosable one. Ask for one worker, which runs it here.
+        settings = replace(settings, order_workers=1)
         order_mod.resolve = spy
     try:
         vec = api.bake_scene(context, settings)
