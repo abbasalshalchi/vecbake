@@ -1,0 +1,44 @@
+<!doctype html><meta charset="utf-8">
+<title>lerpa — direct player</title>
+<style>
+ :root{color-scheme:dark}
+ body{margin:0;background:#15151a;color:#c9ccd4;font:14px/1.5 ui-monospace,monospace}
+ header{padding:10px 14px;border-bottom:1px solid #2a2b33;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+ canvas{display:block;width:100vw;height:calc(100vh - 108px)}
+ button{background:#1e1f26;color:inherit;border:1px solid #33343d;border-radius:4px;padding:5px 11px;cursor:pointer}
+ button:hover{border-color:#c6f24e}
+ #stat{color:#7f8490}
+ #hit{color:#c6f24e}
+</style>
+<header>
+  <button id=play>Play</button>
+  <input id=scrub type=range min=0 max=1000 value=0 style="flex:1;min-width:200px">
+  <span id=stat>loading…</span>
+  <span id=hit>click the artwork</span>
+</header>
+<canvas id=cv></canvas>
+<script type="module">
+// Loads the .lerpa straight from the server with whatever player.js is on
+// disk right now. The baked .preview.html inlines a *copy* of the player, so
+// a player fix only reaches it by re-baking -- 14 minutes here. This page has
+// no such copy: reload it and you are testing the current player.
+import { LerpaPlayer, fetchDocument } from './player.js';
+const src = new URLSearchParams(location.search).get('f') || 'v3-merge.lerpa_cam.svg';
+const cv = document.getElementById('cv');
+const doc = await fetchDocument(src);
+const player = new LerpaPlayer(cv, doc, { fit: 'contain', background: null });
+window.player = player;                       // so it can be measured from outside
+document.getElementById('stat').textContent =
+  `${doc.els.length} elements · ${doc.samples} samples · ${player.duration.toFixed(2)}s`;
+const scrub = document.getElementById('scrub');
+document.getElementById('play').addEventListener('click', () =>
+  player.playing ? player.pause() : player.play());
+scrub.addEventListener('input', e => player.seek(player.duration * e.target.value / 1000));
+player.on?.('frame', t => { scrub.value = Math.round(1000 * t / player.duration); });
+cv.addEventListener('pointerdown', e => {
+  const h = player.pick(e.clientX, e.clientY);
+  document.getElementById('hit').textContent = h ? `${h.id} · ${h.group}` : 'nothing there';
+});
+addEventListener('resize', () => player.resize());
+player.render(0);
+</script>

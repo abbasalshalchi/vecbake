@@ -821,6 +821,29 @@ export class LerpaPlayer {
     const view = this.order.subarray(0, this.visible);
     for (let i = view.length - 1; i >= 0; i--) {
       const el = this.elements[view[i]];
+
+      // Reject on the bounding box first. Tracing an element builds a real
+      // path -- Catmull-Rom cubics through every smooth vertex -- and
+      // isPointInPath rasterises it, so doing that for every element on
+      // screen is the whole cost of a miss. A click on empty background is
+      // the worst case, because nothing returns early and all of them get
+      // traced: 69ms on a scene of ~6400 drawn elements.
+      //
+      // A few float compares per element removes almost all of them. The
+      // slop is added on both axes so a thin stroke, whose box is a line, is
+      // still reachable by a click near it.
+      const base = el.offset, end = base + el.npts * 2;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = base; k < end; k += 2) {
+        const px = scratch[k], py = scratch[k + 1];
+        if (px < x0) x0 = px;
+        if (px > x1) x1 = px;
+        if (py < y0) y0 = py;
+        if (py > y1) y1 = py;
+      }
+      const pad = (el.kind === STROKE ? Math.max(el.width, slop) : slop) * 0.5 + slop;
+      if (x < x0 - pad || x > x1 + pad || y < y0 - pad || y > y1 + pad) continue;
+
       ctx.beginPath();
       // trace the curve, not the polyline, or hit testing drifts off the
       // shape the viewer can actually see
