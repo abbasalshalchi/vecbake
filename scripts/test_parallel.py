@@ -16,8 +16,14 @@ real, but it rests on those sets holding ints rather than the element keys they
 stand for. Keep it that way, and this test keeps passing.
 
 Pass a pickle of `[(items, ortho), ...]` captured from a real bake to run it
-against real geometry; without one it builds frames whose costs differ enough
-that workers finish out of order, which is the case worth covering anyway.
+against real geometry; without one it builds synthetic frames of uneven cost.
+
+Nothing here asserts that results *did* arrive out of order. Whether they do is
+a scheduling accident -- with a handful of cheap jobs the workers often finish
+in order -- and asserting it made this suite fail at random. What is asserted
+instead is the property that makes arrival order irrelevant: every result
+carries the frame index it belongs to, and every rank matches the in-process
+answer.
 """
 
 import copy
@@ -147,9 +153,16 @@ check("every rank is identical to resolving in-process", worst is None,
 check("the frame kept back for the parent comes back first",
       arrival[0] == min(serial),
       f"arrived {arrival[:6]}...")
-check("the rest are allowed to arrive out of order, and did",
-      arrival[1:] != sorted(arrival[1:]) or len(arrival) < 4,
-      f"arrived {arrival[:6]}...")
+# Not an assertion. Whether a given run happens to finish out of order is a
+# scheduling accident -- with few cheap jobs the workers often do land in
+# order, and failing on that made this suite flaky. The property that matters
+# is that arrival order cannot change the answer, and that is what the
+# rank-for-rank check above tests: every result is keyed by its frame index,
+# so the parent writes it to the right slot whenever it turns up.
+print(f"      (arrival order this run: {arrival[:8]}"
+      f"{'...' if len(arrival) > 8 else ''})")
+check("every result carries the frame it belongs to",
+      all(fi in serial for fi in arrival) and len(set(arrival)) == len(serial))
 
 # --- auto must reach the same answer, however it decides to get there ------
 notes = []
