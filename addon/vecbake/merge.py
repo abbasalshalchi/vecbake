@@ -45,8 +45,6 @@ camera never hits and a moving one always might.
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 
@@ -66,23 +64,12 @@ def silhouette_edges(plan, drawn):
     return np.nonzero(count == 1)[0]
 
 
-def walk_loop(plan, edges, xy=None):
+def walk_loop(plan, edges):
     """Order silhouette edges into one closed ring of vertex indices.
 
-    A vertex with three or more silhouette edges on it is where the outline
-    touches itself on screen, and it is common: 1027 frames of a sixty-frame
-    orbit of the Voyager probe, 37% of everything that could not be merged.
-    Refusing them outright cost the whole object, for the whole clip.
-
-    Given screen positions the junction has an answer. Arriving along one edge,
-    the outline continues along the neighbour that turns furthest towards the
-    inside -- the standard way to trace one face of a planar subdivision, and
-    exact here in a way it never was for split segments: the graph is mesh
-    vertices, so identity is an integer and only the angles come from the
-    projection. Nothing is welded and no tolerance is involved.
-
-    Still returns None for a dangling end or for two separate rings, which are
-    different shapes rather than the same shape drawn awkwardly.
+    Returns None when they do not form exactly one simple ring -- a branch, a
+    dangling end, or two separate rings. A merged fill cannot represent those,
+    so the caller falls back rather than inventing a path through them.
     """
     if len(edges) < 3:
         return None
@@ -91,37 +78,21 @@ def walk_loop(plan, edges, xy=None):
     for a, b in ev:
         adj.setdefault(int(a), []).append(int(b))
         adj.setdefault(int(b), []).append(int(a))
-    if any(len(n) < 2 for n in adj.values()):
-        return None                      # dangling: the chain stops
-    branched = any(len(n) > 2 for n in adj.values())
-    if branched and xy is None:
-        return None
+    if any(len(n) != 2 for n in adj.values()):
+        return None                      # branching or dangling: not a ring
 
     start = int(ev[0][0])
     loop = [start]
     prev, cur = None, start
     while True:
-        options = [v for v in adj[cur] if v != prev] or list(adj[cur])
-        if len(options) == 1:
-            nxt = options[0]
-        else:
-            back = (math.atan2(xy[prev][1] - xy[cur][1], xy[prev][0] - xy[cur][0])
-                    if prev is not None else 0.0)
-            nxt, best = None, None
-            for v in options:
-                turn = (math.atan2(xy[v][1] - xy[cur][1],
-                                   xy[v][0] - xy[cur][0]) - back) % (2 * math.pi)
-                if best is None or turn < best:
-                    nxt, best = v, turn
+        nxt = adj[cur][0] if adj[cur][0] != prev else adj[cur][1]
         if nxt == start:
             break
         loop.append(nxt)
         prev, cur = cur, nxt
         if len(loop) > len(adj):
             return None                  # walked past the ring: malformed
-    # Every vertex on the silhouette has to end up on the ring. Fewer means
-    # this was one ring of several, and those are separate shapes.
-    return loop if len(loop) == len(adj) else None
+    return loop if len(loop) == len(adj) else None   # one ring, not several
 
 
 class MergedPath:

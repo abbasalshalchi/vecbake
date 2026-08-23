@@ -1038,8 +1038,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         slot = slots[key]
         loop = None
         if face_facing.any():
-            loop = merge.walk_loop(
-                plan, merge.silhouette_edges(plan, face_facing), xy)
+            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
         if loop is None:
             if plan.outline_n is None and face_facing.any():
                 # There are faces pointing at the camera and no ring to be had
@@ -1060,15 +1059,18 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # and write nothing: the element does not have its final point
             # count yet, so there is no slot of the right width to write into.
             poly = outline_mod.polyline(loop, xy)
-            if not outline_mod.is_simple(poly):
-                # The ring closes in 3D but crosses itself on screen: a
-                # non-convex part whose silhouette folds behind its own body.
-                # Resampling cannot untangle what the loop already is, and a
-                # merged fill of it draws as a knot, so this object does not
-                # merge at all. Marked for the whole clip, because the point
-                # count and the representation are both fixed before sampling.
-                plan.outline_need = -1
-            elif plan.outline_need >= 0:
+            # A ring that closes in 3D can still cross itself on screen, where
+            # a non-convex part's silhouette folds behind its own body. That
+            # used to refuse the object outright, for the whole clip, and it
+            # is the largest single reason parts do not merge: 615 frames of a
+            # sixty-frame orbit of the probe.
+            #
+            # It is refusing something nothing has looked at. The player fills
+            # with the nonzero winding rule, under which a fold traversed the
+            # same way as the body counts as inside and fills solid -- which
+            # is the right answer. Only a fold that reverses leaves a hole.
+            # Draw it and judge it, rather than assume it draws as a knot.
+            if plan.outline_need >= 0:
                 plan.outline_need = max(
                     plan.outline_need,
                     len(outline_mod.choose(poly, settings.dissolve_px)))
