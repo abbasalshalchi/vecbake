@@ -2,15 +2,13 @@
 # VecBake -- Copyright (C) 2026 Abbas Alshalchi
 """A merged outline whose points are positions on the loop, not mesh vertices.
 
-`merge.MergedPath` spends one slot per mesh vertex and fixes the slot *order*
-from the first ring it sees. Every later frame then has to present its
-silhouette vertices in that same cyclic order, and a solid turning through 360
-degrees simply does not: the silhouette is a different set of vertices a
-quarter turn later, in a different order around the outline. So the check in
-`MergedPath._consistent` fails, `stable` goes false, and the object is
-re-sampled unmerged. On the seven-primitive lab scene that is five of seven
-objects -- cone, cube, cylinder, sphere and tube all find a clean ring in every
-frame and are rejected purely on order.
+Binding a slot to a mesh vertex, one slot per vertex with the order committed
+from the first ring seen, cannot survive a full turn. A quarter rotation later
+the silhouette is a different set of vertices in a different cyclic order, the
+committed order stops holding, and the object falls back to unmerged. On the
+seven-primitive lab scene that rejected five of seven objects -- cone, cube,
+cylinder, sphere and tube all found a clean ring in every frame and were
+turned down purely on order.
 
 The fault is the binding. A silhouette is not a topological object, so slots
 must not be bound to topology.

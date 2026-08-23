@@ -2,7 +2,7 @@
 
     "<blender>/5.1/python/bin/python.exe" scripts/test_outline.py
 
-`merge.MergedPath` binds a slot to a mesh vertex and freezes the slot order on
+Binding a slot to a mesh vertex freezes the slot order on
 the first ring. A solid turning 360 degrees presents a different silhouette set
 in a different cyclic order a quarter turn later, so the order check fails and
 the object is re-sampled unmerged. Five of the seven primitives in the lab
@@ -137,7 +137,7 @@ check("...and every padded point lies on the outline",
       f"{outline.max_error(padded, box):.6f}px")
 check("...and stays monotone", monotone(padded, len(box)))
 
-# --- a full turn: the case that breaks MergedPath -------------------------
+# --- a full turn: the case that broke binding slots to vertices -----------
 # A cylinder tumbling end over end. Its outline runs from a tall rectangle
 # through every intermediate to a flat circle and back, which is exactly the
 # sweep that reorders a vertex-bound slot map.

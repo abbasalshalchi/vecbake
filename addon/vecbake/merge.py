@@ -10,38 +10,20 @@ body is 82 faces and 328 points; its outline is 30 points.
 
 So: emit the outline instead.
 
-Keeping the point count fixed
------------------------------
-An outline is a *view-dependent* thing. Which edges form the silhouette changes
-as an object turns, so the honest shape has a vertex count that changes frame to
-frame -- and this whole format rests on the opposite, that an element has a
-fixed point count and correspondence between frames is free.
+What lives here is the topological half of that -- turning a set of silhouette
+edges into one ring of vertices, and saying so when they do not make one. What
+the ring's points become, and how a fixed number of slots is spread around a
+ring whose length changes every frame, is outline.py's problem.
 
-The way out is to spend a slot on every vertex the object has, whether or not it
-is on the outline this frame. Vertices on the outline go where they belong; the
-rest are parked *on the straight line between their neighbours*, where they
-change the shape by exactly nothing. A point flush with the segment it sits on
-is invisible to a fill, and it is still there to be pulled out on the frame the
-silhouette rotates onto it.
-
-That costs points the shape does not need -- the butterfly body carries 88 slots
-to draw a 30-point outline -- but it buys a merged fill with no pre-pass, no
-second bake, and no dependence on the silhouette being stable.
-
-Where it gives up
------------------
-Allocation is not the hard part -- ordering is. The *order* of the slots is
-fixed once, from the first frame that yields a ring, and actives have to appear
-around the loop in that order ever after. Rotate far enough and the silhouette
-changes not just which vertices are on it but their cyclic order, so a vertex
-pops out into a slot that is no longer in the right place and the outline
-crosses itself.
-
-Nothing here can recover from that: an element's point count is fixed before
-sampling begins. So `stable` goes false and `bake.py` samples the whole thing
-again with that object unmerged. This class of shape is exactly what a static
-camera never hits and a moving one always might.
+Slots used to be bound to mesh vertices, one per vertex, ordered from the first
+ring seen. That cannot survive a full turn: a quarter rotation later the
+silhouette is a different set of vertices in a different cyclic order, so the
+committed order stops holding and the outline crosses itself. On the
+seven-primitive lab scene it rejected five of seven objects on ordering alone,
+each of which had a clean ring in every frame. A silhouette is not a
+topological object, and slots must not be bound to topology. See outline.py.
 """
+
 
 from __future__ import annotations
 
@@ -93,83 +75,3 @@ def walk_loop(plan, edges):
         if len(loop) > len(adj):
             return None                  # walked past the ring: malformed
     return loop if len(loop) == len(adj) else None   # one ring, not several
-
-
-class MergedPath:
-    """Fixed slot order for one object's merged outline.
-
-    Built from the first frame that produces a usable ring, then reused for
-    every frame after it.
-    """
-
-    def __init__(self, nverts):
-        self.nverts = int(nverts)
-        self.order = None        # slot -> vertex index
-        self.slot_of = None      # vertex index -> slot
-        self.stable = True
-        self.frames_unstable = 0
-
-    def adopt(self, loop):
-        """Fix the slot order from this ring.
-
-        Spare vertices are spread evenly around the ring rather than piled at
-        the end, so that a vertex arriving on the silhouette later has a slot
-        somewhere near where it belongs.
-        """
-        spare = [v for v in range(self.nverts) if v not in set(loop)]
-        order, si = [], 0
-        per_gap, extra = divmod(len(spare), len(loop))
-        for i, v in enumerate(loop):
-            order.append(v)
-            take = per_gap + (1 if i < extra else 0)
-            order.extend(spare[si:si + take])
-            si += take
-        order.extend(spare[si:])
-        self.order = np.asarray(order, dtype=np.int64)
-        self.slot_of = np.empty(self.nverts, dtype=np.int64)
-        self.slot_of[self.order] = np.arange(len(self.order))
-
-    def _consistent(self, loop):
-        """Does this ring run around the slots in the order we committed to?"""
-        slots = self.slot_of[np.asarray(loop, dtype=np.int64)]
-        pivot = int(np.argmin(slots))
-        rolled = np.roll(slots, -pivot)
-        if np.all(np.diff(rolled) > 0):
-            return True
-        rolled = np.roll(slots[::-1], -int(np.argmin(slots[::-1])))
-        return bool(np.all(np.diff(rolled) > 0))
-
-    def points(self, loop, xy):
-        """Positions for every slot: outline vertices placed, the rest parked.
-
-        Parked runs are spread along the straight segment between the actives
-        either side, so they lie flush with the line and add no shape.
-        """
-        if self.order is None:
-            self.adopt(loop)
-        elif not self._consistent(loop):
-            self.stable = False
-            self.frames_unstable += 1
-
-        active = np.zeros(self.nverts, dtype=bool)
-        active[np.asarray(loop, dtype=np.int64)] = True
-        n = len(self.order)
-        out = np.empty((n, 2), dtype=np.float64)
-        live = active[self.order]
-        idx = np.nonzero(live)[0]
-        if len(idx) == 0:
-            out[:] = 0.0
-            return out
-        out[idx] = xy[self.order[idx]]
-
-        # Fill each gap between consecutive live slots, wrapping at the end.
-        for k in range(len(idx)):
-            s = int(idx[k])
-            e = int(idx[(k + 1) % len(idx)])
-            gap = (e - s) % n
-            if gap < 2:
-                continue
-            a, b = out[s], out[e]
-            for j in range(1, gap):
-                out[(s + j) % n] = a + (b - a) * (j / gap)
-        return out
