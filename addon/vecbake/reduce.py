@@ -145,45 +145,43 @@ def reduce_points(times, values, tol) -> Track:
 
 
 def freeze_hidden(geo_samples, vis_samples):
-    """Stop tracking geometry that nobody can see.
+    """Give every hidden frame the pose of the nearest frame that is not.
 
-    A run of frames where the element is hidden *and* stays hidden into the
-    next frame contributes nothing visually, so we pin its geometry to the last
-    visible pose.  RDP then collapses the whole run to nothing.  Frames on
-    either side of a visibility flip are left alone -- their geometry is what
-    the one-frame opacity ramp interpolates against.
+    A hidden run contributes nothing visually, so pinning it lets RDP collapse
+    the stretch to nothing. What matters is the two ends of the run: opacity
+    ramps across one frame and the player interpolates geometry over the same
+    span, so whatever pose sits at the last hidden frame is a pose the viewer
+    watches the element travel from.
+
+    Frames beside a flip used to be left at their own pose, on the reasoning
+    that it is the honest thing to ramp against. It is not honest when the
+    element had no pose there: a merged fill writes nothing in a frame whose
+    silhouette is not one ring, and the frame then borrowed the nearest pose
+    it could find, which can be from long before. part_001 is the magnetometer
+    boom, eleven units long, projecting to a sliver that reaches 2400px off
+    screen. It went hidden for four frames, came back 2900px away, and faded
+    in while travelling the whole distance -- a line sweeping across the frame,
+    from geometry that was correct at both ends.
+
+    Nearest visible pose instead, so an element fades in and out where it
+    belongs. Inside a long run the borrowed pose switches from one end to the
+    other, and nobody sees that: it happens where opacity is zero.
     """
     n = len(geo_samples)
     if n == 0:
         return geo_samples
+    seen = [i for i in range(n)
+            if vis_samples[i] > 0.0 and geo_samples[i] is not None]
+    if not seen:
+        # Never visible, or never drawn. The caller drops these; hand back what
+        # came in rather than inventing a pose for it.
+        return list(geo_samples)
     out = list(geo_samples)
-    last_seen = None
+    at = 0
     for i in range(n):
-        visible = vis_samples[i] > 0.0
-        neighbour_visible = (i > 0 and vis_samples[i - 1] > 0.0) or (
-            i + 1 < n and vis_samples[i + 1] > 0.0
-        )
-        if visible:
-            last_seen = geo_samples[i]
-        elif not neighbour_visible and last_seen is not None:
-            out[i] = last_seen
-
-    # Nothing above can fill a frame with no *earlier* pose to hold, and one
-    # sampler leaves frames genuinely empty: a merged fill writes no geometry
-    # at all in a frame whose outline is not one simple loop. An object that
-    # only resolves partway into the clip therefore arrives here with None in
-    # every frame before that, and reduce_points is handed a sample it cannot
-    # subtract -- "TypeError: 'NoneType' object is not iterable", a hard failure
-    # of the whole bake rather than one bad frame.
-    #
-    # Reach the other way for those. The caller has already dropped anything
-    # never visible, so at least one real pose exists; a frame nobody sees is
-    # free to borrow the nearest one.
-    if any(g is None for g in out):
-        have = [i for i, g in enumerate(out) if g is not None]
-        if not have:
-            return out                       # nothing to borrow; caller drops it
-        for i, g in enumerate(out):
-            if g is None:
-                out[i] = out[min(have, key=lambda k: abs(k - i))]
+        if vis_samples[i] > 0.0 and geo_samples[i] is not None:
+            continue
+        while at + 1 < len(seen) and abs(seen[at + 1] - i) <= abs(seen[at] - i):
+            at += 1
+        out[i] = geo_samples[seen[at]]
     return out

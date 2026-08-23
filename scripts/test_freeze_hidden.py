@@ -73,18 +73,29 @@ ghost = reduce.freeze_hidden([None] * 4, [0.0] * 4)
 check("an element with nothing to borrow is returned as-is, not crashed on",
       ghost == [None] * 4)
 
-# --- the ordinary path must not change ------------------------------------
-# A hidden run between two visible ones still pins to the last visible pose,
-# and the frames either side of a flip are still left alone for the opacity
-# ramp to interpolate against.
+# --- an element must fade in and out where it belongs ----------------------
+# Opacity ramps over one frame and the player interpolates geometry across the
+# same span, so the pose at the last hidden frame is one the viewer watches the
+# element travel from. Every hidden frame therefore takes the nearest visible
+# pose: the run still collapses for the reducer, and both ends of it already
+# match the frame they ramp into.
 A = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 B = [9.0, 9.0, 8.0, 9.0, 8.0, 8.0, 9.0, 8.0]
 seq = [A, A, B, B, B, A]
 vis2 = [1.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 held = reduce.freeze_hidden(seq, vis2)
-check("a hidden run still pins to the last visible pose", held[3] == A,
-      f"got {held[3]}")
-check("...and the frames beside a flip keep their own", held[2] == B and held[4] == B)
+check("a hidden frame beside a visible one matches it", held[2] == A,
+      f"got {held[2]}")
+check("...at the far end of the run too", held[4] == A, f"got {held[4]}")
+check("...and the run in between is one pose, so it collapses",
+      held[2] == held[3] == held[4], f"got {held[2:5]}")
+
+# the pose it borrows really is the nearer one, not simply the last seen
+seq3 = [A, B, B, B, B, A]
+vis3 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+h3 = reduce.freeze_hidden(seq3, vis3)
+check("early hidden frames take the pose before them", h3[1] == A, f"got {h3[1]}")
+check("late hidden frames take the pose after them", h3[4] == A, f"got {h3[4]}")
 
 print()
 print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))
