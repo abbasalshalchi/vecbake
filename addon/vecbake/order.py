@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import heapq
 
+import math
+
 import numpy as np
 
 FILL_KIND = 1
@@ -272,6 +274,79 @@ def _segments(item):
     if item.get("closed") and len(pts) > 2:
         spans.append((pts[-1], pts[0]))
     return spans
+
+
+def _overlap_centre(a, b, is_ortho, cells=24):
+    """The centre of what two elements share, as one point, or None.
+
+    Two fills share an area and its centre is the area's centroid. A stroke
+    shares a length with a fill -- the part of the polyline inside it -- and
+    its centre is the midpoint of that length. Two strokes share nothing worth
+    ordering, and never reach here.
+
+    One point, deliberately, where this used to take the mean of up to
+    twenty-four. The sample set was chosen by a grid recomputed every frame
+    from the bounding-box intersection, shrunk against a budget, with two
+    fallbacks for when the grid missed the region entirely. Which points are
+    in that set changes discretely as the overlap moves, so the mean steps
+    when the geometry does not, and a pair whose depths run close changes
+    places on the step: 8409 order swaps over one orbit of the probe, seen as
+    parts jumping in front of each other and strokes crossing over their own
+    fills.
+
+    A centre moves continuously because the region does, and it is the same
+    point every frame for the same geometry. That is worth more here than a
+    better average, because the ordering only needs the sign.
+    """
+    a_fill = a["kind"] == FILL_KIND
+    b_fill = b["kind"] == FILL_KIND
+
+    if a_fill and b_fill:
+        x0 = max(a["bbox"][0], b["bbox"][0])
+        x1 = min(a["bbox"][1], b["bbox"][1])
+        y0 = max(a["bbox"][2], b["bbox"][2])
+        y1 = min(a["bbox"][3], b["bbox"][3])
+        if x1 <= x0 or y1 <= y0:
+            return None
+        # Cells span the shared box rather than a fixed number of pixels, so a
+        # sliver is sampled finely across its thin direction instead of being
+        # stepped over -- which is what the old grid needed its fallbacks for.
+        gx, gy = np.meshgrid(
+            x0 + ((x1 - x0) / (cells + 1)) * np.arange(1, cells + 1),
+            y0 + ((y1 - y0) / (cells + 1)) * np.arange(1, cells + 1),
+        )
+        qx, qy = gx.ravel(), gy.ravel()
+        both = _inside(a, qx, qy) & _inside(b, qx, qy)
+        if not both.any():
+            return None
+        return float(qx[both].mean()), float(qy[both].mean())
+
+    fill, line = (a, b) if a_fill else (b, a)
+    if not (a_fill or b_fill):
+        return None
+
+    # Exact, not sampled: `_inside_spans` gives the stretches of each segment
+    # that lie within the polygon, so the shared length and its centre come
+    # out of arithmetic rather than out of how densely the line was walked.
+    total = 0.0
+    sx = sy = 0.0
+    for p, q in _segments(line):
+        ax, ay = float(p[0]), float(p[1])
+        bx, by = float(q[0]), float(q[1])
+        seg = math.hypot(bx - ax, by - ay)
+        if seg <= 0.0:
+            continue
+        for t0, t1 in _inside_spans(p, q, fill["pts"]):
+            if t1 <= t0:
+                continue
+            span = (t1 - t0) * seg
+            mid = 0.5 * (t0 + t1)
+            total += span
+            sx += (ax + (bx - ax) * mid) * span
+            sy += (ay + (by - ay) * mid) * span
+    if total <= 0.0:
+        return None
+    return sx / total, sy / total
 
 
 def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24):
@@ -546,12 +621,13 @@ def resolve(items, is_ortho=False, tol=1e-4):
             if dmax[i] < dmin[j]:
                 add_edge(j, i, float(dmin[j] - dmax[i]))
                 continue
-            shared = _shared_samples(items[i], items[j])
+            shared = _overlap_centre(items[i], items[j], is_ortho)
             if shared is None:
                 continue
-            qx, qy = shared
-            delta = float(np.mean(_depths_at(items[i], qx, qy, is_ortho)
-                                  - _depths_at(items[j], qx, qy, is_ortho)))
+            qx = np.array([shared[0]])
+            qy = np.array([shared[1]])
+            delta = float(_depths_at(items[i], qx, qy, is_ortho)[0]
+                          - _depths_at(items[j], qx, qy, is_ortho)[0])
             if abs(delta) <= tol:
                 # Coplanar or touching: depth cannot decide, and leaving it to
                 # the seed order makes the pair flicker as the seeds jitter
