@@ -1038,7 +1038,8 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         slot = slots[key]
         loop = None
         if face_facing.any():
-            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
+            loop = merge.walk_loop(
+                plan, merge.silhouette_edges(plan, face_facing), xy)
         if loop is None:
             if plan.outline_n is None and face_facing.any():
                 # There are faces pointing at the camera and no ring to be had
