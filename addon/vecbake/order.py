@@ -72,6 +72,20 @@ def _depths_at(item, qx, qy, is_ortho):
     """
     qx = np.atleast_1d(np.asarray(qx, dtype=np.float64))
     qy = np.atleast_1d(np.asarray(qy, dtype=np.float64))
+    probe = item.get("probe")
+    if probe is not None:
+        # Real samples off the surface, not a polynomial through them. A
+        # merged fill is a whole part, and a part can be a bowl: the middle
+        # curves away while the rim curves toward the camera, so no plane
+        # describes it. The Voyager dish's back shell missed its own depth by
+        # up to 1.35 units under an affine fit, on a shell 0.07 thick -- which
+        # is why the beams sitting inside it sorted behind it. A quadratic
+        # halved that and made other parts worse, so fit nothing: read the
+        # depth where the two elements actually overlap.
+        px, py, pd = probe
+        d2 = ((qx[:, None] - px[None, :]) ** 2
+              + (qy[:, None] - py[None, :]) ** 2)
+        return pd[d2.argmin(axis=1)]
     if item["kind"] == FILL_KIND and item["field"] is not None:
         f = item["field"]
         v = f[0] * qx + f[1] * qy + f[2]
@@ -458,9 +472,20 @@ def resolve(items, is_ortho=False, tol=1e-4):
     for it in items:
         pts = it["pts"]
         it["bbox"] = (pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max())
-        it["dmin"] = float(it["depths"].min())
-        it["dmax"] = float(it["depths"].max())
-        it["field"] = _fit_field(pts, it["depths"], is_ortho) if it["kind"] == FILL_KIND else None
+        probe = it.get("probe")
+        if probe is not None:
+            # The span has to come from the samples too. Taken off the outline
+            # alone it misses the inside of a bowl entirely -- the rim is not
+            # the deepest part of it -- and the disjoint-interval shortcut
+            # below would then settle pairs it has no business settling.
+            it["dmin"] = float(probe[2].min())
+            it["dmax"] = float(probe[2].max())
+            it["field"] = None
+        else:
+            it["dmin"] = float(it["depths"].min())
+            it["dmax"] = float(it["depths"].max())
+            it["field"] = (_fit_field(pts, it["depths"], is_ortho)
+                           if it["kind"] == FILL_KIND else None)
 
     seed = np.array([it["seed"] for it in items], dtype=np.float64)
     bbox = np.array([it["bbox"] for it in items], dtype=np.float64)

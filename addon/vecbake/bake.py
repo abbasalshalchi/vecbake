@@ -51,6 +51,19 @@ from .settings import BakeSettings
 # built from that set has no loop to find. See face_facing below.
 FACING_BAND = 0.03
 
+# How many surface samples a merged element hands the ordering pass. Enough to
+# describe a curved part, small enough that the nearest-sample lookup stays
+# trivial next to the frame that produced it.
+PROBE_CAP = 256
+
+# Dropping near-zero-area faces from the facing set was tried here and is
+# measurably worse. It cures the walk on a part whose third face crosses into
+# view at 0.04px2, but removing a face turns its interior edges into
+# silhouette edges, which opens a zero-width slit the walk then has to
+# traverse: 6 fewer parts blinking, 64 more frames drawing a self-crossing
+# outline. The degenerate face has to be handled where it is used, not by
+# pretending the part does not have it.
+
 
 class BakeError(Exception):
     pass
@@ -880,10 +893,12 @@ def screen_loops(plan, facing, xy):
     idx = np.nonzero(facing)[0]
     if not len(idx):
         return []
+
     polys = []
     for f in idx:
         lo = int(plan.loop_start[f])
         polys.append(xy[plan.loop_verts[lo:lo + int(plan.loop_total[f])]])
+
     where = np.full(plan.nfaces, -1, dtype=np.int64)
     where[idx] = np.arange(len(idx))
 
@@ -1216,7 +1231,22 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     cull = settings.cull_offscreen
 
     if plan.fills and plan.merge_fill:
-        loops = screen_loops(plan, face_facing, xy) if face_facing.any() else []
+        # Backface culling is there to stop a solid drawing its own far side.
+        # An open shell has no far side to hide behind, so when the cull takes
+        # every face the part simply vanishes -- and Blender draws both sides
+        # unless a material asks otherwise, so that is the bake disagreeing
+        # with the render rather than the part being invisible. part_310 is a
+        # single quad and lost a 13468px2 panel for 35 frames of 60 this way;
+        # 28 other parts lost exactly one frame each.
+        #
+        # The silhouette of a surface is the same shape whichever side is
+        # called front, so fall back to the other side rather than draw
+        # nothing. Only when there is nothing else -- a closed solid always
+        # has a front-facing face and never reaches this.
+        draw_faces = face_facing
+        if not draw_faces.any():
+            draw_faces = face_ok & ~front_now
+        loops = screen_loops(plan, draw_faces, xy) if draw_faces.any() else []
         if nv and in_front.any():
             seen = depth[in_front]
             plan.depth_span = max(plan.depth_span, float(seen.max() - seen.min()))
@@ -1265,7 +1295,14 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     outline_mod.simple_count(poly, settings.dissolve_px))
                 plan.outline_seen[sl] = poly
         else:
+            # `draw_faces`, not `face_visible`: when the backface cull has
+            # taken every face the fallback above still builds an outline, and
+            # reading opacity off the empty set hands it alpha 0 -- the part
+            # is drawn and invisible. part_310 kept vanishing for 35 frames
+            # with the outline sitting right there.
             vis_faces = np.nonzero(face_visible)[0]
+            if not len(vis_faces):
+                vis_faces = np.nonzero(draw_faces)[0]
             base_depth = float(face_depth[vis_faces].mean()) if len(vis_faces) else 0.0
             shade = (float(face_shade[vis_faces].mean())
                      if (plan.shading and len(vis_faces)) else 1.0)
@@ -1338,53 +1375,58 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 # enough not to reorder this object against anything else.
                 slot["depth"][fi] = base_depth - r * 1e-4 * max(abs(base_depth), 1.0)
                 slot["shade"][fi] = shade
-            if collect is not None and face_facing.any():
-                # The ordering pass compares two fills by fitting each a plane
-                # over screen space and evaluating both across the pixels they
-                # share. A merged outline was handing it one constant depth for
-                # the whole silhouette, which is a flat card square to the
-                # camera -- so a part that recedes, or that passes another at an
-                # angle, offered nothing to compare and the pair fell back to a
-                # single number. Every unmerged face gives real per-vertex
-                # depths; there is no reason a merged one should not.
+            if collect is not None and draw_faces.any():
+                # The ordering pass compares two fills by evaluating each
+                # over the pixels they share. Give it the part's real surface
+                # to evaluate, not a model of it.
                 #
-                # A plane through the object's own front-facing vertices is the
-                # same model the ordering pass will rebuild anyway, so fitting
-                # it here and reading the outline points off it loses nothing
-                # and costs one least-squares solve per object per frame.
-                field = None
+                # This was a single constant per element -- a flat card square
+                # to the camera -- which made `resolve` read dmin == dmax and
+                # emit confident, wrong ordering edges. A fitted plane was
+                # better and still not enough: a bowl curves away in the middle
+                # and toward the camera at the rim, and the Voyager dish's back
+                # shell missed its own depth by up to 1.35 units that way, on a
+                # shell 0.067 thick. The beams sitting inside the dish are far
+                # closer to it than that, so they sorted behind it. A quadratic
+                # halved the error on the dish and made part_005 worse, so
+                # there is no polynomial worth picking.
+                #
+                # The samples are the front-facing vertices, thinned to a cap
+                # so the nearest-sample lookup stays cheap: the outer loop in
+                # `resolve` runs over fills only, a few hundred of them, and
+                # each pair asks for at most 24 points.
+                probe = None
                 if nf and nv:
                     face_of_loop = np.repeat(np.arange(nf), plan.loop_total)
-                    fv = np.unique(plan.loop_verts[face_facing[face_of_loop]])
+                    fv = np.unique(plan.loop_verts[draw_faces[face_of_loop]])
                     if len(fv) >= 3:
-                        field = order_mod._fit_field(xy[fv], depth[fv], is_ortho)
+                        if len(fv) > PROBE_CAP:
+                            fv = fv[np.linspace(0, len(fv) - 1, PROBE_CAP).astype(np.int64)]
+                        probe = (xy[fv, 0].copy(), xy[fv, 1].copy(),
+                                 depth[fv].copy())
                 for r, npts in enumerate(plan.outline_ns):
                     slot = slots[f"{plan.name}/m{r}"]
                     if slot["vis"][fi] > 0.0 and slot["geo"][fi]:
                         g = np.asarray(slot["geo"][fi], dtype=np.float64).reshape(-1, 2)
                         seed = float(slot["depth"][fi])
-                        if field is None:
+                        if probe is None:
                             depths = np.full(len(g), seed)
                         else:
-                            plane = field[0] * g[:, 0] + field[1] * g[:, 1] + field[2]
-                            depths = (plane if is_ortho
-                                      else 1.0 / np.where(np.abs(plane) < 1e-12,
-                                                          1e-12, plane))
-                            # The fit is over the front surface, so a point can
-                            # still land behind the camera on a steep plane.
-                            # Clamp to the span the object actually occupies
-                            # rather than let one bad point drag the whole
-                            # comparison.
-                            if plan.depth_lo < plan.depth_hi:
-                                depths = np.clip(depths, plan.depth_lo,
-                                                 plan.depth_hi)
-                        collect.append({
+                            # the outline's own depths, read off the same
+                            # samples, so `depths` and `probe` cannot disagree
+                            d2 = ((g[:, 0][:, None] - probe[0][None, :]) ** 2
+                                  + (g[:, 1][:, None] - probe[1][None, :]) ** 2)
+                            depths = probe[2][d2.argmin(axis=1)]
+                        item = {
                             "key": f"{plan.name}/m{r}",
                             "kind": 1 if plan.outline_fill[r] else 0,
                             "seed": seed,
                             "pts": g,
                             "depths": depths,
-                        })
+                        }
+                        if probe is not None:
+                            item["probe"] = probe
+                        collect.append(item)
     elif plan.fills:
         lv = plan.loop_verts
         for fidx in range(nf):
