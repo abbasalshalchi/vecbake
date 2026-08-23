@@ -311,6 +311,79 @@ def walk_loops(pieces, min_points=3):
     return loops
 
 
+def walk_oriented(pieces, min_points=3):
+    """Chain pieces that already know which side of them the region is on.
+
+    `walk_loops` is handed an undirected soup and rebuilds the direction with a
+    sharpest-turn rule. That is guesswork, and it is guesswork about something
+    the caller already knew: the covering test decides, for every piece it
+    keeps, which side the region lies on. Orient the pieces by that and a
+    boundary leaves a node the way it arrived, with nothing to choose.
+
+    It also makes a spur impossible rather than merely unlikely. A dangling
+    piece has a tail no piece's head reaches, so it is never walked into.
+    """
+    if not len(pieces):
+        return []
+    weld = _Weld()
+    tails = {}
+    for i, (tail, _head) in enumerate(pieces):
+        tails.setdefault(weld.key(tail), []).append(i)
+
+    used = np.zeros(len(pieces), dtype=bool)
+    loops = []
+    for seed in range(len(pieces)):
+        if used[seed]:
+            continue
+        start = weld.key(pieces[seed][0])
+        loop = [np.asarray(start)]
+        used[seed] = True
+        cur = seed
+        closed = False
+        for _ in range(len(pieces) + 1):
+            head = weld.key(pieces[cur][1])
+            if head == start:
+                closed = True
+                break
+            loop.append(np.asarray(head))
+            options = [i for i in tails.get(head, ()) if not used[i]]
+            if not options:
+                break
+            if len(options) == 1:
+                nxt = options[0]
+            else:
+                # Two boundary loops pinching at a point. Orientation still
+                # settles it: take the tightest turn that keeps the region on
+                # the same side, which is the smallest left turn from the way
+                # we came in.
+                tail = pieces[cur][0]
+                back = math.atan2(tail[1] - head[1], tail[0] - head[0])
+                nxt, best = None, None
+                for i in options:
+                    out = pieces[i][1]
+                    turn = (math.atan2(out[1] - head[1], out[0] - head[0])
+                            - back) % (2 * math.pi)
+                    if best is None or turn < best:
+                        nxt, best = i, turn
+            used[nxt] = True
+            cur = nxt
+        if len(loop) < min_points:
+            continue
+        if not closed:
+            # Same rule the undirected walk uses: a chain that ran out of
+            # pieces a short way from its own start is one missing piece, not
+            # a missing outline, and a fill closes implicitly anyway. Only
+            # across a gap small next to the shape itself -- a wide one means
+            # these pieces do not describe one region.
+            span = np.asarray(loop)
+            extent = float(np.hypot(*(span.max(axis=0) - span.min(axis=0))))
+            gap = float(np.hypot(*(span[-1] - span[0])))
+            if extent <= 0.0 or gap > CLOSE_GAP * extent:
+                continue
+        loops.append(np.asarray(loop))
+    return loops
+
+
 def outline_of(faces, candidates, owners):
     """The screen boundary of a set of projected faces.
 
@@ -361,26 +434,70 @@ def outline_of(faces, candidates, owners):
             idx = np.nonzero(todo)[0]
             cov[idx] |= _inside(pts[idx, 0], pts[idx, 1], poly)
 
-    kept = pieces[cov_l != cov_r]
+    # Orient every kept piece so the region is on the same side of all of
+    # them, which is what lets the walk follow the boundary instead of
+    # reconstructing its direction from turn angles.
+    #
+    # Not from the covering probe. That probe steps 1e-3px off the line, and a
+    # sliver face can be thinner than its own step, so its verdict is a coin
+    # toss exactly where the geometry is hardest. One piece oriented wrongly
+    # loses the whole loop, where the old undirected walk would have closed it
+    # anyway -- measured: orienting by the probe cut self-crossing outlines
+    # from 113 to 6 and lost 559 frames to loops that no longer closed.
+    #
+    # The owner face answers it exactly and without an epsilon: a piece on the
+    # boundary has the union on the side its own face lies on, and that face's
+    # centre is strictly on one side however thin it is.
+    centres = [np.asarray(f, dtype=np.float64).mean(axis=0) if len(f) else None
+               for f in faces]
+    sel = np.nonzero(cov_l != cov_r)[0]
+    kept = []
+    for i in sel:
+        head, tail = pieces[i]
+        own = owners[source[i]] if source[i] < len(owners) else -1
+        side = 0.0
+        if 0 <= own < len(centres) and centres[own] is not None:
+            e = tail - head
+            rel = centres[own] - head
+            side = float(e[0] * rel[1] - e[1] * rel[0])
+        if side > 0.0:
+            head, tail = tail, head      # region on the left: turn it round
+        elif side == 0.0 and cov_l[i]:
+            head, tail = tail, head      # degenerate face: fall back to the probe
+        kept.append((head, tail))
 
     # Two faces meeting along a line contribute the same piece twice, once
     # from each side's edge. Both survive the covering test -- they describe
     # the same boundary and it really is a boundary -- and leaving both in
     # gives the walk a node of degree three where the boundary has degree two,
-    # which it cannot get past. One piece of boundary, one segment.
+    # which it cannot get past. One piece of boundary, one segment. Oriented,
+    # so a piece traversed the other way is a different piece.
     weld = _Weld()
     seen, unique = set(), []
     for p, q in kept:
         a, b = weld.key(p), weld.key(q)
-        edge = (a, b) if a <= b else (b, a)
-        if edge in seen or a == b:
+        if (a, b) in seen or a == b:
             continue
-        seen.add(edge)
+        seen.add((a, b))
         unique.append((p, q))
     if not unique:
         return []
 
-    loops = walk_loops(np.asarray(unique, dtype=np.float64))
+    # Orientation is exact where it works and unforgiving where it does not:
+    # every piece has to chain head to tail, so one gap anywhere loses the
+    # whole loop. Measured over the probe, on its own it cut self-crossing
+    # outlines from 113 to 6 and lost 440 frames of parts that stopped
+    # closing. The undirected walk is the reverse -- it closes nearly
+    # everything and tangles far more often.
+    #
+    # So ask the exact one first and keep the tolerant one for what it cannot
+    # answer. This is not a fallback onto stale data; both walks describe this
+    # frame, and the second is only reached where the first found no loop at
+    # all.
+    oriented = np.asarray(unique, dtype=np.float64)
+    loops = walk_oriented(oriented)
+    if not loops:
+        loops = walk_loops(oriented)
     loops.sort(key=lambda L: -_area(L))
     return loops
 

@@ -262,6 +262,40 @@ check("distant fragments are not welded into an invented loop",
       all(area(L) < 200.0 for L in boundary.walk_loops(frag)),
       str([round(area(L)) for L in boundary.walk_loops(frag)]))
 
+# --- the oriented walk ----------------------------------------------------
+# Pieces arrive knowing which side the region is on -- `outline_of` flips every
+# piece until the region is on the right of all of them -- so the walk follows
+# them head to tail with nothing to guess. The fixtures below are wound that
+# way; the other winding is a different shape's boundary, not this one's.
+#
+# The property that matters is not closing a square, which the undirected walk
+# managed too. It is that a spur cannot be walked into: a dangling piece has a
+# tail that no piece's head reaches. A spur is what put a tail on part_022's
+# ring and froze the part for three frames at a time.
+sq = [((0.0, 0.0), (0.0, 10.0)), ((0.0, 10.0), (10.0, 10.0)),
+      ((10.0, 10.0), (10.0, 0.0)), ((10.0, 0.0), (0.0, 0.0))]
+ring = boundary.walk_oriented(np.array(sq, dtype=float))
+check("an oriented ring closes", len(ring) == 1 and len(ring[0]) == 4,
+      str([len(r) for r in ring]))
+check("...and encloses its own area", abs(area(ring[0]) - 100.0) < 1e-9,
+      f"{area(ring[0])}")
+
+spurred = boundary.walk_oriented(
+    np.array(sq + [((10.0, 10.0), (14.0, 13.0))], dtype=float))
+check("a spur hanging off a corner is left out",
+      len(spurred) == 1 and abs(area(spurred[0]) - 100.0) < 1e-9,
+      str([(len(r), round(area(r), 2)) for r in spurred]))
+
+# One piece pointing the wrong way breaks the chain, and the walk must not
+# invent a way through it. That is unforgiving by design, and exactly why
+# outline_of keeps the undirected walk for what this one cannot answer.
+flipped = list(sq)
+flipped[2] = (flipped[2][1], flipped[2][0])
+got = boundary.walk_oriented(np.array(flipped, dtype=float))
+check("a piece pointing the wrong way closes nothing",
+      all(abs(area(L) - 100.0) > 1e-9 for L in got),
+      str([(len(r), round(area(r), 2)) for r in got]))
+
 # --- a ring's two loops share a centroid ----------------------------------
 # Nearest-centroid matching alone cannot tell an outer boundary from the hole
 # inside it: both centroids sit at the middle of the ring, so the distance test

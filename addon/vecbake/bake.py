@@ -902,7 +902,7 @@ def screen_loops(plan, facing, xy):
     where = np.full(plan.nfaces, -1, dtype=np.int64)
     where[idx] = np.arange(len(idx))
 
-    edges = merge.silhouette_edges(plan, facing)
+    edges = merge.silhouette_edges(plan, facing, xy)
     if len(edges) < 3:
         return []
     ev = plan.edge_verts[edges]
