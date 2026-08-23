@@ -573,13 +573,13 @@ def bake_iter(context, settings: BakeSettings):
         wanted = {name: p.outline_need for name, p in plans.items()
                   if p.fills and p.merge_fill and name not in no_merge}
         if wanted:
-            # An object no frame ever gave a ring for has nothing to merge.
-            # That is the shape whose outline is not one simple loop -- two
-            # separate loops, or a genus above zero -- and also a closed solid
-            # with Backface Cull off, where every edge has two drawn faces and
-            # there is no silhouette to find at all. Those fall back.
-            # `need < 3` is "no usable ring in any frame"; `need < 0` is
-            # "a ring, but one that crosses itself on screen".
+            # Merge only what rings in every frame it is visible in.
+            # `need < 0` is set the moment a frame fails -- a ring that
+            # crosses itself on screen, or faces pointing at the camera that
+            # no ring can be walked from. `need < 3` also covers an object no
+            # frame ever gave a ring for at all: two separate loops, a genus
+            # above zero, or a closed solid with Backface Cull off, where every
+            # edge has two drawn faces and there is no silhouette to find.
             merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
             no_merge.update(merge_fallback)
             outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
@@ -1040,9 +1040,19 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         if face_facing.any():
             loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
         if loop is None:
-            # No usable ring this frame -- nothing drawn, or a shape whose
-            # outline is not one simple loop. Leave the slot empty; freezing
-            # takes care of holding the last good frame.
+            if plan.outline_n is None and face_facing.any():
+                # There are faces pointing at the camera and no ring to be had
+                # from them. Merging anyway is what produced a part that draws
+                # in eleven frames of sixty and is simply absent for the other
+                # forty-nine: the decision was per object and asked whether any
+                # frame worked, while the failure is per frame. So an object
+                # that cannot be ringed in every frame it faces the camera does
+                # not merge in any of them, and draws face by face throughout.
+                # A bigger file, and a part that is always there.
+                plan.outline_need = -1
+            # Nothing to draw this frame either way. On the writing pass the
+            # object either merged, in which case this is a frame where it
+            # genuinely faces away, or it never merged and is not here at all.
             slot["vis"][fi] = 0.0
         elif plan.outline_n is None:
             # Measuring pass. Record how many points this frame's outline earns
