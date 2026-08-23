@@ -25,7 +25,6 @@ import numpy as np
 import bpy
 from mathutils import Vector
 
-from . import boundary as boundary_mod
 from . import chain as chain_mod
 from . import curves
 from . import follow
@@ -38,31 +37,6 @@ from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
 from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_bounded
 from .settings import BakeSettings
-
-
-# How near edge-on a face has to be before its facing is treated as unsettled
-# and held over from the previous frame, as a cosine. About 1.7 degrees.
-#
-# This holds a *painting* decision steady; it must never reach the silhouette.
-# Widening it to 7 degrees, on the theory that it had to exceed the camera's
-# 6-degree-a-frame turn to catch anything, doubled the merged outlines that
-# blink out -- 677 gaps to 1449. Holding a face front when it has turned away
-# leaves the front set inconsistent with the geometry, and the union boundary
-# built from that set has no loop to find. See face_facing below.
-FACING_BAND = 0.03
-
-# How many surface samples a merged element hands the ordering pass. Enough to
-# describe a curved part, small enough that the nearest-sample lookup stays
-# trivial next to the frame that produced it.
-PROBE_CAP = 256
-
-# Dropping near-zero-area faces from the facing set was tried here and is
-# measurably worse. It cures the walk on a part whose third face crosses into
-# view at 0.04px2, but removing a face turns its interior edges into
-# silhouette edges, which opens a zero-width slit the walk then has to
-# traverse: 6 fewer parts blinking, 64 more frames drawing a self-crossing
-# outline. The degenerate face has to be handled where it is used, not by
-# pretending the part does not have it.
 
 
 class BakeError(Exception):
@@ -307,41 +281,9 @@ class ObjectPlan:
         # Slots for the merged outline. `outline_n` is fixed before the pass
         # that writes geometry; `outline_need` is what the measuring pass
         # found this object actually wants -- see bake_iter.
-        # One merged element per loop of the object's screen boundary. An
-        # object covers one region usually, two when it has a hole or splits
-        # in the projection. `outline_ns` is the point count per loop, fixed
-        # before the pass that writes geometry; the rest is what the measuring
-        # pass found -- see bake_iter.
-        self.outline_ns = None      # [npts per loop] once measured
-        self.outline_fill = None    # [True=region, False=hole] per loop
-        self.outline_need = {}      # slot -> most points any frame wants
-        self.outline_sign = {}      # slot -> [+1/-1 seen per frame]
-        self.outline_prev = {}      # slot -> (arc fractions, points), writing
-        self.outline_seen = {}      # slot -> last points, measuring
-        # The measuring pass decides which loop belongs to which slot, and the
-        # writing pass replays that decision rather than making its own. Both
-        # passes walk the same frames over the same geometry, so `screen_loops`
-        # returns the same loops in the same order in each -- which makes the
-        # replay exact, and makes it impossible for the two to disagree about
-        # what a slot is for. They did disagree, twice: the budget was sized
-        # for one region and spent on another, and each pass matched against a
-        # different point set so their histories drifted apart.
-        self.outline_pick = []      # per measured frame: {slot: loop index}
-        self.outline_keep = None    # element index -> the slot it came from
-        # Frames whose outline came out crossing itself. Counted rather than
-        # worked around, so the number is visible in the bake stats and cannot
-        # quietly grow again.
-        self.outline_tangled = 0
-        # How much camera depth this object occupies, and where. A merged fill
-        # carries one depth for the whole part, and painter's order has one
-        # scalar per element, so a part spanning a lot of depth cannot be
-        # placed correctly against anything that interleaves with it.
-        self.depth_span = 0.0
-        # Last frame's facing per face, for the hysteresis that stops edges
-        # blinking as a face crosses exactly edge-on.
-        self.prev_front = None
-        self.depth_lo = float("inf")
-        self.depth_hi = float("-inf")
+        self.outline_n = None
+        self.outline_need = 0
+        self.outline_prev = None   # (arc fractions, points) of the last frame
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -592,10 +534,7 @@ def bake_iter(context, settings: BakeSettings):
                         plan = ObjectPlan(obj, me, settings)
                         if obj.name in no_merge:
                             plan.merge_fill = False
-                        got = outline_slots.get(obj.name)
-                        if got:
-                            (plan.outline_pick, plan.outline_keep,
-                             plan.outline_ns, plan.outline_fill) = got
+                        plan.outline_n = outline_slots.get(obj.name)
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
                     else:
@@ -615,10 +554,9 @@ def bake_iter(context, settings: BakeSettings):
             yield ("Sampling", fi + 1, len(frames))
 
     merge_fallback: list[str] = []
-    merge_deep: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
-    outline_slots: dict[str, tuple] = {}
+    outline_slots: dict[str, int] = {}
     try:
         yield from sample_pass()
 
@@ -632,73 +570,19 @@ def bake_iter(context, settings: BakeSettings):
         # recorded, per object, the largest point count any single frame's
         # outline earned at the dissolve tolerance. That is the count, and now
         # it is known the geometry can be written.
-        wanted = {name: p for name, p in plans.items()
+        wanted = {name: p.outline_need for name, p in plans.items()
                   if p.fills and p.merge_fill and name not in no_merge}
         if wanted:
-            # An object with no loop in any frame has nothing to merge: an
-            # outline that is not one simple region, or a closed solid with
-            # Backface Cull off, where every edge has two drawn faces and
-            # there is no boundary to find at all.
-            merge_fallback = sorted(n for n, p in wanted.items() if not p.outline_need)
-
-            # A merged fill is one polygon carrying one depth, and painter's
-            # order has one scalar per element. That is fine for a bolt, whose
-            # near and far side are a pixel apart, and wrong for the high-gain
-            # dish, which spans 11.3 of the scene's 24.4 units: everything
-            # passing between its near rim and its far rim is then ordered
-            # against a single average and comes out on the wrong side.
-            #
-            # Unmerged, that dish was 682 face fills each with its own depth,
-            # and the ordering pass could interleave them correctly. So the
-            # few parts deep enough to matter keep their faces; the rest --
-            # the great majority, whose own span is under a percent of the
-            # scene -- merge as before.
-            lo = min((p.depth_lo for p in plans.values()
-                      if p.depth_lo < float("inf")), default=0.0)
-            hi = max((p.depth_hi for p in plans.values()
-                      if p.depth_hi > float("-inf")), default=1.0)
-            scene_depth = max(hi - lo, 1e-6)
-            # Off by default, and the reason is a trade rather than a bug.
-            # Un-merging a part puts its silhouette strokes back, and a
-            # silhouette stroke blinks by construction: the edge enters and
-            # leaves the silhouette set as the object turns. On the Voyager
-            # probe un-merging the 13 deepest parts fixed the dish's ordering
-            # and took flicker from 3.9% of elements to 15.8%, 680 of the new
-            # blinking strokes being the dish alone.
-            #
-            # The fix for a part too deep to carry one depth is to split it in
-            # the mesh, where both halves then merge cleanly and each gets its
-            # own depth. This is here for the cases where that is not possible.
-            limit = float(getattr(settings, "merge_depth_limit", 0.0) or 0.0)
-            deep = sorted(n for n, p in wanted.items()
-                          if limit > 0.0 and p.depth_span / scene_depth > limit)
-            merge_fallback = sorted(set(merge_fallback) | set(deep))
-            merge_deep = deep
+            # An object no frame ever gave a ring for has nothing to merge.
+            # That is the shape whose outline is not one simple loop -- two
+            # separate loops, or a genus above zero -- and also a closed solid
+            # with Backface Cull off, where every edge has two drawn faces and
+            # there is no silhouette to find at all. Those fall back.
+            # `need < 3` is "no usable ring in any frame"; `need < 0` is
+            # "a ring, but one that crosses itself on screen".
+            merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
             no_merge.update(merge_fallback)
-            for name, p in wanted.items():
-                if name in no_merge:
-                    continue
-                ranks = sorted(p.outline_need)
-                # A loop that appears in only a handful of frames is not worth
-                # an element for the whole clip: it costs a point count in
-                # every frame to draw in three. The largest region always
-                # stays.
-                keep = [r for r in ranks
-                        if r == 0 or len(p.outline_sign.get(r, ())) >= 0.15 * len(frames)]
-                if not keep:
-                    continue
-                outline_slots[name] = (
-                    # The plans are rebuilt for the writing pass, so the
-                    # assignment has to travel with the slot table or it dies
-                    # with the plan that made it.
-                    p.outline_pick,
-                    keep,
-                    [max(3, p.outline_need[r]) for r in keep],
-                    # region or hole, by what it was in most of the frames it
-                    # appeared in -- one odd frame must not decide the kind of
-                    # an element that exists for the whole clip
-                    [sum(p.outline_sign.get(r, (1,))) >= 0 for r in keep],
-                )
+            outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
 
             plans.clear()
             elements.clear()
@@ -847,20 +731,13 @@ def bake_iter(context, settings: BakeSettings):
             "follow_points": follow_report["points"],
             "silhouette_corners": follow_report["silhouettes"],
             "merged_fills": sum(1 for p in plans.values()
-                                if p.fills and p.merge_fill and p.outline_ns),
-            # Objects whose outline is more than one loop -- a hole, or a
-            # shape that splits into separate regions on screen.
-            "merged_multi_loop": sum(1 for p in plans.values()
-                                     if p.outline_ns and len(p.outline_ns) > 1),
-            "merged_holes": sum(1 for p in plans.values() if p.outline_fill
-                                for f in p.outline_fill if not f),
-            "merged_tangled": sum(p.outline_tangled for p in plans.values()),
+                                if p.fills and p.merge_fill and p.outline_n),
             # Points each merged outline ended up carrying. Worth reporting:
             # this is the number the whole feature turns on, and a count near
             # an object's vertex total means its outline is genuinely that
             # complicated rather than that the measuring pass failed.
-            "merged_slots": {n: list(p.outline_ns) for n, p in sorted(plans.items())
-                             if p.outline_ns},
+            "merged_slots": {n: p.outline_n for n, p in sorted(plans.items())
+                             if p.outline_n},
             "occlusion_culled": occlusion_report["culled"],
             "occlusion_hidden_frames": occlusion_report["hidden"],
             # Frames whose paint rank was held over from a drawn frame,
@@ -873,47 +750,9 @@ def bake_iter(context, settings: BakeSettings):
             # longer on this list -- slots are positions around the loop now,
             # which are monotone by construction -- see outline.py.
             "merged_fallback": merge_fallback,
-            # Of those, the ones held back for spanning too much depth for a
-            # single painter's-order scalar rather than for their shape.
-            "merged_too_deep": merge_deep,
         }
     )
     return vec
-
-
-def screen_loops(plan, facing, xy):
-    """The loops of this object's outline on screen, largest region first.
-
-    Silhouette edges are the candidates -- an edge between two drawn faces has
-    the object on both sides and cannot bound it -- and boundary.outline_of
-    cuts them at their crossings and drops whatever turns out to be interior.
-    That is what makes a fold, a branch and a hole ordinary rather than three
-    separate defeats. See boundary.py.
-    """
-    idx = np.nonzero(facing)[0]
-    if not len(idx):
-        return []
-
-    polys = []
-    for f in idx:
-        lo = int(plan.loop_start[f])
-        polys.append(xy[plan.loop_verts[lo:lo + int(plan.loop_total[f])]])
-
-    where = np.full(plan.nfaces, -1, dtype=np.int64)
-    where[idx] = np.arange(len(idx))
-
-    edges = merge.silhouette_edges(plan, facing, xy)
-    if len(edges) < 3:
-        return []
-    ev = plan.edge_verts[edges]
-    segs = np.stack([xy[ev[:, 0]], xy[ev[:, 1]]], axis=1)
-    a, b = plan.edge_face_a[edges], plan.edge_face_b[edges]
-    a_ok = (a >= 0) & facing[np.maximum(a, 0)]
-    owners = where[np.where(a_ok, a, np.maximum(b, 0))]
-    keep = owners >= 0
-    if not keep.any():
-        return []
-    return boundary_mod.outline_of(polys, segs[keep], owners[keep])
 
 
 def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
@@ -929,32 +768,31 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
             "npts": npts,
         }
 
-    if plan.fills and plan.merge_fill and plan.outline_ns:
-        # One element per loop of the screen boundary. Usually one; two when
-        # the object has a hole, or splits into separate regions from some
-        # angles. The count and each loop's point total are per-clip facts and
-        # come from the measuring pass -- see bake_iter.
-        for r, npts in enumerate(plan.outline_ns):
-            key = f"{plan.name}/m{r}"
-            fill = plan.outline_fill[r]
-            elements.append(
-                Element(
-                    key=key,
-                    # A hole is not a region: filling it would paint over
-                    # whatever shows through. It is still an edge the viewer
-                    # sees, so it is drawn as a closed stroke instead.
-                    kind=FILL if fill else STROKE,
-                    npts=npts,
-                    group=plan.group,
-                    color=(plan.face_color[0] if (fill and plan.nfaces)
-                           else plan.stroke_color),
-                    width=settings.stroke_width if (settings.strokes or not fill) else 0.0,
-                    edge_color=(plan.stroke_color
-                                if (fill and settings.strokes) else None),
-                    closed=not fill,
-                )
+    if plan.fills and plan.merge_fill:
+        # One element for the whole object, carrying as many points as the
+        # busiest frame's outline needs. That number is a per-frame fact and an
+        # element's point count is not, so it comes from the measuring pass --
+        # see bake_iter. Without one there is nothing to go on but an upper
+        # bound, and every vertex is an upper bound.
+        key = f"{plan.name}/m"
+        elements.append(
+            Element(
+                key=key,
+                kind=FILL,
+                npts=plan.outline_n or plan.nverts,
+                group=plan.group,
+                color=plan.face_color[0] if plan.nfaces else 0,
+                # The outline draws its own silhouette. Nothing else can: which
+                # edges are on it changes every frame, so as strokes it costs
+                # one element per edge that ever qualifies -- 554 of them for
+                # the lab sphere, which has no sharp edge at all. Sharp edges
+                # are unaffected and stay ordinary strokes; they are fixed by
+                # topology and already cost one element each.
+                width=settings.stroke_width if settings.strokes else 0.0,
+                edge_color=plan.stroke_color if settings.strokes else None,
             )
-            new_slot(key, npts)
+        )
+        new_slot(key, plan.outline_n or plan.nverts)
     elif plan.fills:
         for fidx in range(plan.nfaces):
             npts = int(plan.loop_total[fidx])
@@ -1004,7 +842,6 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     nf = plan.nfaces
     world_n = world_c = None
     face_front = np.ones(nf, dtype=bool)
-    front_now = face_front          # no faces: nothing to be behind anything
     face_depth = np.zeros(nf, dtype=np.float64)
     face_ok = np.ones(nf, dtype=bool)
     face_shade = np.ones(nf, dtype=np.float64)
@@ -1027,29 +864,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         else:
             to_face = world_c - cam_pos
             facing = np.einsum("ij,ij->i", world_n, to_face)
-        # Which way a face points, as a cosine rather than a raw dot, so the
-        # threshold means the same thing at every distance and object size.
-        reach = np.linalg.norm(to_face, axis=1) if not is_ortho else np.ones(nf)
-        cos_face = facing / np.maximum(reach, 1e-12)
-        front_now = cos_face < 0.0
-
-        # Hysteresis, and it is the single biggest source of flicker in a
-        # turning clip. `facing < 0` is a hard cut, so a face within a
-        # hair of edge-on crosses it back and forth frame after frame, and
-        # every stroke that borders it blinks on and off: 1347 of the 1530
-        # elements flickering on the Voyager probe were plain edges doing
-        # exactly this, and unmerged it was 3514.
-        #
-        # Inside the band a face keeps whatever it was, so it takes a real
-        # turn to change state rather than numerical noise. The band is
-        # about 1.7 degrees -- far below anything that reads as a facing
-        # change, and the geometry there is a sliver either way.
-        if plan.prev_front is not None and len(plan.prev_front) == nf:
-            face_front = np.where(np.abs(cos_face) < FACING_BAND,
-                                  plan.prev_front, front_now)
-        else:
-            face_front = front_now
-        plan.prev_front = face_front.copy()
+        face_front = facing < 0.0
 
         # per-face mean depth / visibility, via segmented reduction over loops
         lv = plan.loop_verts
@@ -1095,19 +910,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     #                         result, this time with the cull still on.
     #
     # Neither says anything about where the object's outline is. See merge.py.
-    # Exact, never the hysteresis band: this is a question about where the
-    # solid turns away from the camera, and that has a right answer. A face
-    # held front after it has turned contributes a back-facing polygon to the
-    # union, its boundary pieces come back covered, and the walk finds nothing
-    # -- part_077 lost its outline on every fifth frame of the orbit, once per
-    # facet of a twelve-sided tube, in exactly the frames where one facet sat
-    # inside the band.
-    #
-    # Nor does the exact cut flicker here, which is the whole reason merging
-    # is worth doing: a face joins or leaves the front set with zero projected
-    # area, so the union boundary moves continuously through the crossing even
-    # though the set of faces under it changes.
-    face_facing = face_ok & front_now
+    face_facing = face_ok & face_front
 
     # ---- edges ----------------------------------------------------------
     ne = plan.nedges
@@ -1231,202 +1034,65 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     cull = settings.cull_offscreen
 
     if plan.fills and plan.merge_fill:
-        # Backface culling is there to stop a solid drawing its own far side.
-        # An open shell has no far side to hide behind, so when the cull takes
-        # every face the part simply vanishes -- and Blender draws both sides
-        # unless a material asks otherwise, so that is the bake disagreeing
-        # with the render rather than the part being invisible. part_310 is a
-        # single quad and lost a 13468px2 panel for 35 frames of 60 this way;
-        # 28 other parts lost exactly one frame each.
-        #
-        # The silhouette of a surface is the same shape whichever side is
-        # called front, so fall back to the other side rather than draw
-        # nothing. Only when there is nothing else -- a closed solid always
-        # has a front-facing face and never reaches this.
-        draw_faces = face_facing
-        if not draw_faces.any():
-            draw_faces = face_ok & ~front_now
-        loops = screen_loops(plan, draw_faces, xy) if draw_faces.any() else []
-        if nv and in_front.any():
-            seen = depth[in_front]
-            plan.depth_span = max(plan.depth_span, float(seen.max() - seen.min()))
-            plan.depth_lo = min(plan.depth_lo, float(seen.min()))
-            plan.depth_hi = max(plan.depth_hi, float(seen.max()))
-        if plan.outline_ns is None:
-            # Measuring pass. Record how many loops this object shows, whether
-            # each is a region or a hole, and how many points each earns. No
-            # geometry is written: the elements do not exist yet, because
-            # their count and widths are what is being measured.
-            kinds = boundary_mod.classify(loops)
-            # Both passes have to agree which slot a loop belongs to, or the
-            # budget is sized for one region and spent on another. This pass
-            # used to key everything on rank -- largest loop first, recomputed
-            # every frame -- while the writing pass follows the region. Rank is
-            # not identity, and part_087 is what that costs: it shows one loop
-            # needing fourteen points, the writing pass hands it to the slot
-            # rank had only ever seen a four-point loop in, `follow` crushes
-            # fourteen points into four, the result crosses itself, and the
-            # simplicity guard then froze the part for twelve frames before it
-            # snapped 189px. Same assignment here as there, and the budget
-            # follows the region it is for.
-            if plan.outline_seen:
-                span = max(plan.outline_seen) + 1
-                slot_kind = [sum(plan.outline_sign.get(sl, (1,))) >= 0
-                             for sl in range(span)]
-                pick = boundary_mod.match_loops(loops, plan.outline_seen,
-                                                kinds, slot_kind)
-            else:
-                pick = {}
-            # A loop that matched nothing is a region this object has not shown
-            # before, so it earns a slot of its own rather than crowding one.
-            taken = set(pick.values())
-            nxt = max(plan.outline_seen, default=-1) + 1
-            for li in range(len(loops)):
-                if li in taken:
-                    continue
-                pick[nxt] = li
-                nxt += 1
-            plan.outline_pick.append(dict(pick))
-            for sl, li in sorted(pick.items()):
-                poly = loops[li]
-                plan.outline_sign.setdefault(sl, []).append(1 if kinds[li] else -1)
-                plan.outline_need[sl] = max(
-                    plan.outline_need.get(sl, 0),
-                    outline_mod.simple_count(poly, settings.dissolve_px))
-                plan.outline_seen[sl] = poly
+        key = f"{plan.name}/m"
+        slot = slots[key]
+        loop = None
+        if face_facing.any():
+            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
+        if loop is None:
+            # No usable ring this frame -- nothing drawn, or a shape whose
+            # outline is not one simple loop. Leave the slot empty; freezing
+            # takes care of holding the last good frame.
+            slot["vis"][fi] = 0.0
+        elif plan.outline_n is None:
+            # Measuring pass. Record how many points this frame's outline earns
+            # and write nothing: the element does not have its final point
+            # count yet, so there is no slot of the right width to write into.
+            poly = outline_mod.polyline(loop, xy)
+            if not outline_mod.is_simple(poly):
+                # The ring closes in 3D but crosses itself on screen: a
+                # non-convex part whose silhouette folds behind its own body.
+                # Resampling cannot untangle what the loop already is, and a
+                # merged fill of it draws as a knot, so this object does not
+                # merge at all. Marked for the whole clip, because the point
+                # count and the representation are both fixed before sampling.
+                plan.outline_need = -1
+            elif plan.outline_need >= 0:
+                plan.outline_need = max(
+                    plan.outline_need,
+                    len(outline_mod.choose(poly, settings.dissolve_px)))
+            slot["vis"][fi] = 0.0
         else:
-            # `draw_faces`, not `face_visible`: when the backface cull has
-            # taken every face the fallback above still builds an outline, and
-            # reading opacity off the empty set hands it alpha 0 -- the part
-            # is drawn and invisible. part_310 kept vanishing for 35 frames
-            # with the outline sitting right there.
+            poly = outline_mod.polyline(loop, xy)
+            # Carry last frame's positions rather than choosing afresh. On a
+            # smooth outline every candidate deviates by nearly the same amount
+            # -- 0.33px of spread across the lab sphere's whole ring -- so
+            # choosing from scratch re-assigned a third of the slots every
+            # frame for no reason, and a slot that jitters by its own spacing
+            # costs a keyframe in every frame of the clip. The carried set is
+            # measured against the real outline first and only kept if it is
+            # inside tolerance, so accuracy is not what is being traded.
+            pos, arcs, pts = outline_mod.follow(
+                poly, plan.outline_n, settings.dissolve_px, plan.outline_prev)
+            plan.outline_prev = (arcs, pts)
+            visible = True
+            if cull:
+                visible = not (
+                    pts[:, 0].max() < lo_x or pts[:, 0].min() > hi_x
+                    or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
+                )
             vis_faces = np.nonzero(face_visible)[0]
-            if not len(vis_faces):
-                vis_faces = np.nonzero(draw_faces)[0]
-            base_depth = float(face_depth[vis_faces].mean()) if len(vis_faces) else 0.0
-            shade = (float(face_shade[vis_faces].mean())
-                     if (plan.shading and len(vis_faces)) else 1.0)
-            alpha = float(plan.face_alpha[vis_faces].max()) if len(vis_faces) else 0.0
-            # Slot -> loop, by where each loop is rather than how big it is.
-            # Ranking by area swaps two loops the moment they change places,
-            # and both elements then jump the width of the object.
-            # Replay the measuring pass's assignment. Slots were renumbered
-            # when the rarely-seen ones were dropped, so map back through the
-            # ids that survived.
-            measured = (plan.outline_pick[fi]
-                        if fi < len(plan.outline_pick) else {})
-            pick = {}
-            for r, sl in enumerate(plan.outline_keep or ()):
-                li = measured.get(sl)
-                if li is not None and li < len(loops):
-                    pick[r] = li
-            for r, npts in enumerate(plan.outline_ns):
-                slot = slots[f"{plan.name}/m{r}"]
-                li = pick.get(r)
-                if li is None or li >= len(loops) or len(loops[li]) < 3:
-                    # No loop for this slot: the object has turned away, or it
-                    # shows fewer regions this frame than at its busiest.
-                    #
-                    # Holding the last outline through this was tried, to stop
-                    # parts blinking when the walk failed. It is the wrong
-                    # answer twice over: it hid a real defect -- coincident
-                    # endpoints not welding, so the loop could not close -- and
-                    # it froze part_004 in place for 59 frames of 60, which
-                    # reads worse than the blink it replaced. The walk is fixed;
-                    # this is now only what it says.
-                    slot["vis"][fi] = 0.0
-                    continue
-                poly = loops[li]
-                pos, arcs, pts = outline_mod.follow(
-                    poly, npts, settings.dissolve_px, plan.outline_prev.get(r))
-
-                # Draw this frame's outline whatever the simplicity test
-                # says, and carry it forward only when it passed.
-                #
-                # Two responses to a crossing were tried here and both are
-                # worse than the crossing. Hiding made a part that hovers near
-                # degenerate blink every frame or two. Holding the last good
-                # outline froze it instead -- part_022 stood perfectly still
-                # for three frames while everything around it moved 40px a
-                # frame, then caught up 140px in one step, which is exactly
-                # the part that reads as jumping out of its place. Both are a
-                # response to the symptom: the walk sometimes returns a ring
-                # with a short spur doubling back along it, and the spur is
-                # what should not exist.
-                #
-                # Until it does not, the honest thing is to draw what was
-                # actually computed. The spur is a handful of pixels on a
-                # shape tens of pixels across; a part frozen for three frames
-                # is not.
-                plan.outline_prev[r] = (arcs, pts)
-                if not outline_mod.is_simple(pts):
-                    plan.outline_tangled += 1
-                visible = True
-                if cull:
-                    visible = not (
-                        pts[:, 0].max() < lo_x or pts[:, 0].min() > hi_x
-                        or pts[:, 1].max() < lo_y or pts[:, 1].min() > hi_y
-                    )
-                slot["geo"][fi] = pts.ravel().tolist()
-                slot["vis"][fi] = alpha if visible else 0.0
-                # Smaller loops sit on top: a hole is drawn over the region it
-                # is cut out of, and a nested region over its surround. One
-                # step of the depth budget is enough to settle it and small
-                # enough not to reorder this object against anything else.
-                slot["depth"][fi] = base_depth - r * 1e-4 * max(abs(base_depth), 1.0)
-                slot["shade"][fi] = shade
-            if collect is not None and draw_faces.any():
-                # The ordering pass compares two fills by evaluating each
-                # over the pixels they share. Give it the part's real surface
-                # to evaluate, not a model of it.
-                #
-                # This was a single constant per element -- a flat card square
-                # to the camera -- which made `resolve` read dmin == dmax and
-                # emit confident, wrong ordering edges. A fitted plane was
-                # better and still not enough: a bowl curves away in the middle
-                # and toward the camera at the rim, and the Voyager dish's back
-                # shell missed its own depth by up to 1.35 units that way, on a
-                # shell 0.067 thick. The beams sitting inside the dish are far
-                # closer to it than that, so they sorted behind it. A quadratic
-                # halved the error on the dish and made part_005 worse, so
-                # there is no polynomial worth picking.
-                #
-                # The samples are the front-facing vertices, thinned to a cap
-                # so the nearest-sample lookup stays cheap: the outer loop in
-                # `resolve` runs over fills only, a few hundred of them, and
-                # each pair asks for at most 24 points.
-                probe = None
-                if nf and nv:
-                    face_of_loop = np.repeat(np.arange(nf), plan.loop_total)
-                    fv = np.unique(plan.loop_verts[draw_faces[face_of_loop]])
-                    if len(fv) >= 3:
-                        if len(fv) > PROBE_CAP:
-                            fv = fv[np.linspace(0, len(fv) - 1, PROBE_CAP).astype(np.int64)]
-                        probe = (xy[fv, 0].copy(), xy[fv, 1].copy(),
-                                 depth[fv].copy())
-                for r, npts in enumerate(plan.outline_ns):
-                    slot = slots[f"{plan.name}/m{r}"]
-                    if slot["vis"][fi] > 0.0 and slot["geo"][fi]:
-                        g = np.asarray(slot["geo"][fi], dtype=np.float64).reshape(-1, 2)
-                        seed = float(slot["depth"][fi])
-                        if probe is None:
-                            depths = np.full(len(g), seed)
-                        else:
-                            # the outline's own depths, read off the same
-                            # samples, so `depths` and `probe` cannot disagree
-                            d2 = ((g[:, 0][:, None] - probe[0][None, :]) ** 2
-                                  + (g[:, 1][:, None] - probe[1][None, :]) ** 2)
-                            depths = probe[2][d2.argmin(axis=1)]
-                        item = {
-                            "key": f"{plan.name}/m{r}",
-                            "kind": 1 if plan.outline_fill[r] else 0,
-                            "seed": seed,
-                            "pts": g,
-                            "depths": depths,
-                        }
-                        if probe is not None:
-                            item["probe"] = probe
-                        collect.append(item)
+            slot["geo"][fi] = pts.ravel().tolist()
+            slot["vis"][fi] = float(plan.face_alpha[vis_faces].max()) if visible else 0.0
+            slot["depth"][fi] = float(face_depth[vis_faces].mean())
+            slot["shade"][fi] = (float(face_shade[vis_faces].mean())
+                                 if plan.shading else 1.0)
+            if visible and collect is not None:
+                lv_loop = np.asarray(loop, dtype=np.int64)
+                collect.append({
+                    "key": key, "kind": 1, "seed": slot["depth"][fi],
+                    "pts": xy[lv_loop], "depths": depth[lv_loop],
+                })
     elif plan.fills:
         lv = plan.loop_verts
         for fidx in range(nf):

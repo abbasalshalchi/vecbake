@@ -236,33 +236,6 @@ def align(positions, poly, previous):
     return best
 
 
-def simple_count(poly, tol, cap=None, floor=3):
-    """Smallest point count that both holds `tol` and draws without crossing.
-
-    `choose` answers only the first half: how few points keep the outline
-    within tolerance. For a long thin shape that can be four, and four chords
-    then cut straight across the middle of it. Monotone slot positions keep the
-    points in order around the loop, which is enough to add no crossing to a
-    convex run and not enough for a folded silhouette -- part_087 sized itself
-    at four points, drew a bowtie for twelve frames of sixty, and the guard
-    downstream froze it in place rather than draw one.
-
-    So ask the shape rather than assume: resample at the count, test it, and
-    grow until it comes out simple. This is what makes the simplicity guard an
-    invariant instead of a fallback.
-    """
-    n = len(poly)
-    if n < 4:
-        return max(floor, n)
-    limit = min(int(cap), n) if cap else n
-    need = max(floor, min(len(choose(poly, tol)), limit))
-    while need < limit:
-        if is_simple(evaluate(pad_to(choose(poly, tol, need), poly, need), poly)):
-            return need
-        need += 1
-    return limit
-
-
 def slots_needed(frames, tol, cap=None, floor=3):
     """The point count one element needs to hold every frame within tolerance.
 
@@ -372,32 +345,13 @@ def follow(poly, n, tol, prev=None):
         if len(prev_s) == n and len(poly) >= 3:
             shift = nearest_arc(poly, prev_pts[0]) - prev_s[0]
             carried = at_arc(prev_s + shift, poly)
-            pts = evaluate(carried, poly)
-            # Accuracy is not the only thing the carried set has to still be.
-            # Last frame's spacing slid onto this frame's outline can cut
-            # across a fold that it cleared before -- the points are all
-            # within tolerance of the boundary and the chords between them
-            # are not. That is where part_087's bowtie came from, and it was
-            # showing up twelve frames later as a part frozen in place.
-            # Re-derive instead: `simple_count` sized the budget so a fresh
-            # set at this count does not cross.
-            if max_error(carried, poly) <= tol and is_simple(pts):
-                return carried, arc_of(carried, poly), pts
+            if max_error(carried, poly) <= tol:
+                return carried, arc_of(carried, poly), evaluate(carried, poly)
 
-    # Choosing afresh gives a set `simple_count` has already sized to draw
-    # without crossing. Aligning it to last frame's rotation is what keeps a
-    # slot on the same part of the shape, and is also the step that can tangle
-    # it -- so take the alignment only when it survives the same test, and
-    # otherwise take the plain choice. Both describe *this* frame's outline;
-    # neither is stale, which is the difference between this and holding.
-    fresh = pad_to(choose(poly, tol, n), poly, n)
+    pos = pad_to(choose(poly, tol, n), poly, n)
     if prev is not None and len(prev[1]) == n:
-        aligned = align(fresh, poly, prev[1])
-        pts = evaluate(aligned, poly)
-        if is_simple(pts):
-            return aligned, arc_of(aligned, poly), pts
-    pts = evaluate(fresh, poly)
-    return fresh, arc_of(fresh, poly), pts
+        pos = align(pos, poly, prev[1])
+    return pos, arc_of(pos, poly), evaluate(pos, poly)
 
 
 def is_simple(poly):

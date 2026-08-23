@@ -48,21 +48,12 @@ from __future__ import annotations
 import numpy as np
 
 
-def silhouette_edges(plan, drawn, xy=None):
-    """Edge indices that can lie on the boundary of what the object covers.
+def silhouette_edges(plan, drawn):
+    """Edge indices with exactly one drawn face on them.
 
-    One drawn face is the ordinary case and covers two situations at once: an
-    open mesh's border, where the edge has a single face full stop, and a
-    solid's silhouette, where it divides a front face from a back one.
-
-    Two drawn faces normally means the object continues on both sides, so the
-    edge is interior. That holds while the faces open away from each other and
-    fails where the projection *folds*: turned near edge-on, both land on the
-    same screen side of their shared edge, one lying over the other, and the
-    edge is the outer boundary of the pair. Leaving it out removes a side of
-    the outline that nothing else supplies, and nothing downstream can recover
-    an edge that was never a candidate -- part_233 lost a 50px side that way
-    and the part blinked out.
+    Covers both cases that matter with one test: an open mesh's border, where
+    the edge has a single face full stop, and a solid's silhouette, where it
+    divides a front face from a back one.
     """
     a, b = plan.edge_face_a, plan.edge_face_b
     count = np.zeros(plan.nedges, dtype=np.int32)
@@ -70,26 +61,7 @@ def silhouette_edges(plan, drawn, xy=None):
         has = side >= 0
         if has.any():
             count[has] += drawn[side[has]].astype(np.int32)
-    lone = np.nonzero(count == 1)[0]
-    if xy is None:
-        return lone
-    both = np.nonzero(count == 2)[0]
-    if not len(both):
-        return lone
-    centre = (np.add.reduceat(xy[plan.loop_verts], plan.loop_start)
-              / plan.loop_total[:, None])
-    v0, v1 = plan.edge_verts[both, 0], plan.edge_verts[both, 1]
-    edge = xy[v1] - xy[v0]
-    sides = []
-    for face in (a[both], b[both]):
-        rel = centre[face] - xy[v0]
-        sides.append(edge[:, 0] * rel[:, 1] - edge[:, 1] * rel[:, 0])
-    tiny = np.maximum(np.hypot(edge[:, 0], edge[:, 1]), 1e-9) * 1e-9
-    sa, sb = sides
-    folded = (np.abs(sa) > tiny) & (np.abs(sb) > tiny) & ((sa > 0) == (sb > 0))
-    if not folded.any():
-        return lone
-    return np.sort(np.concatenate([lone, both[folded]]))
+    return np.nonzero(count == 1)[0]
 
 
 def walk_loop(plan, edges):
