@@ -44,8 +44,30 @@ import numpy as np
 
 
 def polyline(loop, xy):
-    """The ring's vertex positions, open (no repeated final point)."""
-    return np.asarray(xy, dtype=np.float64)[np.asarray(loop, dtype=np.int64)]
+    """The ring's vertex positions, wound consistently, open at the ends.
+
+    `walk_loop` starts wherever it reaches first and runs whichever way the
+    edge list leads, so the same silhouette comes back clockwise on one frame
+    and anticlockwise on the next. Nothing downstream minds a direction as
+    long as it does not change -- but it does, and interpolating a polygon
+    against its own mirror takes it through zero area. 151 of 217 merged
+    outlines on the Voyager probe changed winding at least once, one of them
+    eight times, and each change collapses the shape to a line somewhere
+    between two keyframes and reopens it inverted. Stepping frame by frame
+    shows nothing; playing slowly shows all of it.
+
+    The object is not doing that. Sampled between two of those frames its true
+    silhouette runs 526.4, 524.2, 521.9 ... 506.1 -- smooth, positive, never
+    near zero. The flip was ours.
+
+    So the direction is settled here, once, where the ring becomes geometry.
+    """
+    pts = np.asarray(xy, dtype=np.float64)[np.asarray(loop, dtype=np.int64)]
+    if len(pts) >= 3:
+        x, y = pts[:, 0], pts[:, 1]
+        if float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum()) < 0.0:
+            pts = pts[::-1]
+    return pts
 
 
 def evaluate(positions, poly):
@@ -212,25 +234,22 @@ def align(positions, poly, previous):
     long tour of the silhouette instead of a short arc, and the reducer has to
     key every frame of it.
 
-    Both directions are tried: a silhouette can come back from `walk_loop`
-    wound the other way, and matching a reversed loop slot-for-slot would pair
-    every point with the one opposite it.
+    Rotations only, never reversals. `polyline` winds every ring the same way
+    now, so a reversal is not another way of matching the same shape -- it is
+    a different shape, and picking it is what let an outline interpolate
+    through zero area.
     """
     if previous is None or len(previous) != len(positions):
         return positions
     pts = evaluate(positions, poly)
     n = len(pts)
     best, best_cost = positions, None
-    for flip in (False, True):
-        cand_pts = pts[::-1] if flip else pts
-        cand_pos = positions[::-1] if flip else positions
-        # cost of every cyclic offset at once
-        for r in range(n):
-            rolled = np.roll(cand_pts, -r, axis=0)
-            cost = float(((rolled - previous) ** 2).sum())
-            if best_cost is None or cost < best_cost:
-                best_cost = cost
-                best = np.roll(cand_pos, -r, axis=0)
+    for r in range(n):
+        rolled = np.roll(pts, -r, axis=0)
+        cost = float(((rolled - previous) ** 2).sum())
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best = np.roll(positions, -r, axis=0)
     return best
 
 
