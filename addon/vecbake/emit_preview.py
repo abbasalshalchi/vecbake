@@ -98,11 +98,24 @@ TEMPLATE = r"""<!doctype html>
   header h1{font-size:14px;margin:0;font-weight:650;letter-spacing:-.01em}
   header .src{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
   main{flex:1;display:grid;grid-template-columns:1fr 268px;min-height:0}
-  @media(max-width:820px){main{grid-template-columns:1fr}}
+  /* Narrow: the panel drops below the stage. The stage row needs a size of
+     its own here -- left auto, it has none, and `height:100%` on the canvas
+     has nothing to resolve against, so the canvas falls back to its own
+     aspect ratio and grows straight down over the controls. Every button
+     was covered by the artwork and none of them could be clicked. */
+  @media(max-width:820px){main{grid-template-columns:1fr;
+                               grid-template-rows:minmax(260px,1fr) auto}}
 
   .stagewrap{display:flex;flex-direction:column;min-width:0;min-height:0}
-  .stage{flex:1;position:relative;min-height:0;display:grid;place-items:stretch}
-  canvas{display:block;width:100%;height:100%}
+  /* Nothing the stage holds may paint outside it, whatever the canvas
+     decides its height is. */
+  .stage{flex:1;position:relative;min-height:0;display:grid;place-items:stretch;
+         overflow:hidden}
+  /* Out of flow, so `height:100%` has the stage to resolve against rather
+     than an indefinite grid area. In flow it resolved to auto, fell back to
+     the backing store's aspect ratio, and grew past the stage -- 301px of
+     canvas in a 161px box, the surplus painted straight over the controls. */
+  canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
   .stage[data-bg="dark"]{background:#131316}
   .stage[data-bg="light"]{background:#F2F2F0}
   .stage[data-bg="check"]{
