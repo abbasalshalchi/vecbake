@@ -95,7 +95,7 @@ def _point_seg_dist(p, a, b):
     return np.linalg.norm(p - (a + u[:, None] * ab), axis=1)
 
 
-def span_errors(positions, poly):
+def span_errors(positions, poly, table=None):
     """Per-span deviation of the resampled outline from the real one.
 
     Every ring vertex belongs to exactly one span -- the one it falls inside,
@@ -108,11 +108,11 @@ def span_errors(positions, poly):
     m = len(poly)
     if k < 2 or m < 3:
         return np.zeros(max(k, 1))
-    cum, total = arc_table(poly)
+    cum, total = arc_table(poly) if table is None else table
     if total <= 0.0:
         return np.zeros(k)
     pts = evaluate(positions, poly)
-    s = arc_of(positions, poly) * total
+    s = arc_of(positions, poly, (cum, total)) * total
     # Slots run monotonically round the loop but need not start at arc zero,
     # and the one that wraps lands back at zero rather than at the total --
     # so rolling to the smallest is not enough to make the sequence ascending,
@@ -130,11 +130,11 @@ def span_errors(positions, poly):
     return out[np.argsort(order, kind="stable")]
 
 
-def max_error(positions, poly):
+def max_error(positions, poly, table=None):
     """How far the resampled outline strays from the true one, in pixels."""
     if not len(positions):
         return 0.0
-    return float(span_errors(positions, poly).max())
+    return float(span_errors(positions, poly, table).max())
 
 
 def arc_table(poly):
@@ -143,9 +143,9 @@ def arc_table(poly):
     return np.concatenate([[0.0], np.cumsum(seg)]), float(seg.sum())
 
 
-def arc_of(positions, poly):
+def arc_of(positions, poly, table=None):
     """Positions -> where they sit around the loop, as fractions in [0, 1)."""
-    cum, total = arc_table(poly)
+    cum, total = arc_table(poly) if table is None else table
     if total <= 0.0:
         return np.zeros(len(positions))
     idx = positions[:, 0].astype(np.int64) % len(poly)
@@ -153,9 +153,9 @@ def arc_of(positions, poly):
     return (here / total) % 1.0
 
 
-def at_arc(s, poly):
+def at_arc(s, poly, table=None):
     """Fractions in [0, 1) -> positions on this loop. The inverse of arc_of."""
-    cum, total = arc_table(poly)
+    cum, total = arc_table(poly) if table is None else table
     m = len(poly)
     if total <= 0.0:
         return np.zeros((len(s), 2))
@@ -384,27 +384,27 @@ def measure(poly, tol, n):
     return mu, at, float(mu[-1]), length
 
 
-def spread(poly, n, tol, phase=0.0, knots=None):
+def spread(poly, n, tol, phase=0.0, knots=None, table=None):
     """`n` positions at equal steps of the measure, the first one at `phase`."""
     knots = measure(poly, tol, n) if knots is None else knots
     if knots is None or n < 1:
         return np.zeros((max(n, 0), 2))
     mu, at, mu_total, length = knots
     want = (float(phase) + np.arange(n) * (mu_total / n)) % mu_total
-    return at_arc(np.interp(want, mu, at) / length, poly)
+    return at_arc(np.interp(want, mu, at) / length, poly, table)
 
 
-def _phase_cost(poly, n, phases, prev_pts, knots):
+def _phase_cost(poly, n, phases, prev_pts, knots, table=None):
     """How far `n` points at each phase sit from where they were last frame."""
     mu, at, mu_total, length = knots
     want = ((np.asarray(phases, dtype=np.float64)[:, None]
              + np.arange(n) * (mu_total / n)) % mu_total)
-    pos = at_arc(np.interp(want.ravel(), mu, at) / length, poly)
+    pos = at_arc(np.interp(want.ravel(), mu, at) / length, poly, table)
     pts = evaluate(pos, poly).reshape(len(phases), n, 2)
     return ((pts - prev_pts[None, :, :]) ** 2).sum(axis=(1, 2))
 
 
-def _settle_phase(poly, n, prev_pts, knots):
+def _settle_phase(poly, n, prev_pts, knots, table=None):
     """The phase whose points sit closest to last frame's.
 
     A coarse pass over the whole loop, because the ring's own starting vertex
@@ -416,11 +416,12 @@ def _settle_phase(poly, n, prev_pts, knots):
     coarse = min(max(4 * n, 32), 128)
     grid = np.arange(coarse) * (mu_total / coarse)
     best = float(grid[int(np.argmin(
-        _phase_cost(poly, n, grid, prev_pts, knots)))])
+        _phase_cost(poly, n, grid, prev_pts, knots, table)))])
     lo, hi = best - mu_total / coarse, best + mu_total / coarse
     for _ in range(20):
         a, b = lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0
-        ca, cb = _phase_cost(poly, n, np.array([a, b]), prev_pts, knots)
+        ca, cb = _phase_cost(poly, n, np.array([a, b]), prev_pts, knots,
+                             table)
         if ca <= cb:
             hi = b
         else:
@@ -428,7 +429,7 @@ def _settle_phase(poly, n, prev_pts, knots):
     return 0.5 * (lo + hi)
 
 
-def place(poly, n, tol, prev_pts=None):
+def place(poly, n, tol, prev_pts=None, table=None):
     """This frame's `n` positions. The shape says where; last frame says which."""
     knots = measure(poly, tol, n)
     if knots is None:
@@ -436,8 +437,8 @@ def place(poly, n, tol, prev_pts=None):
     phase = 0.0
     if prev_pts is not None and len(prev_pts) == n and n > 0:
         phase = _settle_phase(poly, n, np.asarray(prev_pts, dtype=np.float64),
-                              knots)
-    return spread(poly, n, tol, phase, knots)
+                              knots, table)
+    return spread(poly, n, tol, phase, knots, table)
 
 
 def need_for(poly, tol, cap=None, floor=3):
@@ -464,8 +465,11 @@ def need_for(poly, tol, cap=None, floor=3):
         return max(floor, m)
     limit = max(3 * m if cap is None else min(int(cap), 3 * m), floor, 3)
 
+    table = arc_table(poly)
+
     def ok(n):
-        return max_error(spread(poly, min(n, limit), tol), poly) <= tol
+        return max_error(spread(poly, min(n, limit), tol, table=table), poly,
+                         table) <= tol
 
     if not ok(limit):
         return limit
@@ -550,13 +554,7 @@ def wound(loop, xy):
 
 
 def _monotone(cand, n, m):
-    """Keep only what can be reached going forwards round both circles.
-
-    A vertex can be on both rings and yet sit at a different place in the
-    cycle, and honouring all of those at once would ask the slots to run
-    backwards. Whatever cannot be reached is dropped, worst first, until what
-    is left is a single lap of each.
-    """
+    """Keep only what can be reached going forwards round both circles."""
     cand = list(cand)
     while len(cand) >= 2:
         ring = [c[1] for c in cand]
@@ -568,41 +566,135 @@ def _monotone(cand, n, m):
     return cand
 
 
-def _agree(prev_ids, prev_pts, poly, loop):
-    """Which slot holds which ring vertex, carried over from last frame.
+# Which slot holds which vertex is decided by where things sit *around the
+# ring*, not by which mesh vertex they are and not by where they are on screen.
+#
+# Identity is not enough, and a rod shows why. Its silhouette is three vertices
+# down one side and three back up the other, and a quarter turn later it is
+# still three and three -- but the vertices it shares with the frame before sit
+# at a different offset within that pattern. Pinning them where they are then
+# *forces* two slots to cross the length of the object, because the order round
+# the ring says so. The right answer slides the shared vertices along their own
+# end of the rod, which identity cannot express.
+#
+# Screen distance is not enough either. It has to know how the object moved
+# before it can say what is near, and a part crossing the frame moves 80px
+# between keyframes while the detail being matched is 6px across. A median
+# shift is 40px wrong at both ends of a turning rod; a fitted turn and scale is
+# better and still not enough on a part that is also foreshortening. Both were
+# built, and what was left over let the whole assignment rotate several places
+# round the ring at some frames.
+#
+# Arc length round the ring needs neither. It is a property of the shape, so
+# the motion cancels of its own accord, and the two rings are lined up by
+# nothing more than the vertices they share. What is left is a monotone
+# matching: for each slot in turn, either take the next vertex, skip that
+# vertex, or leave the slot unanchored. One sweep, one numpy operation per slot.
 
-    A slot whose vertex is still on the silhouette keeps it. A slot whose
-    vertex has gone hands its anchor to the nearest ring vertex still going
-    spare, so long as that keeps every slot running forwards round the ring.
 
-    Matching the assignment as a whole instead -- letting every slot move to
-    the vertex nearest where it was, by shortest path over the ring -- was
-    tried and is not in here. It has to know how the object moved before it can
-    say what is near, and neither a shift nor a fitted turn and scale is enough
-    on a part that is also foreshortening: whatever was left over was enough to
-    let the whole assignment rotate several places round the ring at some
-    frames, every point crossing the object. It fixed some frames and broke
-    others, four ways round.
-    """
+def _around(poly, loop):
+    """Each vertex's place round the ring, as a fraction, and the ring's length."""
+    cum, total = arc_table(poly)
+    if total <= 0.0:
+        return np.zeros(len(loop)), 1.0
+    return cum[:len(loop)] / total, total
+
+
+def _agree(prev_ids, prev_pts, poly, loop, prev_loop=None, prev_poly=None):
+    """Which slot holds which ring vertex, carried over from last frame."""
     n, m = len(prev_ids), len(loop)
     where = {int(v): i for i, v in enumerate(loop)}
-    cand = _monotone([(j, where[int(v)]) for j, v in enumerate(prev_ids)
-                      if int(v) >= 0 and int(v) in where], n, m)
-    if prev_pts is None or len(prev_pts) != n:
-        return cand
-    taken = {i for _, i in cand}
-    for j in [j for j, v in enumerate(prev_ids)
-              if int(v) >= 0 and int(v) not in where]:
-        spare = [i for i in range(m) if i not in taken]
-        if not spare:
-            break
-        near = spare[int(np.argmin(
-            np.linalg.norm(poly[spare] - prev_pts[j], axis=1)))]
-        trial = _monotone(sorted(cand + [(j, near)]), n, m)
-        # Only if it costs no anchor that was already holding.
-        if len(trial) == len(cand) + 1:
-            cand, taken = trial, taken | {near}
-    return cand
+    plain = _monotone([(j, where[int(v)]) for j, v in enumerate(prev_ids)
+                       if int(v) >= 0 and int(v) in where], n, m)
+    if prev_loop is None or prev_poly is None or m < 3 or len(prev_loop) < 3:
+        return plain
+
+    here, _ = _around(poly, loop)
+    before, _ = _around(prev_poly, prev_loop)
+    back = {int(v): i for i, v in enumerate(prev_loop)}
+    both = [(back[int(v)], i) for i, v in enumerate(loop) if int(v) in back]
+    if len(both) < 1:
+        return plain
+
+    # Line the two rings up by the vertices they share, as an angle so that
+    # the wrap takes care of itself.
+    turn = np.exp(2j * np.pi * (here[[i for _, i in both]]
+                                - before[[p for p, _ in both]]))
+    offset = float(np.angle(turn.sum()) / (2.0 * np.pi))
+
+    seats = np.array([j for j, v in enumerate(prev_ids)
+                      if int(v) >= 0 and int(v) in back], dtype=np.int64)
+    if len(seats) < 2:
+        return plain
+    want = (before[[back[int(prev_ids[j])] for j in seats]] + offset) % 1.0
+    gap = np.abs(want[:, None] - here[None, :])
+    cost = np.minimum(gap, 1.0 - gap) ** 2
+
+    k = len(seats)
+
+    # Which vertex the first slot takes settles the rest, so every choice of
+    # it is tried rather than guessed. Guessing it -- pinning the cheapest
+    # single pair and matching around that -- is what put a rod's slots on the
+    # wrong ends: the cheapest pair was individually perfect and belonged to
+    # the wrong arrangement. All of them at once is the same sweep with the
+    # choices stacked along an axis, so it costs an array rather than a loop.
+    #
+    # What it costs to leave a slot unanchored, against the squared distance
+    # round the ring that anchoring it would cost. One slot spacing: a slot is
+    # better left free than dragged further than the gap to its neighbour.
+    #
+    # Priced above every distance instead, the sweep has to fill every slot,
+    # and there are frames where that cannot be done at any price. A rod's
+    # silhouette goes from four vertices on the near end and four on the far
+    # one to three and five; insisting each vertex hold a slot then *forces*
+    # one of them to cross the 760px length of the object. Declining is the
+    # right answer there, and it has to be affordable to be reachable.
+    LOOSE = (1.0 / max(k, 1)) ** 2
+    order = (np.arange(m)[:, None] + np.arange(m)[None, :]) % m
+    if m <= 20:
+        laid = cost[:, order]                       # (k, cut, vertex)
+        rows = np.empty((m, m))
+        rows[:, :] = laid[0, :, 0][:, None]
+        for t in range(1, k):
+            was = rows
+            step = np.empty((m, m))
+            step[:, 0] = was[:, 0] + LOOSE
+            step[:, 1:] = np.minimum(was[:, :-1] + laid[t, :, 1:],
+                                     was[:, 1:] + LOOSE)
+            rows = np.minimum.accumulate(step, axis=1)
+        cut = int(np.argmin(rows[:, -1]))
+    else:
+        # Too big to try every cut, and it does not need it. The arrangements
+        # that trap the sweep belong to slivers, and a sliver's ring is a
+        # handful of vertices -- six on a square rod, eight on part_113. A
+        # larger ring is a rounder shape, where the vertex nearest a slot is
+        # the one it was already on and any sound cut finds the same answer.
+        # The work grows as the square of the ring, so being generous here is
+        # not free: at 48 it cost thirteen minutes of bake.
+        cut = int(np.argmin(cost) % m)
+
+    vr = order[cut]
+    laid = cost[:, vr]
+    rows = np.empty((k, m))
+    rows[0, :] = laid[0, 0]
+    for t in range(1, k):
+        was = rows[t - 1]
+        step = np.empty(m)
+        step[0] = was[0] + LOOSE
+        step[1:] = np.minimum(was[:-1] + laid[t, 1:], was[1:] + LOOSE)
+        rows[t] = np.minimum.accumulate(step)
+
+    out, t, col = [], k - 1, m - 1
+    while t > 0:
+        while col > 0 and rows[t][col] == rows[t][col - 1]:
+            col -= 1
+        if col > 0 and rows[t][col] == rows[t - 1][col - 1] + laid[t][col]:
+            out.append((int(seats[t]), int(vr[col])))
+            col -= 1
+        t -= 1
+    out.append((int(seats[0]), int(vr[0])))
+    out.sort()
+    return out if len(out) >= 2 else plain
 
 
 def _span_spread(cum, weight, vi, nvi, m, k, total):
@@ -719,9 +811,9 @@ def _lay_out(poly, cum, weight, keep, counts, n, base, hold=None):
     return arcs
 
 
-def _span_error(pos, poly, counts, n, base):
+def _span_error(pos, poly, counts, n, base, table=None):
     """Worst deviation inside each span."""
-    each = span_errors(pos, poly)
+    each = span_errors(pos, poly, table)
     out, slot = [], base
     for k in counts:
         out.append(float(max(each[(slot + q) % n] for q in range(k + 1))))
@@ -744,26 +836,31 @@ def _merge_span(keep, counts, at):
 def carry(poly, loop, n, tol, prev=None):
     """This frame's `n` positions, and what each one is anchored to.
 
-    `prev` is `(ids, points)` as returned last frame; the ids are mesh vertex
-    numbers, or -1 for a slot that was between anchors.
+    `prev` is `(ids, points, ring, outline)` as returned last frame: the mesh
+    vertex each slot held or -1, where the slots were drawn, and the ring and
+    outline they were drawn on.
     """
     weight = weights(poly, tol, n)
     if weight is None:
         return np.zeros((n, 2)), np.full(n, -1, dtype=np.int64)
+    # Worked out once and handed to everything below. It was being rebuilt
+    # sixty-four times a frame, which is most of what a frame cost.
+    table = arc_table(poly)
+    cum, total = table
     if prev is None:
-        pos = place(poly, n, tol, None)
+        pos = place(poly, n, tol, None, table)
         return pos, _identify(pos, poly, loop)
 
-    prev_ids, prev_pts = prev
-    keep = (_agree(prev_ids, prev_pts, poly, loop)
+    prev_ids, prev_pts, prev_loop, prev_poly = prev
+    keep = (_agree(prev_ids, prev_pts, poly, loop, prev_loop, prev_poly)
             if len(prev_ids) == n else [])
     if len(keep) < 2:
         # Nothing recognisable survived -- a fresh silhouette, or the object
         # coming back into view. Place it on its own merits and start again.
-        pos = place(poly, n, tol, prev_pts if len(prev_pts) == n else None)
+        pos = place(poly, n, tol,
+                    prev_pts if len(prev_pts) == n else None, table)
         return pos, _identify(pos, poly, loop)
 
-    cum, total = arc_table(poly)
     base = keep[0][0]
     counts = [((keep[(t + 1) % len(keep)][0] - slot) % n) - 1
               for t, (slot, _) in enumerate(keep)]
@@ -780,14 +877,14 @@ def carry(poly, loop, n, tol, prev=None):
                 hold[t] = landed[(slot + 1 + np.arange(k)) % n]
             slot += 1 + k
     arcs = _lay_out(poly, cum, weight, keep, counts, n, base, hold)
-    pos = at_arc(arcs / total, poly)
+    pos = at_arc(arcs / total, poly, table)
     if hold:
-        errs = _span_error(pos, poly, counts, n, base)
+        errs = _span_error(pos, poly, counts, n, base, table)
         loose = {t for t, e in enumerate(errs) if e > tol}
         if loose:
             hold = {t: v for t, v in hold.items() if t not in loose}
             arcs = _lay_out(poly, cum, weight, keep, counts, n, base, hold)
-            pos = at_arc(arcs / total, poly)
+            pos = at_arc(arcs / total, poly, table)
 
     # A span that has just acquired a corner has no slot to put on it, and
     # without a way to find one the error creeps up frame after frame -- 0.41px,
@@ -802,31 +899,41 @@ def carry(poly, loop, n, tol, prev=None):
     # would shift every anchor in between one place along, and each of those is
     # a point jumping the length of a span: 5.3px of visible error where this
     # costs a fraction of that.
-    errs = _span_error(pos, poly, counts, n, base)
+    #
+    # What this many points can do on this outline at all, before asking any
+    # arrangement of them to do better. Where the count is short of what the
+    # shape needs -- and it often is, since the count is settled once for the
+    # whole clip -- no shuffling of slots will reach the tolerance, and both
+    # the borrowing below and the fresh placement after it will run their full
+    # course every frame to discover that. Chasing a target that is not there
+    # cost four times the bake.
+    reach = max(tol, max_error(spread(poly, n, tol, table=table), poly, table))
+    errs = _span_error(pos, poly, counts, n, base, table)
     for _ in range(6):
         need = int(np.argmax(errs))
-        if errs[need] <= tol or len(keep) <= 2:
+        if errs[need] <= reach or len(keep) <= 2:
             break
         best = None
         for edge in (need, (need + 1) % len(keep)):
             k2, c2 = _merge_span(keep, counts, edge)
             b2 = k2[0][0]
             p2 = at_arc(_lay_out(poly, cum, weight, k2, c2, n, b2) / total,
-                        poly)
-            e2 = _span_error(p2, poly, c2, n, b2)
+                        poly, table)
+            e2 = _span_error(p2, poly, c2, n, b2, table)
             if best is None or max(e2) < max(best[3]):
                 best = (k2, c2, p2, e2, b2)
         if max(best[3]) >= max(errs):
             break                      # letting go of either anchor made it worse
         keep, counts, pos, errs, base = best[0], best[1], best[2], best[3], best[4]
 
-    if max(errs) > tol:
+    if max(errs) > reach:
         # Honouring the anchors cannot draw this shape. That means they are
         # stale -- the silhouette has become something else -- so place it on
         # its own merits and let the anchors re-form. One frame of shifted
         # slots costs less than a whole clip drawn out of tolerance.
-        fresh = place(poly, n, tol, prev_pts if len(prev_pts) == n else None)
-        if max_error(fresh, poly) < max(errs):
+        fresh = place(poly, n, tol,
+                      prev_pts if len(prev_pts) == n else None, table)
+        if max_error(fresh, poly, table) < max(errs):
             pos = fresh
 
     return pos, _identify(pos, poly, loop)

@@ -198,7 +198,7 @@ for f, poly in enumerate(polys):
         bad_frame = f
         break
     worst_err = max(worst_err, outline.max_error(pos, poly))
-    prev = (anchors, outline.evaluate(pos, poly))
+    prev = (anchors, outline.evaluate(pos, poly), ids, poly)
 
 check("slots stay monotone through all 48 frames of the turn",
       bad_frame is None, "" if bad_frame is None else f"broke at frame {bad_frame}")
@@ -221,7 +221,7 @@ check("the first frame anchors most of its slots to vertices",
 ring_b = np.insert(ring_a, 3, [[ring_a[2, 0] * 0.5 + ring_a[3, 0] * 0.5,
                                ring_a[2, 1] * 0.5 + ring_a[3, 1] * 0.5]], axis=0)
 ids_b = np.concatenate([ids_a[:3], [99], ids_a[3:]]).astype(np.int64)
-pos_b, anch_b = outline.carry(ring_b, ids_b, 14, TOL, (anch_a, pts_a))
+pos_b, anch_b = outline.carry(ring_b, ids_b, 14, TOL, (anch_a, pts_a, ids_a, ring_a))
 kept = sum(1 for j in range(14)
            if anch_a[j] >= 0 and anch_b[j] == anch_a[j])
 alive = sum(1 for v in anch_a if v >= 0 and v in set(ids_b.tolist()))
@@ -238,7 +238,7 @@ check("...and still monotone", monotone(pos_b, len(ring_b)))
 spike = ring_a.copy()
 spike[6] = spike[6] + np.array([0.0, -40.0])
 ids_s = ids_a.copy()
-pos_s, _ = outline.carry(spike, ids_s, 14, TOL, (anch_a, pts_a))
+pos_s, _ = outline.carry(spike, ids_s, 14, TOL, (anch_a, pts_a, ids_a, ring_a))
 check("a span that gains a corner borrows a slot for it",
       outline.max_error(pos_s, spike) <= TOL,
       f"{outline.max_error(pos_s, spike):.3f}px")
@@ -279,7 +279,7 @@ for f, poly in enumerate(polys):
     if crosses(pts):
         tangled = f
         break
-    prev = (anchors, pts)
+    prev = (anchors, pts, ids, poly)
 check("the outline never crosses itself, in any frame of the turn",
       tangled is None, "" if tangled is None else f"tangled at frame {tangled}")
 

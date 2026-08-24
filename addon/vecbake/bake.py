@@ -283,7 +283,7 @@ class ObjectPlan:
         # found this object actually wants -- see bake_iter.
         self.outline_n = None
         self.outline_need = 0
-        self.outline_prev = None   # last frame's (anchors, points)
+        self.outline_prev = None   # (anchors, points, ring, outline)
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -1086,7 +1086,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 poly, ring, plan.outline_n, settings.dissolve_px,
                 plan.outline_prev)
             pts = outline_mod.evaluate(pos, poly)
-            plan.outline_prev = (ring_ids, pts)
+            plan.outline_prev = (ring_ids, pts, ring, poly)
             visible = True
             if cull:
                 visible = not (
