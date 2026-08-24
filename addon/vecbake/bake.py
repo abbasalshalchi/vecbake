@@ -22,6 +22,8 @@ import math
 
 import numpy as np
 
+from typing import NamedTuple
+
 import bpy
 from mathutils import Vector
 
@@ -284,6 +286,11 @@ class ObjectPlan:
         self.outline_n = None
         self.outline_need = 0
         self.outline_prev = None   # (anchors, points, ring, outline)
+        # How far the best possible interpolation of this outline lands from
+        # the real silhouette between keyframes, and what drawing the faces
+        # instead would cost over the same gaps. Filled by the measuring pass.
+        self.carry_cost = 0.0
+        self.face_cost = 0.0
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -513,6 +520,62 @@ def bake_iter(context, settings: BakeSettings):
     # Filled by the first pass, honoured by the second -- see below.
     no_merge: set[str] = set()
 
+    carry_state = {"prev": {}, "mid": {}}
+
+    def judge_carry(frame, fi, depsgraph, view, mvp, cam_pos, cam_fwd, is_ortho):
+        """Can each merged outline be carried across the gap to the next frame?
+
+        Asked of the shape halfway between two frames -- which no keyframe
+        holds and Blender will evaluate on request -- rather than guessed at
+        from something easier to reach. Two numbers come back per object: what
+        the best possible interpolation of its silhouette costs, and what
+        drawing its faces would cost instead. See outline.carry_gap.
+        """
+        def look(dg, v, m, cp, cf, ortho):
+            out = {}
+            for obj in objects:
+                plan = plans.get(obj.name)
+                if plan is None or not (plan.fills and plan.merge_fill):
+                    continue
+                if obj.name in no_merge:
+                    continue
+                ev = obj.evaluated_get(dg)
+                me = ev.to_mesh()
+                try:
+                    ring, xy = silhouette_of(plan, me, ev, v, m, width, height,
+                                             cp, cf, ortho)
+                    out[obj.name] = (ring, xy.copy())
+                finally:
+                    ev.to_mesh_clear()
+            return out
+
+        here = look(depsgraph, view, mvp, cam_pos, cam_fwd, is_ortho)
+        was, half = carry_state["prev"], carry_state["mid"]
+        for name, (ring, xy) in here.items():
+            if name not in was or name not in half:
+                continue
+            plan = plans[name]
+            before, before_xy = was[name]
+            middle, middle_xy = half[name]
+            plan.carry_cost = max(plan.carry_cost,
+                                  outline_mod.carry_gap(before, ring, middle))
+            if before_xy.shape == xy.shape == middle_xy.shape:
+                drawn = 0.5 * (before_xy + xy)
+                plan.face_cost = max(plan.face_cost, float(
+                    np.linalg.norm(drawn - middle_xy, axis=1).max()))
+        carry_state["prev"] = here
+        carry_state["mid"] = {}
+        if fi + 1 >= len(frames):
+            return
+
+        scene.frame_set(frame, subframe=0.5)
+        dg = context.evaluated_depsgraph_get()
+        v2, m2 = camera_matrices(scene, cam, dg, width, height)
+        ce = cam.evaluated_get(dg)
+        cp = np.array(ce.matrix_world.translation, dtype=np.float64)
+        cf = np.array((ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
+        carry_state["mid"] = look(dg, v2, m2, cp, cf, ce.data.type == "ORTHO")
+
     def sample_pass():
         for fi, frame in enumerate(frames):
             scene.frame_set(frame)
@@ -550,6 +613,9 @@ def bake_iter(context, settings: BakeSettings):
             frame_items.append(items)
             frame_ortho.append(is_ortho)
             vertex_cache.append(cache)
+            if judging:
+                judge_carry(frame, fi, depsgraph, view, mvp,
+                            cam_pos, cam_fwd, is_ortho)
 
             yield ("Sampling", fi + 1, len(frames))
 
@@ -557,6 +623,9 @@ def bake_iter(context, settings: BakeSettings):
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
     outline_slots: dict[str, int] = {}
+    # The gap test only means anything between adjacent frames, and only the
+    # measuring pass needs it -- by the writing pass the decision is made.
+    judging = settings.merge_slack_px > 0.0 and step == 1
     try:
         yield from sample_pass()
 
@@ -581,9 +650,22 @@ def bake_iter(context, settings: BakeSettings):
             # above zero, or a closed solid with Backface Cull off, where every
             # edge has two drawn faces and there is no silhouette to find.
             merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
+            # A silhouette that cannot be carried across a gap is not being
+            # drawn badly -- it is not carryable, and no placement rule will
+            # change that. A part turning edge-on goes from a pentagon to a
+            # triangle between two frames, and there is no correspondence
+            # between a pentagon and a triangle. Drawn face by face it has no
+            # correspondence to get wrong at all: on the probe's blades, 1.24px
+            # against 48px merged.
+            uncarried = sorted(
+                n for n, p in plans.items()
+                if n in wanted and n not in merge_fallback
+                and p.carry_cost > p.face_cost + settings.merge_slack_px)
+            merge_fallback = sorted(set(merge_fallback) | set(uncarried))
             no_merge.update(merge_fallback)
             outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
 
+            judging = False
             plans.clear()
             elements.clear()
             slots.clear()
@@ -824,55 +906,99 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
             new_slot(key, 2)
 
 
-def _sample_object(plan, me, eval_obj, settings, slots, fi,
-                   view, mvp, width, height, cam_pos, cam_fwd, is_ortho, light,
-                   collect=None, cache=None):
+class Projected(NamedTuple):
+    """Where an object lands on screen this instant, and which way its faces face."""
+    xy: object
+    depth: object
+    in_front: object
+    world_n: object
+    world_c: object
+    face_front: object
+    face_ok: object
+    face_depth: object
+
+
+def project_object(plan, me, eval_obj, view, mvp, width, height,
+                   cam_pos, cam_fwd, is_ortho):
+    """Project an object and work out which of its faces point at the camera.
+
+    Pulled out so that more than one pass can ask the question and get the same
+    answer. The pass that writes geometry and the pass that judges whether a
+    merged outline can be carried across a gap have to agree about where the
+    silhouette is, exactly -- two implementations would drift, and the
+    judgement would then be about a shape that is not the one being drawn.
+    """
     nv = len(me.vertices)
     co = np.empty(nv * 3, dtype=np.float64)
     me.vertices.foreach_get("co", co)
     co = co.reshape(-1, 3)
     M = np.array(eval_obj.matrix_world, dtype=np.float64)
     world = co @ M[:3, :3].T + M[:3, 3]
-
     xy, depth, in_front = project(world, view, mvp, width, height)
+
+    nf = plan.nfaces
+    if not nf:
+        empty = np.ones(0, dtype=bool)
+        return Projected(xy, depth, in_front, None, None,
+                         empty, empty, np.zeros(0, dtype=np.float64))
+
+    normals = np.empty(nf * 3, dtype=np.float64)
+    me.polygons.foreach_get("normal", normals)
+    normals = normals.reshape(-1, 3)
+    centers = np.empty(nf * 3, dtype=np.float64)
+    me.polygons.foreach_get("center", centers)
+    centers = centers.reshape(-1, 3)
+
+    normal_matrix = np.linalg.inv(M[:3, :3])
+    world_n = normals @ normal_matrix
+    lengths = np.linalg.norm(world_n, axis=1, keepdims=True)
+    world_n = world_n / np.where(lengths < 1e-12, 1.0, lengths)
+    world_c = centers @ M[:3, :3].T + M[:3, 3]
+
+    if is_ortho:
+        facing = world_n @ cam_fwd
+    else:
+        facing = np.einsum("ij,ij->i", world_n, world_c - cam_pos)
+    face_front = facing < 0.0
+
+    # per-face mean depth / visibility, via segmented reduction over loops
+    lv, starts = plan.loop_verts, plan.loop_start
+    totals = plan.loop_total.astype(np.float64)
+    face_depth = np.add.reduceat(depth[lv], starts) / totals
+    face_ok = np.add.reduceat(in_front[lv].astype(np.float64), starts) == totals
+    return Projected(xy, depth, in_front, world_n, world_c,
+                     face_front, face_ok, face_depth)
+
+
+def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
+                  cam_pos, cam_fwd, is_ortho):
+    """The object's silhouette ring this instant, wound, or None."""
+    seen = project_object(plan, me, eval_obj, view, mvp, width, height,
+                          cam_pos, cam_fwd, is_ortho)
+    facing = seen.face_ok & seen.face_front
+    if not facing.any():
+        return None, seen.xy
+    loop = merge.walk_loop(plan, merge.silhouette_edges(plan, facing))
+    if loop is None:
+        return None, seen.xy
+    return outline_mod.wound(loop, seen.xy)[1], seen.xy
+
+
+def _sample_object(plan, me, eval_obj, settings, slots, fi,
+                   view, mvp, width, height, cam_pos, cam_fwd, is_ortho, light,
+                   collect=None, cache=None):
+    nv = len(me.vertices)
+    seen = project_object(plan, me, eval_obj, view, mvp, width, height,
+                          cam_pos, cam_fwd, is_ortho)
+    xy, depth, in_front = seen.xy, seen.depth, seen.in_front
+    world_n, world_c = seen.world_n, seen.world_c
+    face_front, face_ok, face_depth = seen.face_front, seen.face_ok, seen.face_depth
     if cache is not None:
         cache[plan.name] = (xy, depth)
 
-    # ---- faces ----------------------------------------------------------
     nf = plan.nfaces
-    world_n = world_c = None
-    face_front = np.ones(nf, dtype=bool)
-    face_depth = np.zeros(nf, dtype=np.float64)
-    face_ok = np.ones(nf, dtype=bool)
     face_shade = np.ones(nf, dtype=np.float64)
     if nf:
-        normals = np.empty(nf * 3, dtype=np.float64)
-        me.polygons.foreach_get("normal", normals)
-        normals = normals.reshape(-1, 3)
-        centers = np.empty(nf * 3, dtype=np.float64)
-        me.polygons.foreach_get("center", centers)
-        centers = centers.reshape(-1, 3)
-
-        normal_matrix = np.linalg.inv(M[:3, :3])
-        world_n = normals @ normal_matrix
-        lengths = np.linalg.norm(world_n, axis=1, keepdims=True)
-        world_n = world_n / np.where(lengths < 1e-12, 1.0, lengths)
-        world_c = centers @ M[:3, :3].T + M[:3, 3]
-
-        if is_ortho:
-            facing = world_n @ cam_fwd
-        else:
-            to_face = world_c - cam_pos
-            facing = np.einsum("ij,ij->i", world_n, to_face)
-        face_front = facing < 0.0
-
-        # per-face mean depth / visibility, via segmented reduction over loops
-        lv = plan.loop_verts
-        starts = plan.loop_start
-        totals = plan.loop_total.astype(np.float64)
-        face_depth = np.add.reduceat(depth[lv], starts) / totals
-        face_ok = np.add.reduceat(in_front[lv].astype(np.float64), starts) == totals
-
         half_lambert = 0.5 * (world_n @ light) + 0.5
         face_shade = settings.ambient + (1.0 - settings.ambient) * np.clip(half_lambert, 0.0, 1.0)
 

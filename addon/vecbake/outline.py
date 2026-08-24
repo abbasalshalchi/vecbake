@@ -951,3 +951,85 @@ def carry(poly, loop, n, tol, prev=None):
             pos = fresh
 
     return pos, _identify(pos, poly, loop)
+
+
+# ---------------------------------------------------------------------------
+# can this outline be carried across a gap at all?
+# ---------------------------------------------------------------------------
+#
+# Everything above is about carrying an outline well. Some outlines cannot be
+# carried at any standard, and no amount of care changes that: when a part
+# turns edge-on its silhouette can go from a pentagon to a triangle between one
+# frame and the next, and there is no correspondence between a pentagon and a
+# triangle. Measured on the probe's blades, every rule lands in the same place
+# -- 32 to 44px -- because the limit is the shape, not the sampling. Adding a
+# keyframe halfway makes one of those gaps worse rather than better.
+#
+# A part like that should not be merged. Drawn face by face instead it has no
+# correspondence problem at all: the same mesh vertices in every frame, and the
+# only error left is how far a vertex's path across the screen bends in a 24th
+# of a second, which for the same blade is 1.24px against 48px merged.
+#
+# Deciding that needs the shape *between* two frames, which no keyframe holds
+# but which Blender will evaluate on request. So the question is asked directly
+# rather than guessed at from something easier to reach, like the silhouette's
+# area collapsing: interpolate the two rings as well as anything could, and see
+# how far the result lands from the shape that is really there.
+
+
+def _spread_evenly(poly, k, anchor=None, probes=4):
+    """`k` points evenly by arc, turned to sit closest to `anchor`."""
+    cum, total = arc_table(poly)
+    if total <= 0.0 or k < 3:
+        return np.zeros((max(k, 0), 2))
+    base = np.arange(k) / k
+    if anchor is None:
+        return evaluate(at_arc(base, poly, (cum, total)), poly)
+    shifts = np.arange(k * probes) / (k * probes)
+    want = (shifts[:, None] + base[None, :]) % 1.0
+    pts = evaluate(at_arc(want.ravel(), poly, (cum, total)), poly)
+    pts = pts.reshape(len(shifts), k, 2)
+    cost = ((pts - anchor[None, :, :]) ** 2).sum(axis=(1, 2))
+    return pts[int(np.argmin(cost))]
+
+
+def stray(a, b):
+    """The worst distance between two closed polylines, measured both ways."""
+    def one_way(p, q):
+        seg = np.roll(q, -1, axis=0) - q
+        den = np.einsum("ij,ij->i", seg, seg)
+        den = np.where(den > 0, den, 1e-12)
+        rel = p[:, None, :] - q[None, :, :]
+        t = np.clip(np.einsum("kij,ij->ki", rel, seg) / den[None, :], 0.0, 1.0)
+        foot = q[None, :, :] + t[:, :, None] * seg[None, :, :]
+        return float(np.linalg.norm(p[:, None, :] - foot, axis=2).min(axis=1).max())
+
+    if len(a) < 2 or len(b) < 2:
+        return 0.0
+    return max(one_way(a, b), one_way(b, a))
+
+
+def carry_gap(a, b, mid, k=32):
+    """How far a plain interpolation of two rings lands from the shape between.
+
+    A measure of how awkward the gap is, not a bound on what could be done
+    across it: the two rings are matched by arc length, which on a sliver is a
+    good deal worse than matching them by the vertices they share. Read it as
+    "how delicate is the correspondence here", and it sorts the outlines well
+    -- the ones it calls awkward are the ones every placement rule tried on
+    them has struggled with, and the ones it passes are drawn to within a few
+    pixels.
+
+    The shape in the middle is the real one, evaluated between the keyframes
+    where nothing is stored, which is what makes this a measurement rather than
+    a guess from something easier to reach like the silhouette's area.
+    """
+    if a is None or b is None or mid is None:
+        return 0.0
+    if min(len(a), len(b), len(mid)) < 3:
+        return 0.0
+    pa = _spread_evenly(a, k)
+    pb = _spread_evenly(b, k, pa)
+    if len(pa) < 3 or len(pb) < 3:
+        return 0.0
+    return stray(0.5 * (pa + pb), mid)

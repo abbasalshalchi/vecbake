@@ -33,6 +33,11 @@ class BakeSettings:
     # only need to read as a silhouette; see merge.py. Per-object override is
     # the `vecbake_merge_fill` custom property.
     merge_fills: bool = False
+    # How much worse a merged outline may be than drawing the object's faces,
+    # before it is drawn face by face instead. Both are measured against the
+    # true silhouette halfway between two keyframes -- see outline.carry_gap.
+    # Zero switches the test off and merges whatever rings.
+    merge_slack_px: float = 6.0
     edge_mode: str = "HIDDEN"     # HIDDEN = only edges with a front-facing face
                                   # WIRE   = every edge, see-through
                                   # BOUNDARY = silhouette + open/boundary edges

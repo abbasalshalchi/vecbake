@@ -132,6 +132,16 @@ class VECBAKE_PG_settings(PropertyGroup):
                      "per object with a vecbake_merge_fill custom property"),
         default=False,
     )
+    merge_slack_px: FloatProperty(
+        name="Merge Slack", default=6.0, min=0.0, soft_max=32.0, max=512.0,
+        subtype="PIXEL",
+        description="How much worse a merged outline may be than drawing the object's "
+                    "faces before it is drawn face by face instead. Both are measured "
+                    "against the true silhouette halfway between two keyframes, where "
+                    "nothing is stored. A part that turns edge-on can go from a "
+                    "pentagon to a triangle in one frame, and no outline survives that "
+                    "-- its faces do. Zero merges whatever rings",
+    )
     edge_mode: EnumProperty(
         name="Edges",
         items=[
@@ -383,6 +393,7 @@ class VECBAKE_PG_settings(PropertyGroup):
             s.width, s.height = self.width, self.height
         s.strokes, s.fills = self.strokes, self.fills
         s.merge_fills = self.merge_fills
+        s.merge_slack_px = self.merge_slack_px
         s.edge_mode = self.edge_mode
         s.crease_angle = math.degrees(self.crease_angle)
         s.curve_mode = self.curve_mode
@@ -781,6 +792,8 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "strokes", toggle=True)
         grid.prop(props, "fills", toggle=True)
         grid.prop(props, "merge_fills", toggle=True)
+        if props.merge_fills:
+            grid.prop(props, "merge_slack_px")
         grid.prop(props, "always_freestyle")
         grid.prop(props, "always_crease")
         grid.prop(props, "accurate_order")
