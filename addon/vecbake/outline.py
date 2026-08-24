@@ -463,7 +463,18 @@ def need_for(poly, tol, cap=None, floor=3):
     m = len(poly)
     if m < 3:
         return max(floor, m)
-    limit = max(3 * m if cap is None else min(int(cap), 3 * m), floor, 3)
+    # A point for every vertex draws the ring exactly, so more than that buys
+    # no accuracy at all -- there is nothing left to be accurate about. It buys
+    # jitter instead: the surplus has nowhere it needs to be, and part_140 spent
+    # a frame with ten of its twenty-four slots stacked on a single vertex and
+    # the next scattering them 40 to 60px. The count came out at 24 for a ring
+    # of 6 because the ceiling was three times the ring, and a frame that could
+    # not meet the tolerance at any count returned that ceiling.
+    #
+    # Two spare, because the sampler needs a little slack to land on every
+    # vertex at once -- a 59-gon settles at 61.
+    ceiling = m + 2
+    limit = max(ceiling if cap is None else min(int(cap), ceiling), floor, 3)
 
     table = arc_table(poly)
 
