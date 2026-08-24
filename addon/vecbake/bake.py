@@ -283,7 +283,7 @@ class ObjectPlan:
         # found this object actually wants -- see bake_iter.
         self.outline_n = None
         self.outline_need = 0
-        self.outline_prev = None   # (arc fractions, points) of the last frame
+        self.outline_prev = None   # last frame's (anchors, points)
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -1073,21 +1073,20 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             if plan.outline_need >= 0:
                 plan.outline_need = max(
                     plan.outline_need,
-                    len(outline_mod.choose(poly, settings.dissolve_px)))
+                    outline_mod.need_for(poly, settings.dissolve_px))
             slot["vis"][fi] = 0.0
         else:
-            poly = outline_mod.polyline(loop, xy)
-            # Carry last frame's positions rather than choosing afresh. On a
-            # smooth outline every candidate deviates by nearly the same amount
-            # -- 0.33px of spread across the lab sphere's whole ring -- so
-            # choosing from scratch re-assigned a third of the slots every
-            # frame for no reason, and a slot that jitters by its own spacing
-            # costs a keyframe in every frame of the clip. The carried set is
-            # measured against the real outline first and only kept if it is
-            # inside tolerance, so accuracy is not what is being traded.
-            pos, arcs, pts = outline_mod.follow(
-                poly, plan.outline_n, settings.dissolve_px, plan.outline_prev)
-            plan.outline_prev = (arcs, pts)
+            ring, poly = outline_mod.wound(loop, xy)
+            # Where the points go is settled by the loop's measure -- arc
+            # length with the corners widened -- so it is a continuous function
+            # of the shape and nothing is chosen per frame. Which slot is which
+            # is settled by the mesh: a slot stays on the vertex it was on for
+            # as long as that vertex is on the silhouette. See outline.py.
+            pos, ring_ids = outline_mod.carry(
+                poly, ring, plan.outline_n, settings.dissolve_px,
+                plan.outline_prev)
+            pts = outline_mod.evaluate(pos, poly)
+            plan.outline_prev = (ring_ids, pts)
             visible = True
             if cull:
                 visible = not (

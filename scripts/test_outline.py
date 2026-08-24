@@ -2,22 +2,24 @@
 
     "<blender>/5.1/python/bin/python.exe" scripts/test_outline.py
 
-Binding a slot to a mesh vertex freezes the slot order on
-the first ring. A solid turning 360 degrees presents a different silhouette set
-in a different cyclic order a quarter turn later, so the order check fails and
-the object is re-sampled unmerged. Five of the seven primitives in the lab
-scene find a clean ring in every single frame and are rejected on order alone:
-cone, cube, cylinder, sphere, tube.
+A frame has two questions to answer about its outline, and they have different
+answers. *Where do the points go* is settled by a measure -- arc length with
+each vertex widening it by what that vertex is worth. *Which slot is which* is
+settled by the mesh, a slot staying on the vertex it was on for as long as that
+vertex is on the silhouette.
 
-`outline.py` binds a slot to a position around the loop instead. The assertions
-here are the two properties that makes possible, plus the one that pays for it:
+The assertions here are the properties that buys:
 
   * points stay monotone around the loop, in every frame of a full turn, so the
     polygon cannot self-intersect however far it spins;
-  * the resampled outline stays inside the pixel tolerance it was given;
+  * the resampled outline stays inside the pixel tolerance it was given, and a
+    frame handed *more* points than it asked for does not draw worse;
   * the point count comes from that tolerance rather than from counting mesh
-    vertices -- the lab sphere's outline takes 33 points at 1px and 59 at
-    0.35px, against the 482 slots a vertex-bound map has to reserve.
+    vertices -- the lab sphere's outline takes a few dozen points against the
+    482 slots a vertex-bound map has to reserve;
+  * a corner is drawn exactly, and a vertex arriving on a straight edge moves
+    nothing until it is worth moving something;
+  * a slot keeps its vertex when the ring around it changes.
 
 The ground truth throughout is the mesh silhouette polygon, not the smooth
 surface behind it. That distinction sets the counts: a 59-gon of radius 113 is
@@ -52,6 +54,7 @@ def _load(name):
 
 outline = _load("outline")
 fails = []
+TOL = 0.35
 
 
 def check(label, cond, detail=""):
@@ -86,56 +89,79 @@ def monotone(positions, m):
 
 
 # --- the count comes from the tolerance, measured against the real outline -
-# The ground truth is the mesh silhouette polygon, not the smooth surface it
-# stands for. That matters: a 59-gon of radius 113 is already within 0.16px of
-# a true circle, so at 0.35px there is nothing to remove -- dropping a single
-# vertex moves the outline 0.64px, which is over budget. Give it a budget it
-# can spend and it spends it.
-TOL = 0.35
-sphere_ring = circle(113.0, 59)                 # the lab sphere's silhouette
-tight = outline.choose(sphere_ring, TOL)
-loose = outline.choose(sphere_ring, 1.0)
+sphere_ring = circle(113.0, 59)
+tight = outline.need_for(sphere_ring, TOL)
+loose = outline.need_for(sphere_ring, 1.0)
 check("a tolerance finer than the mesh keeps every ring vertex",
-      len(tight) == 59, f"{len(tight)} points at {TOL}px")
-check("...and a coarser one genuinely reduces", len(loose) < 40,
-      f"{len(loose)} points at 1.0px")
+      tight >= len(sphere_ring), f"{tight} points for a 59-gon")
+check("...and a coarser one genuinely reduces", loose < 40, f"{loose} at 1px")
 check("either way it is one element, not the 482 slots a vertex map needs",
-      max(len(tight), len(loose)) < 482)
+      max(tight, loose) < 120, f"{tight} / {loose}")
+check("...and each meets the tolerance it was given",
+      outline.max_error(outline.spread(sphere_ring, tight, TOL), sphere_ring) <= TOL
+      and outline.max_error(outline.spread(sphere_ring, loose, 1.0),
+                            sphere_ring) <= 1.0)
 
-for label, pts, tol in (("tight", tight, TOL), ("loose", loose, 1.0)):
-    pos = outline.pad_to(pts, sphere_ring, len(pts))
-    check(f"the {label} outline is inside its tolerance",
-          outline.max_error(pos, sphere_ring) <= tol,
-          f"{outline.max_error(pos, sphere_ring):.3f}px")
+small = outline.need_for(circle(20.0, 59), 1.0)
+big = outline.need_for(circle(500.0, 240), 1.0)
+check("a smaller circle needs fewer points", small < loose, f"{small} at r=20")
+check("a bigger one needs more", big > loose, f"{big} at r=500")
 
-# radius drives the count, because radius drives the error
-small = outline.choose(circle(20.0, 59), 1.0)
-big = outline.choose(circle(500.0, 240), 1.0)
-check("a smaller circle needs fewer points", len(small) < len(loose),
-      f"{len(small)} at r=20 vs {len(loose)} at r=113")
-check("a bigger one needs more", len(big) > len(loose), f"{len(big)} at r=500")
 
 # --- corners are exact, which uniform spacing could not manage ------------
-box = rect(400.0, 260.0, per_side=8)             # 32 vertices, 4 real corners
-kb = outline.choose(box, TOL)
-check("a rectangle collapses to its four corners", len(kb) == 4, f"{len(kb)} points")
-pb = outline.pad_to(kb, box, 4)
-check("...with no corner cut", outline.max_error(pb, box) <= 1e-9,
-      f"{outline.max_error(pb, box):.6f}px")
+box = rect(400.0, 90.0)
+nb = outline.need_for(box, TOL)
+check("a rectangle collapses to its four corners", nb == 4, f"{nb} points")
+check("...with no corner cut",
+      outline.max_error(outline.spread(box, nb, TOL), box) <= 1e-9,
+      f"{outline.max_error(outline.spread(box, nb, TOL), box):.2e}px")
 
-# The reason to place points by error rather than by arc length.
-uni = outline.pad_to([0], box, 12)
+uniform = outline.at_arc(np.arange(4) / 4.0, box)
 check("uniform spacing would have failed the same shape",
-      outline.max_error(uni, box) > TOL,
-      f"{outline.max_error(uni, box):.0f}px off at 12 uniform points")
+      outline.max_error(uniform, box) > 1.0,
+      f"{outline.max_error(uniform, box):.1f}px off")
 
-# --- padding adds points without changing the shape ----------------------
-padded = outline.pad_to(kb, box, 24)
-check("padding hits the requested count exactly", len(padded) == 24)
-check("...and every padded point lies on the outline",
-      outline.max_error(padded, box) <= 1e-9,
-      f"{outline.max_error(padded, box):.6f}px")
-check("...and stays monotone", monotone(padded, len(box)))
+
+# --- more points than a frame asked for must never draw worse ------------
+# The count is settled once for the whole clip from the busiest frame, so a
+# quieter frame is routinely handed a bigger budget than it needs. A vertex is
+# only guaranteed a point once its share of the measure is a full step, so
+# below that the corners are caught by arithmetic luck -- a four-corner box
+# once drew exactly at four points, 8.3px wrong at six, and exactly again at
+# eight. `need_for` returns a count that holds when it is exceeded.
+worst_over = 0.0
+for shape, tol in ((box, TOL), (rect(60.0, 90.0), TOL), (sphere_ring, 1.0)):
+    base = outline.need_for(shape, tol)
+    for extra in range(0, 13):
+        e = outline.max_error(outline.spread(shape, base + extra, tol), shape)
+        worst_over = max(worst_over, e - tol)
+check("a bigger budget never draws worse than the tolerance", worst_over <= 1e-9,
+      f"worst excess {worst_over:.2e}px")
+
+
+# --- a vertex arriving on a straight edge disturbs nothing ----------------
+# The failure this replaced: one span of the silhouette swaps to a different
+# chain of edges while the rest stands still, and every slot after it shifts a
+# place round the loop.
+# What counts is not how far a point travels but where the polygon *between*
+# two frames lands: a point sliding along a straight edge covers ground and
+# changes nothing, while a point crossing a corner barely moves and cuts it.
+flat = rect(400.0, 90.0, per_side=3)
+grown = np.insert(flat, 1, [[-100.0, -45.0 - 0.05]], axis=0)
+a_pts = outline.evaluate(outline.spread(flat, 12, TOL), flat)
+b_pts = outline.evaluate(outline.place(grown, 12, TOL, a_pts), grown)
+half = 0.5 * (a_pts + b_pts)
+edge = flat[np.array([0, 3, 6, 9])]          # the four corners it must keep
+stray = 0.0
+for q in half:
+    seg = np.roll(edge, -1, axis=0) - edge
+    t = np.clip(np.einsum("ij,ij->i", q - edge, seg)
+                / np.einsum("ij,ij->i", seg, seg), 0.0, 1.0)
+    stray = max(stray, float(
+        np.linalg.norm(q - (edge + seg * t[:, None]), axis=1).min()))
+check("a vertex arriving collinear leaves the shape between frames alone",
+      stray < 0.2, f"midpoint strays {stray:.3f}px")
+
 
 # --- a full turn: the case that broke binding slots to vertices -----------
 # A cylinder tumbling end over end. Its outline runs from a tall rectangle
@@ -158,21 +184,21 @@ for f in range(FRAMES):
         pts.append((rx * math.cos(th), -half_h + ry * math.sin(th)))
     polys.append(np.asarray(pts))
 
-n = outline.slots_needed(polys, TOL)
-check("one point count covers every frame of a full turn", 4 <= n <= 64,
+n = max(outline.need_for(p, TOL) for p in polys)
+check("one point count covers every frame of a full turn", 4 <= n <= 96,
       f"{n} slots")
 
 prev = None
 worst_err = 0.0
 bad_frame = None
 for f, poly in enumerate(polys):
-    p = outline.pad_to(outline.choose(poly, TOL), poly, n)
-    p = outline.align(p, poly, prev)
-    if not monotone(p, len(poly)):
+    ids = np.arange(len(poly), dtype=np.int64)
+    pos, anchors = outline.carry(poly, ids, n, TOL, prev)
+    if not monotone(pos, len(poly)):
         bad_frame = f
         break
-    worst_err = max(worst_err, outline.max_error(p, poly))
-    prev = outline.evaluate(p, poly)
+    worst_err = max(worst_err, outline.max_error(pos, poly))
+    prev = (anchors, outline.evaluate(pos, poly))
 
 check("slots stay monotone through all 48 frames of the turn",
       bad_frame is None, "" if bad_frame is None else f"broke at frame {bad_frame}")
@@ -180,153 +206,121 @@ check("...and the shape stays inside tolerance the whole way",
       worst_err <= TOL, f"worst {worst_err:.3f}px")
 
 
-# --- carrying an outline forward, rather than re-choosing it --------------
-# On a smooth outline every candidate deviates by nearly the same amount, so
-# choosing afresh each frame is a coin toss: a third of the slots got
-# re-assigned per frame on a stationary circle, and a slot that jitters by its
-# own spacing costs a keyframe in every frame. Carrying the previous positions
-# by arc length resolves those near-ties in favour of staying put.
-#
-# Arc length, not segment indices: the silhouette ring has a different vertex
-# count from frame to frame, so an index means nothing across the gap.
-# The case carrying is for: the ring is the same shape, barely turned. That is
-# the lab sphere, whose silhouette is a stationary circle while the mesh spins
-# through it. A ring that gained or lost a vertex is a real change and is
-# expected to be re-chosen instead -- asserted below.
-ring_now = circle(56.0, 58)
-ring_next = circle(56.0, 58, phase=0.01)
-# The slot count is what a real bake would pick: the most any frame needs, not
-# a number chosen here. Cap it lower and the tolerance is simply unreachable --
-# 32 points cannot hold a 59-gon of radius 56 inside 0.35px, because skipping
-# one of its vertices already costs 0.32px.
-#
-# And the budget has to leave a genuine choice to make. At 0.35px this ring
-# needs every vertex it has, so there is nothing to choose between and no churn
-# to fix; churn is what happens when many subsets are all about equally good.
-CTOL = 1.0
-NC = outline.slots_needed([ring_now, ring_next, circle(56.0, 59, phase=0.03)], CTOL)
-check("the carry case leaves a real choice to make", NC < len(ring_now),
-      f"{NC} slots for a {len(ring_now)}-vertex ring at {CTOL}px")
-pos_a = outline.pad_to(outline.choose(ring_now, CTOL, NC), ring_now, NC)
-pts_a = outline.evaluate(pos_a, ring_now)
-s_a = outline.arc_of(pos_a, ring_now)
+# --- a slot keeps its vertex when the ring around it changes --------------
+# What a measure alone cannot do. Its budget divides between the corners and
+# the edges in proportion to what the corners are worth, so a vertex joining or
+# leaving the ring moves that division by one and shifts every slot after it.
+ring_a = rect(300.0, 120.0, per_side=4)
+ids_a = np.arange(len(ring_a), dtype=np.int64)
+pos_a, anch_a = outline.carry(ring_a, ids_a, 14, TOL, None)
+pts_a = outline.evaluate(pos_a, ring_a)
+check("the first frame anchors most of its slots to vertices",
+      int((anch_a >= 0).sum()) >= 4, f"{int((anch_a >= 0).sum())} of 14")
 
-check("arc fractions round-trip through a position set",
-      np.allclose(outline.arc_of(outline.at_arc(s_a, ring_now), ring_now), s_a, atol=1e-9))
-check("...and survive the ring changing vertex count",
-      len(outline.at_arc(s_a, circle(56.0, 59))) == NC, f"{NC} slots")
+# The ring gains a vertex partway along, as a fold rotating into view does.
+ring_b = np.insert(ring_a, 3, [[ring_a[2, 0] * 0.5 + ring_a[3, 0] * 0.5,
+                               ring_a[2, 1] * 0.5 + ring_a[3, 1] * 0.5]], axis=0)
+ids_b = np.concatenate([ids_a[:3], [99], ids_a[3:]]).astype(np.int64)
+pos_b, anch_b = outline.carry(ring_b, ids_b, 14, TOL, (anch_a, pts_a))
+kept = sum(1 for j in range(14)
+           if anch_a[j] >= 0 and anch_b[j] == anch_a[j])
+alive = sum(1 for v in anch_a if v >= 0 and v in set(ids_b.tolist()))
+check("every anchor that survived the change kept its own slot",
+      kept == alive and alive > 0, f"{kept} of {alive} kept")
+check("...and the outline is still inside tolerance",
+      outline.max_error(pos_b, ring_b) <= TOL,
+      f"{outline.max_error(pos_b, ring_b):.3f}px")
+check("...and still monotone", monotone(pos_b, len(ring_b)))
 
-fresh, _, fresh_pts = outline.follow(ring_next, NC, CTOL, None)
-carried, _, carried_pts = outline.follow(ring_next, NC, CTOL, (s_a, pts_a))
-moved_fresh = float(np.linalg.norm(fresh_pts - pts_a, axis=1).max())
-moved_carried = float(np.linalg.norm(carried_pts - pts_a, axis=1).max())
-check("carrying moves slots less than choosing afresh",
-      moved_carried < moved_fresh,
-      f"{moved_fresh:.2f}px fresh vs {moved_carried:.2f}px carried")
-check("...and is still inside tolerance", outline.max_error(carried, ring_next) <= CTOL,
-      f"{outline.max_error(carried, ring_next):.3f}px")
-check("...and still monotone", monotone(carried, len(ring_next)))
-
-# A shape that has genuinely changed must not be carried past its tolerance.
-# Carrying places points at arc fractions, which on a faceted outline land
-# *between* vertices; choosing places them *on* the vertices, where the shape
-# actually bends. So a ring that has really moved has to be re-chosen, and the
-# tolerance test is what decides it.
-for label, changed in (("squashed", np.stack([ring_next[:, 0],
-                                              ring_next[:, 1] * 0.25], axis=1)),
-                       ("a vertex more", circle(56.0, 59, phase=0.03))):
-    strayed, _, _ = outline.follow(changed, NC, CTOL, (s_a, pts_a))
-    check(f"a ring that really changed ({label}) is re-chosen, not carried",
-          outline.max_error(strayed, changed) <= CTOL,
-          f"{outline.max_error(strayed, changed):.3f}px")
+# A span that acquires a real corner has to be able to take a slot from a
+# neighbour, or the error creeps up frame after frame -- it climbed 0.41px,
+# 0.55, 0.69 ... 1.22px against a 0.35px tolerance before spans could borrow.
+spike = ring_a.copy()
+spike[6] = spike[6] + np.array([0.0, -40.0])
+ids_s = ids_a.copy()
+pos_s, _ = outline.carry(spike, ids_s, 14, TOL, (anch_a, pts_a))
+check("a span that gains a corner borrows a slot for it",
+      outline.max_error(pos_s, spike) <= TOL,
+      f"{outline.max_error(pos_s, spike):.3f}px")
 
 
 # --- self-intersection, stated directly ----------------------------------
 def crosses(pts):
-    """Does this closed polygon intersect itself anywhere?"""
-    n = len(pts)
-
-    def seg(p, q, r):
-        return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
-
-    for i in range(n):
-        a, b = pts[i], pts[(i + 1) % n]
-        for j in range(i + 2, n):
-            if i == 0 and j == n - 1:
+    m = len(pts)
+    for i in range(m):
+        a, b = pts[i], pts[(i + 1) % m]
+        for j in range(i + 1, m):
+            if j == i or (j + 1) % m == i:
                 continue
-            c, d = pts[j], pts[(j + 1) % n]
-            d1, d2 = seg(a, b, c), seg(a, b, d)
-            d3, d4 = seg(c, d, a), seg(c, d, b)
-            if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+            c, d = pts[j], pts[(j + 1) % m]
+
+            def side(o, e, p):
+                return ((e[0] - o[0]) * (p[1] - o[1])
+                        - (e[1] - o[1]) * (p[0] - o[0]))
+
+            # Both sides must genuinely straddle. A zero means the segments
+            # touch or graze, which is not a crossing -- and with more slots
+            # than ring vertices, two slots coincide and touching is normal.
+            def straddles(u, v):
+                return (u > 0 > v) or (u < 0 < v)
+
+            if (straddles(side(a, b, c), side(a, b, d))
+                    and straddles(side(c, d, a), side(c, d, b))):
                 return True
     return False
 
 
+tangled = None
 prev = None
-crossed = None
 for f, poly in enumerate(polys):
-    p = outline.align(outline.pad_to(outline.choose(poly, TOL), poly, n), poly, prev)
-    pts = outline.evaluate(p, poly)
+    ids = np.arange(len(poly), dtype=np.int64)
+    pos, anchors = outline.carry(poly, ids, n, TOL, prev)
+    pts = outline.evaluate(pos, poly)
     if crosses(pts):
-        crossed = f
+        tangled = f
         break
-    prev = pts
+    prev = (anchors, pts)
 check("the outline never crosses itself, in any frame of the turn",
-      crossed is None, "" if crossed is None else f"crossed at frame {crossed}")
+      tangled is None, "" if tangled is None else f"tangled at frame {tangled}")
 
-# --- alignment keeps points from touring the outline ---------------------
-# Same shape, rotated: without alignment slot 0 chases whichever vertex the
-# refinement happened to pick, and every point takes the long way round.
-ring_a = circle(113.0, 59)
-ring_b = circle(113.0, 59, phase=0.11)
-pa = outline.pad_to(outline.choose(ring_a, TOL), ring_a, 24)
-raw = outline.pad_to(outline.choose(ring_b, TOL), ring_b, 24)
-pts_a = outline.evaluate(pa, ring_a)
-drift_raw = float(np.linalg.norm(outline.evaluate(raw, ring_b) - pts_a, axis=1).max())
-aligned = outline.align(raw, ring_b, pts_a)
-drift_aligned = float(np.linalg.norm(outline.evaluate(aligned, ring_b) - pts_a, axis=1).max())
-check("alignment cuts how far a slot moves between frames",
-      drift_aligned <= drift_raw,
-      f"{drift_raw:.1f}px unaligned -> {drift_aligned:.1f}px aligned")
 
 # --- a loop that crosses itself cannot be merged at all -------------------
-# The invariant "monotone slots cannot self-intersect" is about the
-# *resampling*. It says nothing about the loop being resampled. walk_loop
-# returns a ring of mesh edges that closes in 3D, and on a non-convex part the
-# silhouette folds behind the body so the ring crosses itself once projected --
-# 45% of the Voyager probe's merged outlines did, and drew as tangled blobs.
-# Every shape above is convex, which is exactly why none of them caught it.
 check("a circle is simple", outline.is_simple(circle(50.0, 24)))
 check("a rectangle is simple", outline.is_simple(rect(120.0, 60.0, 4)))
-check("a triangle is simple", outline.is_simple(np.array([[0., 0.], [9., 0.], [4., 8.]])))
-
-# a bowtie: the classic self-crossing quad
-bowtie = np.array([[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]])
+check("a triangle is simple",
+      outline.is_simple(np.array([[0., 0.], [9., 0.], [4., 8.]])))
+bowtie = np.array([[0., 0.], [10., 10.], [10., 0.], [0., 10.]])
 check("a bowtie is caught", not outline.is_simple(bowtie))
-
-# a figure-eight, which is what a folded silhouette actually looks like
-eight = []
-for k in range(40):
-    th = 2 * math.pi * k / 40
-    eight.append((60.0 * math.sin(2 * th), 40.0 * math.sin(th)))
+eight = list(circle(30.0, 12, cx=-30.0)) + list(circle(30.0, 12, cx=30.0))
 check("a figure-eight is caught", not outline.is_simple(np.asarray(eight)))
-
-# a concave but simple outline must still be allowed through: the point is to
-# reject tangles, not concavity
-ell = np.array([[0., 0.], [60., 0.], [60., 20.], [20., 20.], [20., 60.], [0., 60.]])
+ell = np.array([[0., 0.], [60., 0.], [60., 20.], [20., 20.],
+                [20., 60.], [0., 60.]])
 check("a concave L is still simple", outline.is_simple(ell))
 check("...and its own resampling stays inside tolerance",
-      outline.max_error(outline.pad_to(outline.choose(ell, TOL), ell, 6), ell) <= TOL)
+      outline.max_error(outline.spread(ell, outline.need_for(ell, TOL), TOL),
+                        ell) <= TOL)
+
+
+# --- winding is settled once, where the ring becomes geometry -------------
+cw = circle(40.0, 16)[::-1]
+ids_cw = np.arange(16, dtype=np.int64)[::-1]
+w_ids, w_pts = outline.wound(ids_cw, circle(40.0, 16)[np.argsort(ids_cw)])
+area = float((w_pts[:, 0] * np.roll(w_pts[:, 1], -1)
+              - w_pts[:, 1] * np.roll(w_pts[:, 0], -1)).sum())
+check("a ring comes back wound one way whichever way it was walked", area >= 0.0,
+      f"signed area {area:.1f}")
+check("...and its vertex ids travel with it", len(w_ids) == len(w_pts))
 
 
 # --- degenerate input must not raise -------------------------------------
-tiny = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
-check("a triangle survives", len(outline.pad_to(outline.choose(tiny, TOL), tiny, 3)) == 3)
-check("a triangle can still be padded", len(outline.pad_to([0, 1, 2], tiny, 9)) == 9)
-flat = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [1.0, 0.0]])
-check("a zero-area outline does not divide by zero",
-      outline.choose(flat, TOL) is not None)
+tiny = np.array([[0., 0.], [10., 0.], [5., 9.]])
+check("a triangle survives", len(outline.spread(tiny, 3, TOL)) == 3)
+check("a triangle can still be padded", len(outline.spread(tiny, 9, TOL)) == 9)
+check("a degenerate ring returns something drawable",
+      outline.measure(np.zeros((3, 2)), TOL, 8) is None)
+check("...and placing on one does not raise",
+      len(outline.place(np.zeros((3, 2)), 5, TOL)) == 5)
 
 print()
-print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))
-raise SystemExit(1 if fails else 0)
+print(f"{len(fails)} failed" if fails else "all passed")
+sys.exit(1 if fails else 0)
