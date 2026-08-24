@@ -306,6 +306,20 @@ def _worth(poly, window):
     return _point_seg_dist(poly, back, fwd)
 
 
+def weights(poly, tol, n):
+    """What each vertex is worth, as a share of one point: `d / tol`, capped.
+
+    The window is the sampling spacing -- a vertex is worth what it adds at the
+    resolution the outline is actually drawn at.
+    """
+    seg = np.linalg.norm(np.roll(poly, -1, axis=0) - poly, axis=1)
+    length = float(seg.sum())
+    if len(poly) < 3 or length <= 0.0 or n < 1:
+        return None
+    d = _worth(poly, length / n)
+    return np.clip(d / max(float(tol), 1e-9), 0.0, 1.0)
+
+
 def measure(poly, tol, n):
     """The loop's sampling measure -- arc length with the corners widened.
 
@@ -352,10 +366,7 @@ def measure(poly, tol, n):
     length = float(seg.sum())
     if m < 3 or length <= 0.0 or n < 1:
         return None
-    # The window is the sampling spacing: a vertex is worth what it adds
-    # at the resolution the outline is actually drawn at.
-    d = _worth(poly, length / n)
-    weight = np.clip(d / max(float(tol), 1e-9), 0.0, 1.0)
+    weight = weights(poly, tol, n)
     total = float(weight.sum())
     # Below `total` points there is not budget for a point on every corner
     # worth one; the floor keeps kappa finite and spends what there is on the
@@ -501,11 +512,18 @@ def need_for(poly, tol, cap=None, floor=3):
 # so a span that gains a vertex still holds the slots it held, and no index
 # anywhere else moves.
 #
-# A vertex leaves the silhouette by becoming collinear with the outline, and
-# arrives the same way, so a slot released by a departing anchor is released
-# somewhere it already was, and a slot adopting an arriving one slides along a
-# stretch that is nearly straight. Both are free. What is expensive -- a point
-# crossing a corner -- is exactly what anchoring prevents.
+# A vertex does not leave the silhouette gently. It leaves when the faces
+# meeting at it stop straddling the facing boundary, and by then it has rotated
+# *into* the projected shape: measured across two parts, a departing anchor
+# sits 22px inside the new outline typically and 87px at worst. So the slot it
+# held cannot simply stay put, and it cannot be re-spread with the rest of its
+# span either -- on part_113, a stick, that threw one slot 694px, the length of
+# the object, and opened the fill into a wedge four times its true area.
+#
+# What it can do is keep its place: the point is put back where it was, clamped
+# onto the ring it now lives on. The span is re-spread by the measure only when
+# keeping everything still would draw the shape outside tolerance, which is
+# what stops the arrangement going stale.
 #
 # On part_042 that takes the worst error between keyframes from 5.83px to
 # 5.25px and the typical one to about 2px, against a floor of 1.5px -- and it
@@ -531,38 +549,92 @@ def wound(loop, xy):
     return ids, pts
 
 
-def _agree(prev_ids, loop):
-    """Anchors still on the ring, in an order the ring and the slots agree on.
+def _monotone(cand, n, m):
+    """Keep only what can be reached going forwards round both circles.
 
     A vertex can be on both rings and yet sit at a different place in the
     cycle, and honouring all of those at once would ask the slots to run
-    backwards. Anything that cannot be reached going forwards round both the
-    slot circle and the ring is dropped, worst first, until what is left is a
-    single lap of each.
+    backwards. Whatever cannot be reached is dropped, worst first, until what
+    is left is a single lap of each.
     """
-    where = {int(v): i for i, v in enumerate(loop)}
-    cand = [(j, where[int(v)]) for j, v in enumerate(prev_ids)
-            if int(v) >= 0 and int(v) in where]
-    n, m = len(prev_ids), len(loop)
+    cand = list(cand)
     while len(cand) >= 2:
         ring = [c[1] for c in cand]
         step = [(ring[(t + 1) % len(ring)] - ring[t]) % m
                 for t in range(len(ring))]
         if sum(step) == m and min(step) > 0:
             break
-        drop = max(range(len(cand)), key=lambda t: step[t - 1] + step[t])
-        cand.pop(drop)
+        cand.pop(max(range(len(cand)), key=lambda t: step[t - 1] + step[t]))
     return cand
 
 
-def _mu_after(mu, i, m):
-    """Where the measure stands just past vertex `i`."""
-    return float(mu[0]) if i == 0 else float(mu[2 * i])
+def _agree(prev_ids, prev_pts, poly, loop):
+    """Which slot holds which ring vertex, carried over from last frame.
+
+    A slot whose vertex is still on the silhouette keeps it. A slot whose
+    vertex has gone hands its anchor to the nearest ring vertex still going
+    spare, so long as that keeps every slot running forwards round the ring.
+
+    Matching the assignment as a whole instead -- letting every slot move to
+    the vertex nearest where it was, by shortest path over the ring -- was
+    tried and is not in here. It has to know how the object moved before it can
+    say what is near, and neither a shift nor a fitted turn and scale is enough
+    on a part that is also foreshortening: whatever was left over was enough to
+    let the whole assignment rotate several places round the ring at some
+    frames, every point crossing the object. It fixed some frames and broke
+    others, four ways round.
+    """
+    n, m = len(prev_ids), len(loop)
+    where = {int(v): i for i, v in enumerate(loop)}
+    cand = _monotone([(j, where[int(v)]) for j, v in enumerate(prev_ids)
+                      if int(v) >= 0 and int(v) in where], n, m)
+    if prev_pts is None or len(prev_pts) != n:
+        return cand
+    taken = {i for _, i in cand}
+    for j in [j for j, v in enumerate(prev_ids)
+              if int(v) >= 0 and int(v) not in where]:
+        spare = [i for i in range(m) if i not in taken]
+        if not spare:
+            break
+        near = spare[int(np.argmin(
+            np.linalg.norm(poly[spare] - prev_pts[j], axis=1)))]
+        trial = _monotone(sorted(cand + [(j, near)]), n, m)
+        # Only if it costs no anchor that was already holding.
+        if len(trial) == len(cand) + 1:
+            cand, taken = trial, taken | {near}
+    return cand
 
 
-def _mu_before(mu, i, m):
-    """Where the measure stands just short of vertex `i`, a lap along."""
-    return float(mu[2 * m - 1]) if i == 0 else float(mu[2 * i - 1])
+def _span_spread(cum, weight, vi, nvi, m, k, total):
+    """`k` arc positions strictly inside the span from vertex `vi` to `nvi`.
+
+    The same rule as the whole loop, solved for this span. That distinction is
+    the whole of it: `kappa` makes a full-weight corner's step exactly one
+    sampling step wide, and a span samples at *its* step, not the loop's. Using
+    the loop's, a corner inside a short span had a share many local steps wide
+    and swallowed every point in it -- on part_113, a stick, two slots landed
+    on the same corner while the far end of the object went unrepresented, and
+    one of them travelled the 693px length of the stick to get there.
+    """
+    steps = (nvi - vi) % m
+    width = ((cum[nvi] - cum[vi]) % total) or total
+    inner = (vi + np.arange(1, steps)) % m
+    if not len(inner) or k < 1:
+        return (cum[vi] + width * np.arange(1, k + 1) / (k + 1)) % total
+    w = weight[inner]
+    kappa = width / max((k + 1) - float(w.sum()), 0.05 * (k + 1))
+    d = (cum[inner] - cum[vi]) % total
+    before = d + kappa * np.concatenate([[0.0], np.cumsum(w[:-1])])
+    after = before + kappa * w
+    size = 2 * len(inner) + 2
+    xs, ys = np.empty(size), np.empty(size)
+    xs[0] = ys[0] = 0.0
+    xs[1:-1:2], xs[2:-1:2] = before, after
+    ys[1:-1:2] = ys[2:-1:2] = d
+    xs[-1] = width + kappa * float(w.sum())
+    ys[-1] = width
+    want = xs[-1] * np.arange(1, k + 1) / (k + 1)
+    return (cum[vi] + np.interp(want, xs, ys)) % total
 
 
 def _identify(pos, poly, loop):
@@ -597,15 +669,36 @@ def _identify(pos, poly, loop):
     return ids
 
 
-def _lay_out(poly, knots, cum, keep, counts, n, base):
+def _onto(poly, pts):
+    """Where each point lands on the loop, as arc length along it.
+
+    Every point against every segment at once. Rings run to a few hundred
+    edges and slot counts to a few dozen, so the product is small and numpy
+    swallows it whole.
+    """
+    cum, total = arc_table(poly)
+    a = poly
+    ab = np.roll(poly, -1, axis=0) - poly
+    den = np.einsum("ij,ij->i", ab, ab)
+    den = np.where(den > 0, den, 1e-12)
+    rel = np.asarray(pts, dtype=np.float64)[:, None, :] - a[None, :, :]
+    u = np.clip(np.einsum("kij,ij->ki", rel, ab) / den[None, :], 0.0, 1.0)
+    foot = a[None, :, :] + u[:, :, None] * ab[None, :, :]
+    k = np.argmin(np.linalg.norm(foot - np.asarray(pts)[:, None, :], axis=2),
+                  axis=1)
+    j = np.arange(len(pts))
+    return cum[k] + u[j, k] * (cum[k + 1] - cum[k])
+
+
+def _lay_out(poly, cum, weight, keep, counts, n, base, hold=None):
     """Arc position for every slot: anchors on their vertex, the rest between.
 
-    The slots inside a span are placed by the measure restricted to that span,
-    so a corner inside it still gets a point, and there are exactly `counts[t]`
-    of them however the span has changed shape.
+    A span listed in `hold` keeps its slots where `hold` says -- their own
+    places from last frame, clamped onto this ring. Any other span is spread by
+    its own measure, which puts a point on every corner inside it worth one.
     """
-    mu, at, mu_total, _ = knots
     m = len(poly)
+    total = float(cum[-1])
     arcs = np.empty(n)
     slot = base
     for t, (_, vi) in enumerate(keep):
@@ -613,13 +706,15 @@ def _lay_out(poly, knots, cum, keep, counts, n, base):
         arcs[slot % n] = cum[vi]
         k = counts[t]
         if k:
-            a0 = _mu_after(mu, vi, m)
-            a1 = _mu_before(mu, nvi, m)
-            if a1 <= a0:
-                a1 += mu_total
-            want = a0 + (a1 - a0) * np.arange(1, k + 1) / (k + 1)
-            arcs[(slot + 1 + np.arange(k)) % n] = np.interp(
-                want % mu_total, mu, at)
+            idx = (slot + 1 + np.arange(k)) % n
+            if hold is not None and t in hold:
+                # Their own places, pinned inside the span and back in order,
+                # so the slots stay monotone however the shape moved.
+                width = ((cum[nvi] - cum[vi]) % total) or total
+                rel = np.sort(np.clip((hold[t] - cum[vi]) % total, 0.0, width))
+                arcs[idx] = (cum[vi] + rel) % total
+            else:
+                arcs[idx] = _span_spread(cum, weight, vi, nvi, m, k, total)
         slot += 1 + k
     return arcs
 
@@ -652,15 +747,16 @@ def carry(poly, loop, n, tol, prev=None):
     `prev` is `(ids, points)` as returned last frame; the ids are mesh vertex
     numbers, or -1 for a slot that was between anchors.
     """
-    knots = measure(poly, tol, n)
-    if knots is None:
+    weight = weights(poly, tol, n)
+    if weight is None:
         return np.zeros((n, 2)), np.full(n, -1, dtype=np.int64)
     if prev is None:
         pos = place(poly, n, tol, None)
         return pos, _identify(pos, poly, loop)
 
     prev_ids, prev_pts = prev
-    keep = _agree(prev_ids, loop) if len(prev_ids) == n else []
+    keep = (_agree(prev_ids, prev_pts, poly, loop)
+            if len(prev_ids) == n else [])
     if len(keep) < 2:
         # Nothing recognisable survived -- a fresh silhouette, or the object
         # coming back into view. Place it on its own merits and start again.
@@ -672,8 +768,26 @@ def carry(poly, loop, n, tol, prev=None):
     counts = [((keep[(t + 1) % len(keep)][0] - slot) % n) - 1
               for t, (slot, _) in enumerate(keep)]
 
-    arcs = _lay_out(poly, knots, cum, keep, counts, n, base)
+    # Every slot keeps its place to begin with -- the point put back where it
+    # was, clamped onto the ring it now lives on. Only a span that cannot draw
+    # itself that way gets re-spread by the measure.
+    landed = _onto(poly, prev_pts) if len(prev_pts) == n else None
+    hold = None
+    if landed is not None:
+        hold, slot = {}, base
+        for t, k in enumerate(counts):
+            if k:
+                hold[t] = landed[(slot + 1 + np.arange(k)) % n]
+            slot += 1 + k
+    arcs = _lay_out(poly, cum, weight, keep, counts, n, base, hold)
     pos = at_arc(arcs / total, poly)
+    if hold:
+        errs = _span_error(pos, poly, counts, n, base)
+        loose = {t for t, e in enumerate(errs) if e > tol}
+        if loose:
+            hold = {t: v for t, v in hold.items() if t not in loose}
+            arcs = _lay_out(poly, cum, weight, keep, counts, n, base, hold)
+            pos = at_arc(arcs / total, poly)
 
     # A span that has just acquired a corner has no slot to put on it, and
     # without a way to find one the error creeps up frame after frame -- 0.41px,
@@ -697,7 +811,8 @@ def carry(poly, loop, n, tol, prev=None):
         for edge in (need, (need + 1) % len(keep)):
             k2, c2 = _merge_span(keep, counts, edge)
             b2 = k2[0][0]
-            p2 = at_arc(_lay_out(poly, knots, cum, k2, c2, n, b2) / total, poly)
+            p2 = at_arc(_lay_out(poly, cum, weight, k2, c2, n, b2) / total,
+                        poly)
             e2 = _span_error(p2, poly, c2, n, b2)
             if best is None or max(e2) < max(best[3]):
                 best = (k2, c2, p2, e2, b2)
