@@ -651,7 +651,7 @@ def _agree(prev_ids, prev_pts, poly, loop, prev_loop=None, prev_poly=None):
     # right answer there, and it has to be affordable to be reachable.
     LOOSE = (1.0 / max(k, 1)) ** 2
     order = (np.arange(m)[:, None] + np.arange(m)[None, :]) % m
-    if m <= 20:
+    if m <= 48:
         laid = cost[:, order]                       # (k, cut, vertex)
         rows = np.empty((m, m))
         rows[:, :] = laid[0, :, 0][:, None]
@@ -664,13 +664,16 @@ def _agree(prev_ids, prev_pts, poly, loop, prev_loop=None, prev_poly=None):
             rows = np.minimum.accumulate(step, axis=1)
         cut = int(np.argmin(rows[:, -1]))
     else:
-        # Too big to try every cut, and it does not need it. The arrangements
-        # that trap the sweep belong to slivers, and a sliver's ring is a
-        # handful of vertices -- six on a square rod, eight on part_113. A
-        # larger ring is a rounder shape, where the vertex nearest a slot is
-        # the one it was already on and any sound cut finds the same answer.
-        # The work grows as the square of the ring, so being generous here is
-        # not free: at 48 it cost thirteen minutes of bake.
+        # Too big to try every cut. A ring of hundreds is a smooth shape,
+        # where the vertex nearest a slot is the one it was already on and any
+        # sound cut finds the same answer.
+        #
+        # The bound was 20 for a while, on the belief that trying every cut was
+        # what had made the bake four times longer. It was not -- that was the
+        # tolerance chasing above -- and 20 was far too mean: part_021 has a
+        # 48-vertex ring and was drawn 9.90px from its true silhouette where
+        # 0.07px was available. The work still grows as the square of the ring,
+        # so it is not free either: 2.5ms a frame at 48, 7ms at 64, 23ms at 128.
         cut = int(np.argmin(cost) % m)
 
     vr = order[cut]
