@@ -1136,6 +1136,16 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
     leash of one slot spacing, two, and none at all all give the same answer,
     which says it does not wander from a good starting point: it moves only
     where there is area genuinely left to reclaim.
+
+    Crossing each gap in small steps, re-solving at every one so the optimum is
+    followed along a path rather than re-found, does not help and was tried
+    properly, with the rings lined up. On part_079 it gives 8.28px at two steps
+    per gap, 7.85 at four, 3.97 at ten and 29.76 at twenty. That is not a method
+    converging, it is a lottery: a pinched ring has many near-equal optima and
+    which one a sweep lands in turns on nothing meaningful. The number that does
+    hold still across every step count is the typical error, 2.0 to 2.3px
+    against 0.78px for the placement that ships. Anyone tempted by the 3.97 --
+    including me, who nearly reported it -- should read the row either side.
     """
     k, m = len(positions), len(poly)
     if k < 3 or m < 3:
