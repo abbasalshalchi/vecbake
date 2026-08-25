@@ -39,6 +39,12 @@ class BakeSettings:
     # measured as written rather than as it might ideally be placed -- see
     # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
+    # Only outlines already drawing worse than this get asked whether the area
+    # refinement would draw them better. It is expensive, and on an outline
+    # that is already close it is a coin toss -- across thirty objects it
+    # improved five and worsened four -- so it is spent where there is room to
+    # gain. Zero switches it off entirely.
+    refine_gate_px: float = 5.0
     edge_mode: str = "HIDDEN"     # HIDDEN = only edges with a front-facing face
                                   # WIRE   = every edge, see-through
                                   # BOUNDARY = silhouette + open/boundary edges

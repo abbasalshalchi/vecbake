@@ -1299,6 +1299,15 @@ def _best_on_segment(c1, s1, c2, s2, lo, hi):
     return best_t, 0.5 * (best_v if best_v is not None else 0.0)
 
 
+# How far a point may be slid from where the correspondence put it, in slot
+# spacings, and how many sweeps to allow. The leash is not delicate -- anything
+# from a tenth of a slot to a half gives the same answer -- but a full slot is
+# too much and takes part_004 from 3.42px to 6.03px. The rounds are not
+# optional: part_024 gains nothing at four, 5.42px at eight, 4.62px at thirty.
+REFINE_LEASH = 0.25
+REFINE_ROUNDS = 30
+
+
 def refine_exact(positions, poly, rounds=4, limit=None, table=None, ctab=None):
     """Like `refine`, but each point goes exactly where it belongs.
 

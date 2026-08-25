@@ -290,6 +290,10 @@ class ObjectPlan:
         # the real silhouette between keyframes, and what drawing the faces
         # instead would cost over the same gaps. Filled by the measuring pass.
         self.carry_cost = 0.0
+        # Whether this outline is drawn with the area refinement. Decided by
+        # measurement, per object, and only asked about where the outline is
+        # already drawing badly -- see try_refine.
+        self.use_refine = False
         self.face_cost = 0.0
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
@@ -556,9 +560,10 @@ def bake_iter(context, settings: BakeSettings):
                 ev = obj.evaluated_get(dg)
                 me = ev.to_mesh()
                 try:
-                    ring, xy = silhouette_of(plan, me, ev, v, m, width, height,
-                                             cp, cf, ortho)
-                    out[obj.name] = (ring, xy.copy())
+                    ring, poly, xy = silhouette_of(plan, me, ev, v, m,
+                                                   width, height,
+                                                   cp, cf, ortho)
+                    out[obj.name] = (ring, poly, xy.copy())
                 finally:
                     ev.to_mesh_clear()
             return out
@@ -582,12 +587,12 @@ def bake_iter(context, settings: BakeSettings):
         drew = written()
         was, half = carry_state["prev"], carry_state["mid"]
         prev_drew = carry_state["drew"]
-        for name, (ring, xy) in here.items():
+        for name, (ring, poly, xy) in here.items():
             if name not in was or name not in half:
                 continue
             plan = plans[name]
-            before_xy = was[name][1]
-            middle, middle_xy = half[name]
+            before_xy = was[name][2]
+            _, middle, middle_xy = half[name]
             # The outline as drawn, halfway between the two keyframes, against
             # the silhouette that is really there. This is what a viewer sees
             # between two frames, so it is what the decision is made on.
@@ -615,6 +620,103 @@ def bake_iter(context, settings: BakeSettings):
         cf = np.array((ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
         carry_state["mid"] = look(dg, v2, m2, cp, cf, ce.data.type == "ORTHO")
 
+    def try_refine(names):
+        """Would the area refinement draw these outlines better than plain?
+
+        Asked of the ones already drawing badly and of nobody else. It is
+        expensive, and on an outline that is already close it is a coin toss:
+        across thirty objects at a quarter-slot leash it improved five and
+        worsened four, and left twenty-one untouched. So there is no constant
+        to set. There is a measurement to make, per object, and it is the same
+        one the merge decision rests on -- what the outline as drawn costs
+        against the silhouette halfway between two keyframes.
+
+        Both placements are chained across the whole clip, because a placement
+        cannot be judged a frame at a time: each frame's answer depends on the
+        one before it.
+        """
+        wanted_names = set(names)
+        mine = [o for o in objects if o.name in wanted_names]
+        chain = {n: {"plain": None, "ref": None} for n in names}
+        last: dict[str, tuple] = {}
+        cost = {n: [0.0, 0.0] for n in names}
+        mid_truth: dict[str, object] = {}
+
+        def rings(dg, v, m, cp, cf, ortho):
+            out = {}
+            for obj in mine:
+                plan = plans.get(obj.name)
+                if plan is None or not plan.outline_n:
+                    continue
+                ev = obj.evaluated_get(dg)
+                me = ev.to_mesh()
+                try:
+                    ring, poly, _ = silhouette_of(plan, me, ev, v, m,
+                                                  width, height, cp, cf, ortho)
+                finally:
+                    ev.to_mesh_clear()
+                out[obj.name] = (ring, poly)
+            return out
+
+        def camera_at(dg):
+            v, m = camera_matrices(scene, cam, dg, width, height)
+            ce = cam.evaluated_get(dg)
+            cp = np.array(ce.matrix_world.translation, dtype=np.float64)
+            cf = np.array(
+                (ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
+            return v, m, cp, cf, ce.data.type == "ORTHO"
+
+        for fi, frame in enumerate(frames):
+            scene.frame_set(frame)
+            dg = context.evaluated_depsgraph_get()
+            here = rings(dg, *camera_at(dg))
+
+            now = {}
+            for name, (ring, poly) in here.items():
+                if ring is None:
+                    chain[name] = {"plain": None, "ref": None}
+                    continue
+                n = plans[name].outline_n
+                drawn = []
+                for kind in ("plain", "ref"):
+                    pos, ids = outline_mod.carry(poly, ring, n,
+                                                 settings.dissolve_px,
+                                                 chain[name][kind])
+                    if kind == "ref":
+                        pos = outline_mod.refine_exact(
+                            pos, poly, rounds=outline_mod.REFINE_ROUNDS,
+                            limit=outline_mod.REFINE_LEASH / max(n, 1))
+                    pts = outline_mod.evaluate(pos, poly)
+                    chain[name][kind] = (ids, pts, ring, poly)
+                    drawn.append(pts)
+                now[name] = drawn
+
+            for name, (a_plain, a_ref) in last.items():
+                if name not in now or mid_truth.get(name) is None:
+                    continue
+                b_plain, b_ref = now[name]
+                middle = mid_truth[name]
+                cost[name][0] = max(cost[name][0], outline_mod.stray(
+                    0.5 * (a_plain + b_plain), middle))
+                cost[name][1] = max(cost[name][1], outline_mod.stray(
+                    0.5 * (a_ref + b_ref), middle))
+            last = now
+
+            mid_truth = {}
+            if fi + 1 < len(frames):
+                scene.frame_set(frame, subframe=0.5)
+                dg2 = context.evaluated_depsgraph_get()
+                mid_truth = {n: poly for n, (_, poly)
+                             in rings(dg2, *camera_at(dg2)).items()}
+            yield ("Refining", fi + 1, len(frames))
+
+        for name in names:
+            plain, refined = cost[name]
+            if refined < plain - 1e-9:
+                refine_set.add(name)
+                plans[name].carry_cost = refined
+                plans[name].use_refine = True
+
     def sample_pass():
         for fi, frame in enumerate(frames):
             scene.frame_set(frame)
@@ -637,6 +739,7 @@ def bake_iter(context, settings: BakeSettings):
                         if obj.name in no_merge:
                             plan.merge_fill = False
                         plan.outline_n = outline_slots.get(obj.name)
+                        plan.use_refine = obj.name in refine_set
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
                     else:
@@ -664,6 +767,10 @@ def bake_iter(context, settings: BakeSettings):
     # looks exactly like a guard with nothing to complain about, so the counts
     # are reported rather than inferred from the merge total.
     gap_scores: dict[str, tuple[float, float]] = {}
+    # Objects whose outline is drawn with the area refinement. Held out here
+    # because the pass that decides it is not the pass that writes it, and
+    # plans are rebuilt from scratch between the two.
+    refine_set: set[str] = set()
     uncarried: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
@@ -726,11 +833,23 @@ def bake_iter(context, settings: BakeSettings):
             gap_scores = {n: (round(p.carry_cost, 2), round(p.face_cost, 2))
                           for n, p in plans.items()
                           if n in wanted and p.carry_cost > 0.0}
+            # Where an outline is drawing badly there may be a better
+            # placement of the same points available. Ask before condemning it
+            # to face-by-face, and only where the gap test says there is
+            # something to gain.
+            if settings.refine_gate_px > 0.0 and step == 1:
+                gated = sorted(
+                    n for n, p in plans.items()
+                    if n in wanted and n not in merge_fallback
+                    and p.outline_n and p.carry_cost > settings.refine_gate_px)
+                if gated:
+                    yield from try_refine(gated)
+
             uncarried = sorted(
                 n for n, p in plans.items()
                 if n in wanted and n not in merge_fallback
                 and p.carry_cost > p.face_cost + settings.merge_slack_px)
-            if uncarried:
+            if uncarried or refine_set:
                 merge_fallback = sorted(set(merge_fallback) | set(uncarried))
                 no_merge.update(uncarried)
                 judging = False
@@ -904,6 +1023,8 @@ def bake_iter(context, settings: BakeSettings):
             "merged_gap_worst": dict(sorted(gap_scores.items(),
                                             key=lambda kv: -kv[1][0])[:10]),
             "merged_uncarried": uncarried,
+            # Outlines drawn with the area refinement, and what it was worth.
+            "merged_refined": sorted(refine_set),
         }
     )
     return vec
@@ -1044,17 +1165,24 @@ def project_object(plan, me, eval_obj, view, mvp, width, height,
 
 def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
                   cam_pos, cam_fwd, is_ortho):
-    """The object's silhouette ring this instant, wound, or None."""
+    """`(anchors, polygon, projected vertices)` this instant. Anchors and
+    polygon are None when there is no ring to be had.
+
+    The anchors come back as well as the shape because more than one caller
+    needs to *place* points on this ring, not only measure it, and placing
+    needs to know which vertex is which.
+    """
     seen = project_object(plan, me, eval_obj, view, mvp, width, height,
                           cam_pos, cam_fwd, is_ortho)
     facing = seen.face_ok & seen.face_front
     if not facing.any():
-        return None, seen.xy
+        return None, None, seen.xy
     walk = merge.walk_loop(plan, merge.silhouette_edges(plan, facing), seen.xy)
     if walk is None:
-        return None, seen.xy
+        return None, None, seen.xy
     ids, verts = walk
-    return outline_mod.wound(ids, seen.xy, seen.xy[verts])[1], seen.xy
+    ring, poly = outline_mod.wound(ids, seen.xy, seen.xy[verts])
+    return ring, poly, seen.xy
 
 
 def _sample_object(plan, me, eval_obj, settings, slots, fi,
@@ -1285,6 +1413,14 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             pos, ring_ids = outline_mod.carry(
                 poly, ring, plan.outline_n, settings.dissolve_px,
                 plan.outline_prev)
+            if plan.use_refine:
+                # Slide each point to where it costs the least area, within a
+                # short leash of where the correspondence put it. The leash is
+                # the point: unleashed this optimises each frame separately,
+                # and what a viewer sees is the space between frames.
+                pos = outline_mod.refine_exact(
+                    pos, poly, rounds=outline_mod.REFINE_ROUNDS,
+                    limit=outline_mod.REFINE_LEASH / max(plan.outline_n, 1))
             pts = outline_mod.evaluate(pos, poly)
             plan.outline_prev = (ring_ids, pts, ring, poly)
             visible = True
