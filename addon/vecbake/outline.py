@@ -1138,14 +1138,27 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
     where there is area genuinely left to reclaim.
 
     Crossing each gap in small steps, re-solving at every one so the optimum is
-    followed along a path rather than re-found, does not help and was tried
-    properly, with the rings lined up. On part_079 it gives 8.28px at two steps
-    per gap, 7.85 at four, 3.97 at ten and 29.76 at twenty. That is not a method
-    converging, it is a lottery: a pinched ring has many near-equal optima and
-    which one a sweep lands in turns on nothing meaningful. The number that does
-    hold still across every step count is the typical error, 2.0 to 2.3px
-    against 0.78px for the placement that ships. Anyone tempted by the 3.97 --
-    including me, who nearly reported it -- should read the row either side.
+    followed along a path rather than re-found, does not help. Tried properly,
+    with the rings lined up, on part_079:
+
+        steps per gap    2      4     10     20     40     80
+        worst mid     8.28   7.85   3.97  29.76  29.69   5.82
+        typical       2.02   2.02   2.02   2.33   2.18   2.12
+
+    At eighty steps the shape is re-solved every 1/1920 of a second and it is
+    still swinging between 5.82 and 29.69, so this is not a step size that has
+    not yet been reached. The reason is structural: the candidates a sweep
+    chooses between are a fixed discrete set -- probes across each gap, plus the
+    ring vertices -- and that set does not get finer as the shape step shrinks.
+    However small the change, a sweep can still hop a finite distance to a
+    different candidate, so more steps buy more chances to hop rather than
+    smaller hops. Following a path needs a placement that moves continuously,
+    and this one cannot.
+
+    The typical error is the honest column: 2.0 to 2.3px across a fortyfold
+    range of step size, against 0.78px for the placement that ships. Anyone
+    tempted by the 3.97 -- including me, who nearly reported it -- should read
+    the row either side of it.
     """
     k, m = len(positions), len(poly)
     if k < 3 or m < 3:
