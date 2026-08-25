@@ -1146,14 +1146,34 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
         typical       2.02   2.02   2.02   2.33   2.18   2.12
 
     At eighty steps the shape is re-solved every 1/1920 of a second and it is
-    still swinging between 5.82 and 29.69, so this is not a step size that has
-    not yet been reached. The reason is structural: the candidates a sweep
-    chooses between are a fixed discrete set -- probes across each gap, plus the
-    ring vertices -- and that set does not get finer as the shape step shrinks.
-    However small the change, a sweep can still hop a finite distance to a
-    different candidate, so more steps buy more chances to hop rather than
-    smaller hops. Following a path needs a placement that moves continuously,
-    and this one cannot.
+    still swinging between 5.82 and 29.69.
+
+    The reason is not that this placement cannot move continuously. It was
+    supposed to be -- a fixed candidate set that does not get finer as the shape
+    step shrinks -- and that was wrong, measured and corrected. Nudge the shape
+    by ever less and re-solve *to convergence*, and the answer moves
+    proportionally: 1.9e-4 of the ring for a nudge of 1e-2, down to 1.1e-7 for
+    1e-5. It is continuous. The plateau that looked structural was a descent
+    stopped at four rounds, which keeps making progress whatever the shape does,
+    and four rounds was what sat inside every substep of the test above.
+
+    Given a solver that is exactly continuous (`refine_exact`) and run to
+    convergence, following the path is *worse*, not better:
+
+        part_079                      worst    typical
+        what ships                   11.53px    0.78px
+        area, four rounds            22.47px    2.71px
+        area, converged              30.20px    3.85px
+        area, converged, 4 substeps  26.71px    5.68px
+        area, converged, 10 substeps 28.05px    5.32px
+
+    Optimising harder makes it worse, monotonically, and that is the real
+    finding. Per-frame optimality is not what an interpolated format wants: the
+    better each frame's placement is *for that frame*, the more it differs from
+    its neighbours' placements, and the interpolation between them is what the
+    viewer sees. Stopping the descent early was accidentally a regulariser.
+    Which is why the placement that ships holds points to mesh vertices and
+    resists moving them, and why the refinement above is leashed.
 
     The typical error is the honest column: 2.0 to 2.3px across a fortyfold
     range of step size, against 0.78px for the placement that ships. Anyone
@@ -1200,6 +1220,147 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
             if cost[j] < now - 1e-9:
                 pos[i] = cand[j]
                 s[i] = want[j]
+                moved = True
+        if not moved:
+            break
+    return pos
+
+
+def _span_affine(poly, ctab, fixed, fixed_seg, seg, forward):
+    """One span's signed doubled area as `(const, slope)` in t along `seg`.
+
+    The moving end is `P(t) = a + t (b - a)` on segment `seg`; the other end is
+    `fixed`, sitting on `fixed_seg`. Only two cross products in the shoelace
+    touch `P`, and both are linear in it, so the whole signed area is affine in
+    t. That is the fact this rests on: an affine area means `|area|` is convex
+    in t, and a sum of two of them is minimised exactly, at an endpoint or at a
+    zero crossing, with no search.
+
+    `forward` says which way round the span runs -- from `fixed` to `P`, or
+    from `P` to `fixed` -- because the shoelace is signed and the two are not
+    the same span.
+    """
+    m = len(poly)
+    a = poly[seg]
+    b = poly[(seg + 1) % m]
+    d = b - a
+
+    def cross(u, v):
+        return float(u[0] * v[1] - u[1] * v[0])
+
+    if forward:                                  # fixed -> P(t)
+        n = (seg - fixed_seg) % m
+        if n == 0:
+            return 0.0, 0.0                      # same segment: no arc cut off
+        first = poly[(fixed_seg + 1) % m]
+        middle = float(_arc_sum(ctab, (fixed_seg + 1) % m, seg, m))
+        const = cross(fixed, first) + middle + cross(a, fixed)
+        slope = cross(a, d) + cross(d, fixed)
+        return const, slope
+
+    n = (fixed_seg - seg) % m                    # P(t) -> fixed
+    if n == 0:
+        return 0.0, 0.0
+    first = poly[(seg + 1) % m]
+    middle = float(_arc_sum(ctab, (seg + 1) % m, fixed_seg, m))
+    const = cross(a, first) + middle + cross(poly[fixed_seg], fixed) \
+        + cross(fixed, a)
+    slope = cross(d, first) + cross(fixed, d)
+    return const, slope
+
+
+def _best_on_segment(c1, s1, c2, s2, lo, hi):
+    """Minimise |c1+s1 t| + |c2+s2 t| over [lo, hi]. Convex, so exactly."""
+    picks = [lo, hi]
+    for c, s in ((c1, s1), (c2, s2)):
+        if abs(s) > 1e-12:
+            t = -c / s
+            if lo < t < hi:
+                picks.append(t)
+    best_t, best_v = lo, None
+    for t in picks:
+        v = abs(c1 + s1 * t) + abs(c2 + s2 * t)
+        if best_v is None or v < best_v:
+            best_t, best_v = t, v
+    return best_t, 0.5 * (best_v if best_v is not None else 0.0)
+
+
+def refine_exact(positions, poly, rounds=4, limit=None, table=None, ctab=None):
+    """Like `refine`, but each point goes exactly where it belongs.
+
+    `refine` picks the best of a fixed set of candidate places. That set does
+    not get finer as the shape changes less, so the placement moves in hops of
+    a size that has nothing to do with how far the shape moved -- which is why
+    following it through small steps never settled: there was no continuous
+    path to follow.
+
+    Here there are no candidates. Confined to one segment a point is
+    `a + t (b - a)`, both neighbouring spans have signed areas affine in t, and
+    the cost is |affine| + |affine| -- convex, so its exact minimum is an
+    endpoint or a zero crossing. Every segment the point may reach is solved in
+    closed form and the best taken. The answer moves with the shape instead of
+    hopping between fixed places.
+    """
+    k, m = len(positions), len(poly)
+    if k < 3 or m < 3:
+        return positions
+    cum, total = arc_table(poly) if table is None else table
+    if total <= 0.0:
+        return positions
+    ctab = cross_table(poly) if ctab is None else ctab
+
+    pos = np.array(positions, dtype=np.float64, copy=True)
+    s = arc_of(pos, poly, (cum, total))
+    eps = 1e-9
+
+    for _ in range(rounds):
+        moved = False
+        for i in range(k):
+            lo = s[(i - 1) % k]
+            width = (s[(i + 1) % k] - lo) % 1.0
+            if width <= 2.0 * eps:
+                continue
+            off_lo, off_hi = eps, width - eps
+            if limit is not None:
+                here = (s[i] - lo) % 1.0
+                off_lo = max(off_lo, here - limit)
+                off_hi = min(off_hi, here + limit)
+                if off_hi <= off_lo:
+                    continue
+
+            ends = at_arc(np.array([(lo + off_lo) % 1.0, (lo + off_hi) % 1.0]),
+                          poly, (cum, total))
+            seg_a, t_a = int(ends[0, 0]) % m, float(ends[0, 1])
+            seg_b, t_b = int(ends[1, 0]) % m, float(ends[1, 1])
+            nseg = int((seg_b - seg_a) % m) + 1
+            if nseg == 1 and t_b < t_a:
+                continue                       # degenerate wrap: leave it be
+
+            left = evaluate(pos[[(i - 1) % k]], poly)[0]
+            right = evaluate(pos[[(i + 1) % k]], poly)[0]
+            lseg = int(pos[(i - 1) % k, 0]) % m
+            rseg = int(pos[(i + 1) % k, 0]) % m
+
+            best = None
+            for j in range(nseg):
+                seg = (seg_a + j) % m
+                t_lo = t_a if j == 0 else 0.0
+                t_hi = t_b if j == nseg - 1 else 1.0
+                if t_hi <= t_lo:
+                    continue
+                c1, s1 = _span_affine(poly, ctab, left, lseg, seg, True)
+                c2, s2 = _span_affine(poly, ctab, right, rseg, seg, False)
+                t, cost = _best_on_segment(c1, s1, c2, s2, t_lo, t_hi)
+                if best is None or cost < best[0]:
+                    best = (cost, seg, t)
+
+            if best is None:
+                continue
+            cur = float(_one_span(poly, ctab, pos[[(i - 1) % k]], pos[[i]])[0]
+                        + _one_span(poly, ctab, pos[[i]], pos[[(i + 1) % k]])[0])
+            if best[0] < cur - 1e-9:
+                pos[i] = (best[1], best[2])
+                s[i] = arc_of(pos[[i]], poly, (cum, total))[0]
                 moved = True
         if not moved:
             break
