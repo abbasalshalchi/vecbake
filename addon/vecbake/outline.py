@@ -1116,13 +1116,26 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
     exactly on one; the probes cover the long straight runs between.
 
     `limit` bounds how far a point may travel from where it arrived, as a
-    fraction of the ring. Without it this is a per-frame optimiser and nothing
-    more: it finds the best placement for each frame independently, a
-    *different* best placement each time, and the points slide sideways between
-    keyframes while the shape crawls. Measured on the probe, chaining it
-    unbounded cost part_024 8.45px -> 99.63px between frames, while being
-    plainly better inside every frame it was asked about. With a limit it can
-    only tidy what the correspondence already decided.
+    fraction of the ring. It is what makes this a refinement rather than a
+    replacement: the correspondence decides which point is which, and this only
+    decides where exactly each one sits.
+
+    Run instead of a correspondence, from arc fractions carried over raw, it is
+    a disaster -- part_024 goes 8.45px to 99.63px between keyframes. That is
+    worth stating precisely, because the obvious reading of it is wrong. The
+    optimiser is not wandering off. A ring begins at whatever vertex the walk
+    reached first, which changes as the silhouette does, so a fraction carried
+    over raw points at a different place on the object; line the two rings up by
+    the vertices they share first, as `_agree` already does, and the same
+    experiment gives 5.39px. The measured tell was part_079 holding its
+    fractions to 0.0000 while erroring 37px -- fractions perfectly kept and the
+    shape badly wrong is a moved origin, not drift.
+
+    On top of the placement that ships it is worth about 8.45px -> 4.62px on
+    part_024 and nothing either way elsewhere, with typical error unchanged. A
+    leash of one slot spacing, two, and none at all all give the same answer,
+    which says it does not wander from a good starting point: it moves only
+    where there is area genuinely left to reclaim.
     """
     k, m = len(positions), len(poly)
     if k < 3 or m < 3:
