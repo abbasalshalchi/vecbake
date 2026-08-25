@@ -1168,7 +1168,21 @@ def refine(positions, poly, rounds=4, probes=6, limit=None,
         area, converged, 10 substeps 28.05px    5.32px
 
     Optimising harder makes it worse, monotonically, and that is the real
-    finding. Per-frame optimality is not what an interpolated format wants: the
+    finding.
+
+    Since the leash is the method, its length was swept, per object, against the
+    same between-keyframes measure. There is no single right answer: at a
+    quarter of a slot spacing, across thirty objects, five improve (part_024
+    8.45px -> 4.62px, part_070 1.47 -> 1.19, part_048 3.89 -> 3.48, part_004
+    3.96 -> 3.42, part_032 0.91 -> 0.87), four get worse (part_052 0.99 -> 1.29,
+    part_067 1.23 -> 1.39, part_035 1.64 -> 1.74, part_116 1.10 -> 1.14) and
+    twenty-one do not move at all. So this belongs behind a per-object decision
+    made on measurement -- which the gap test in bake.py already knows how to
+    make -- and not behind a constant.
+
+    The descent has to converge to be worth having: part_024 gets nothing at
+    four rounds, 5.42px at eight and 4.62px at thirty, and part_048 at four
+    rounds is worse than not refining at all. Per-frame optimality is not what an interpolated format wants: the
     better each frame's placement is *for that frame*, the more it differs from
     its neighbours' placements, and the interpolation between them is what the
     viewer sees. Stopping the descent early was accidentally a regulariser.
