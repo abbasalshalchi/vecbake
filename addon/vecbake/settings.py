@@ -35,8 +35,9 @@ class BakeSettings:
     merge_fills: bool = False
     # How much worse a merged outline may be than drawing the object's faces,
     # before it is drawn face by face instead. Both are measured against the
-    # true silhouette halfway between two keyframes -- see outline.carry_gap.
-    # Zero switches the test off and merges whatever rings.
+    # true silhouette halfway between two keyframes, and the outline is
+    # measured as written rather than as it might ideally be placed -- see
+    # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
     edge_mode: str = "HIDDEN"     # HIDDEN = only edges with a front-facing face
                                   # WIRE   = every edge, see-through

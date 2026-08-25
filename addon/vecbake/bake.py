@@ -520,16 +520,30 @@ def bake_iter(context, settings: BakeSettings):
     # Filled by the first pass, honoured by the second -- see below.
     no_merge: set[str] = set()
 
-    carry_state = {"prev": {}, "mid": {}}
+    carry_state = {"prev": {}, "mid": {}, "drew": {}}
 
     def judge_carry(frame, fi, depsgraph, view, mvp, cam_pos, cam_fwd, is_ortho):
-        """Can each merged outline be carried across the gap to the next frame?
+        """Does each merged outline actually survive the gap to the next frame?
 
         Asked of the shape halfway between two frames -- which no keyframe
         holds and Blender will evaluate on request -- rather than guessed at
-        from something easier to reach. Two numbers come back per object: what
-        the best possible interpolation of its silhouette costs, and what
-        drawing its faces would cost instead. See outline.carry_gap.
+        from something easier to reach.
+
+        It is asked of the points that were really written, not of an idealised
+        stand-in. An earlier version scored a dense even correspondence around
+        each ring, on the reasoning that no placement rule could do better. It
+        could not do better on a plain ring, but it had nothing to say about a
+        ring that pinches: on part_079, a V-shaped stick whose boundary touches
+        itself, it reported 2.91px across a gap where the outline as written
+        lands 11.53px from the truth, and the object merged on the strength of
+        it. The legs of the V trade places there and the score never saw it,
+        because the correspondence it scored was not the one being drawn.
+
+        So this runs in the pass that writes geometry, reads that geometry back
+        out of the slots, and compares its midpoint against the silhouette that
+        is really there. Two numbers per object: what the outline as drawn
+        costs across the gap, and what drawing the object's faces would cost
+        instead.
         """
         def look(dg, v, m, cp, cf, ortho):
             out = {}
@@ -549,21 +563,46 @@ def bake_iter(context, settings: BakeSettings):
                     ev.to_mesh_clear()
             return out
 
+        def written():
+            """The merged outlines as this pass has just written them."""
+            out = {}
+            for name, plan in plans.items():
+                if not (plan.fills and plan.merge_fill) or name in no_merge:
+                    continue
+                slot = slots.get(f"{name}/m")
+                if slot is None or slot["vis"][fi] <= 0.0:
+                    continue
+                geo = slot["geo"][fi]
+                if geo is None or len(geo) < 6:
+                    continue
+                out[name] = np.asarray(geo, dtype=np.float64).reshape(-1, 2)
+            return out
+
         here = look(depsgraph, view, mvp, cam_pos, cam_fwd, is_ortho)
+        drew = written()
         was, half = carry_state["prev"], carry_state["mid"]
+        prev_drew = carry_state["drew"]
         for name, (ring, xy) in here.items():
             if name not in was or name not in half:
                 continue
             plan = plans[name]
-            before, before_xy = was[name]
+            before_xy = was[name][1]
             middle, middle_xy = half[name]
-            plan.carry_cost = max(plan.carry_cost,
-                                  outline_mod.carry_gap(before, ring, middle))
+            # The outline as drawn, halfway between the two keyframes, against
+            # the silhouette that is really there. This is what a viewer sees
+            # between two frames, so it is what the decision is made on.
+            if middle is not None and name in drew and name in prev_drew:
+                a, b = prev_drew[name], drew[name]
+                if a.shape == b.shape:
+                    plan.carry_cost = max(
+                        plan.carry_cost,
+                        outline_mod.stray(0.5 * (a + b), middle))
             if before_xy.shape == xy.shape == middle_xy.shape:
                 drawn = 0.5 * (before_xy + xy)
                 plan.face_cost = max(plan.face_cost, float(
                     np.linalg.norm(drawn - middle_xy, axis=1).max()))
         carry_state["prev"] = here
+        carry_state["drew"] = drew
         carry_state["mid"] = {}
         if fi + 1 >= len(frames):
             return
@@ -620,12 +659,20 @@ def bake_iter(context, settings: BakeSettings):
             yield ("Sampling", fi + 1, len(frames))
 
     merge_fallback: list[str] = []
+    # What the gap test measured, kept out here because the pass that measures
+    # it is not the last pass to run. A guard that silently stops measuring
+    # looks exactly like a guard with nothing to complain about, so the counts
+    # are reported rather than inferred from the merge total.
+    gap_scores: dict[str, tuple[float, float]] = {}
+    uncarried: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
     outline_slots: dict[str, int] = {}
-    # The gap test only means anything between adjacent frames, and only the
-    # measuring pass needs it -- by the writing pass the decision is made.
-    judging = settings.merge_slack_px > 0.0 and step == 1
+    # The gap test only means anything between adjacent frames. It judges the
+    # geometry as written, so it runs on the pass that writes it -- not the one
+    # that only counts points, where there is nothing yet to judge.
+    can_judge = settings.merge_slack_px > 0.0 and step == 1
+    judging = False
     try:
         yield from sample_pass()
 
@@ -650,6 +697,21 @@ def bake_iter(context, settings: BakeSettings):
             # above zero, or a closed solid with Backface Cull off, where every
             # edge has two drawn faces and there is no silhouette to find.
             merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
+            no_merge.update(merge_fallback)
+            outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
+
+            def restart():
+                plans.clear()
+                elements.clear()
+                slots.clear()
+                frame_items.clear()
+                frame_ortho.clear()
+                vertex_cache.clear()
+
+            judging = can_judge
+            restart()
+            yield from sample_pass()
+
             # A silhouette that cannot be carried across a gap is not being
             # drawn badly -- it is not carryable, and no placement rule will
             # change that. A part turning edge-on goes from a pentagon to a
@@ -657,22 +719,23 @@ def bake_iter(context, settings: BakeSettings):
             # between a pentagon and a triangle. Drawn face by face it has no
             # correspondence to get wrong at all: on the probe's blades, 1.24px
             # against 48px merged.
+            #
+            # This is only knowable once the geometry exists, so the pass above
+            # wrote it and judged it. Anything refused here has to be written
+            # again, face by face -- but only if something was refused.
+            gap_scores = {n: (round(p.carry_cost, 2), round(p.face_cost, 2))
+                          for n, p in plans.items()
+                          if n in wanted and p.carry_cost > 0.0}
             uncarried = sorted(
                 n for n, p in plans.items()
                 if n in wanted and n not in merge_fallback
                 and p.carry_cost > p.face_cost + settings.merge_slack_px)
-            merge_fallback = sorted(set(merge_fallback) | set(uncarried))
-            no_merge.update(merge_fallback)
-            outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
-
-            judging = False
-            plans.clear()
-            elements.clear()
-            slots.clear()
-            frame_items.clear()
-            frame_ortho.clear()
-            vertex_cache.clear()
-            yield from sample_pass()
+            if uncarried:
+                merge_fallback = sorted(set(merge_fallback) | set(uncarried))
+                no_merge.update(uncarried)
+                judging = False
+                restart()
+                yield from sample_pass()
     finally:
         scene.frame_set(original_frame)
 
@@ -832,6 +895,15 @@ def bake_iter(context, settings: BakeSettings):
             # longer on this list -- slots are positions around the loop now,
             # which are monotone by construction -- see outline.py.
             "merged_fallback": merge_fallback,
+            # The gap test: how many merged outlines it actually scored, the
+            # worst of them as (outline as drawn, faces instead) in pixels
+            # halfway between two keyframes, and which ones it refused. Zero
+            # scored means the test is not running, which is not the same
+            # thing as nothing being wrong.
+            "merged_gap_scored": len(gap_scores),
+            "merged_gap_worst": dict(sorted(gap_scores.items(),
+                                            key=lambda kv: -kv[1][0])[:10]),
+            "merged_uncarried": uncarried,
         }
     )
     return vec
