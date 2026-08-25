@@ -54,7 +54,7 @@ import os
 import numpy as np
 
 
-def polyline(loop, xy):
+def polyline(loop, xy, pts=None):
     """The ring's vertex positions, wound consistently, open at the ends.
 
     `walk_loop` starts wherever it reaches first and runs whichever way the
@@ -73,7 +73,7 @@ def polyline(loop, xy):
 
     So the direction is settled here, once, where the ring becomes geometry.
     """
-    return wound(loop, xy)[1]
+    return wound(loop, xy, pts)[1]
 
 
 def evaluate(positions, poly):
@@ -548,15 +548,21 @@ def need_for(poly, tol, cap=None, floor=3):
 # and its slots move together.
 
 
-def wound(loop, xy):
+def wound(loop, xy, pts=None):
     """The ring as `(vertex ids, points)`, wound the way `polyline` describes.
 
     Same rule, with the ids kept alongside: reversing the points to fix the
     winding has to reverse the ids too, or every anchor binds to the wrong
     vertex.
+
+    `pts` is given when the ring visits a vertex more than once -- a boundary
+    that pinches, spliced into one walk. Then an id is not enough to find the
+    position, because the repeat carries -1 to keep it from claiming a vertex
+    twice, and -1 would index the last vertex in the mesh.
     """
     ids = np.asarray(loop, dtype=np.int64)
-    pts = np.asarray(xy, dtype=np.float64)[ids]
+    pts = (np.asarray(xy, dtype=np.float64)[ids] if pts is None
+           else np.asarray(pts, dtype=np.float64))
     if len(pts) >= 3:
         x, y = pts[:, 0], pts[:, 1]
         if float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum()) < 0.0:
@@ -614,7 +620,11 @@ def _around(poly, loop):
 def _agree(prev_ids, prev_pts, poly, loop, prev_loop=None, prev_poly=None):
     """Which slot holds which ring vertex, carried over from last frame."""
     n, m = len(prev_ids), len(loop)
-    where = {int(v): i for i, v in enumerate(loop)}
+    # A ring that pinches visits one vertex twice and carries -1 on the second
+    # visit. That is "no anchor here", not a vertex: keyed into these maps it
+    # would make every pinch point look like the same shared vertex, and two
+    # rings would be lined up by a coincidence of shape rather than by mesh.
+    where = {int(v): i for i, v in enumerate(loop) if int(v) >= 0}
     plain = _monotone([(j, where[int(v)]) for j, v in enumerate(prev_ids)
                        if int(v) >= 0 and int(v) in where], n, m)
     if prev_loop is None or prev_poly is None or m < 3 or len(prev_loop) < 3:
@@ -622,8 +632,9 @@ def _agree(prev_ids, prev_pts, poly, loop, prev_loop=None, prev_poly=None):
 
     here, _ = _around(poly, loop)
     before, _ = _around(prev_poly, prev_loop)
-    back = {int(v): i for i, v in enumerate(prev_loop)}
-    both = [(back[int(v)], i) for i, v in enumerate(loop) if int(v) in back]
+    back = {int(v): i for i, v in enumerate(prev_loop) if int(v) >= 0}
+    both = [(back[int(v)], i) for i, v in enumerate(loop)
+            if int(v) >= 0 and int(v) in back]
     if len(both) < 1:
         return plain
 

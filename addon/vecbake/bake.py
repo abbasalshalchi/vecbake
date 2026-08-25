@@ -978,10 +978,11 @@ def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
     facing = seen.face_ok & seen.face_front
     if not facing.any():
         return None, seen.xy
-    loop = merge.walk_loop(plan, merge.silhouette_edges(plan, facing))
-    if loop is None:
+    walk = merge.walk_loop(plan, merge.silhouette_edges(plan, facing), seen.xy)
+    if walk is None:
         return None, seen.xy
-    return outline_mod.wound(loop, seen.xy)[1], seen.xy
+    ids, verts = walk
+    return outline_mod.wound(ids, seen.xy, seen.xy[verts])[1], seen.xy
 
 
 def _sample_object(plan, me, eval_obj, settings, slots, fi,
@@ -1162,10 +1163,11 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     if plan.fills and plan.merge_fill:
         key = f"{plan.name}/m"
         slot = slots[key]
-        loop = None
+        walk = None
         if face_facing.any():
-            loop = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing))
-        if loop is None:
+            walk = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing),
+                                   xy)
+        if walk is None:
             if plan.outline_n is None and face_facing.any():
                 # There are faces pointing at the camera and no ring to be had
                 # from them. Merging anyway is what produced a part that draws
@@ -1184,7 +1186,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # Measuring pass. Record how many points this frame's outline earns
             # and write nothing: the element does not have its final point
             # count yet, so there is no slot of the right width to write into.
-            poly = outline_mod.polyline(loop, xy)
+            poly = outline_mod.polyline(walk[0], xy, xy[walk[1]])
             # A ring that closes in 3D can still cross itself on screen, where
             # a non-convex part's silhouette folds behind its own body. That
             # used to refuse the object outright, for the whole clip, and it
@@ -1202,7 +1204,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     outline_mod.need_for(poly, settings.dissolve_px))
             slot["vis"][fi] = 0.0
         else:
-            ring, poly = outline_mod.wound(loop, xy)
+            ring, poly = outline_mod.wound(walk[0], xy, xy[walk[1]])
             # Where the points go is settled by the loop's measure -- arc
             # length with the corners widened -- so it is a continuous function
             # of the shape and nothing is chosen per frame. Which slot is which
@@ -1226,7 +1228,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             slot["shade"][fi] = (float(face_shade[vis_faces].mean())
                                  if plan.shading else 1.0)
             if visible and collect is not None:
-                lv_loop = np.asarray(loop, dtype=np.int64)
+                lv_loop = walk[1]
                 collect.append({
                     "key": key, "kind": 1, "seed": slot["depth"][fi],
                     "pts": xy[lv_loop], "depths": depth[lv_loop],

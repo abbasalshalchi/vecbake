@@ -85,9 +85,10 @@ def true_ring(obj):
         totals = plan.loop_total.astype(np.float64)
         okf = np.add.reduceat(in_front[lv].astype(np.float64), starts) == totals
         facing = (cosf < 0.0) & okf
-        loop = merge_mod.walk_loop(plan, merge_mod.silhouette_edges(plan, facing)) \
-            if facing.any() else None
-        return None if loop is None else outline_mod.polyline(loop, xy)
+        walk = merge_mod.walk_loop(plan, merge_mod.silhouette_edges(plan, facing),
+                                   xy) if facing.any() else None
+        return None if walk is None else outline_mod.polyline(walk[0], xy,
+                                                              xy[walk[1]])
     finally:
         ev.to_mesh_clear()
 
