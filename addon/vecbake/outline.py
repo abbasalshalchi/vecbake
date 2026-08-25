@@ -1008,3 +1008,163 @@ def stray(a, b):
     if len(a) < 2 or len(b) < 2:
         return 0.0
     return max(one_way(a, b), one_way(b, a))
+
+
+# ---------------------------------------------------------------------------
+# placing points by the area they get wrong
+# ---------------------------------------------------------------------------
+#
+# Everything above places points by a *measure* -- arc length with each vertex
+# widening it by what skipping it would cost -- and then checks afterwards how
+# far the result strayed. That is a proxy. It is a good proxy, and where it is
+# wrong it is wrong quietly: the shapes it misjudges are the ones whose corners
+# are not where their length is.
+#
+# The thing actually being paid for is area. A merged outline is a fill, and
+# what a viewer sees is the ground it covers that the object does not, plus the
+# ground the object covers that it misses. So place the points against that
+# directly, and the proxy stops mattering.
+#
+# It decomposes, which is what makes it affordable. Every point sits *on* the
+# silhouette, so the drawn polygon is inscribed in the true one and the total
+# wrongness is the sum, span by span, of the area between a chord and the arc
+# it cuts off. Moving one point disturbs exactly two spans. Nothing else in the
+# ring has to be looked at, and one trial move costs a handful of arithmetic
+# rather than a redrawn polygon:
+#
+#     area of [pa, v(sa+1) ... v(sb), pb]
+#         = cross(pa, v(sa+1)) + SUM cross(v_j, v_j+1) + cross(v(sb), pb)
+#           + cross(pb, pa),   all halved
+#
+# and that middle sum is a prefix along the ring, computed once per frame. So a
+# span's area is O(1) whatever the arc spans, and a sweep over every candidate
+# position for every point is one numpy expression.
+
+
+def cross_table(poly):
+    """Prefix sums of cross(v_j, v_j+1) round the ring. See `span_area`."""
+    nxt = np.roll(poly, -1, axis=0)
+    c = poly[:, 0] * nxt[:, 1] - poly[:, 1] * nxt[:, 0]
+    return np.concatenate([[0.0], np.cumsum(c)])
+
+
+def _arc_sum(ctab, i, j, m):
+    """Cross-product sum from ring index i forward to j, wrapping if it must."""
+    whole = ctab[m]
+    straight = ctab[j] - ctab[i]
+    return np.where(j >= i, straight, whole - ctab[i] + ctab[j])
+
+
+def _one_span(poly, ctab, start, end):
+    """Area between chord and arc, for spans given as (k, 2) position arrays."""
+    m = len(poly)
+    sa = start[:, 0].astype(np.int64) % m
+    sb = end[:, 0].astype(np.int64) % m
+    pa = poly[sa] + start[:, 1][:, None] * (poly[(sa + 1) % m] - poly[sa])
+    pb = poly[sb] + end[:, 1][:, None] * (poly[(sb + 1) % m] - poly[sb])
+
+    def cross(u, v):
+        return u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
+
+    total = (cross(pa, poly[(sa + 1) % m])
+             + _arc_sum(ctab, (sa + 1) % m, sb, m)
+             + cross(poly[sb], pb) + cross(pb, pa))
+    # A span that never leaves one segment cuts off nothing at all, and the
+    # sum above would be reading a whole wrapped ring instead of an empty arc.
+    return np.where(((sb - sa) % m) == 0, 0.0, np.abs(0.5 * total))
+
+
+def span_area(positions, poly, ctab=None):
+    """Area between each chord and the arc of the ring it cuts off.
+
+    One entry per span, always positive: a chord that bulges outside the
+    silhouette is as wrong as one cutting inside it, and a fill shows both.
+    """
+    k = len(positions)
+    if k < 2 or len(poly) < 3:
+        return np.zeros(max(k, 1))
+    ctab = cross_table(poly) if ctab is None else ctab
+    return _one_span(poly, ctab, positions, np.roll(positions, -1, axis=0))
+
+
+def bad_area(positions, poly, ctab=None):
+    """Total area the drawn outline gets wrong, in square pixels."""
+    return float(span_area(positions, poly, ctab).sum())
+
+
+def _pair_cost(poly, ctab, before, cand, after):
+    """What each candidate place for one point costs, across its two spans."""
+    left = np.repeat(before[None, :], len(cand), axis=0)
+    right = np.repeat(after[None, :], len(cand), axis=0)
+    return (_one_span(poly, ctab, left, cand)
+            + _one_span(poly, ctab, cand, right))
+
+
+def refine(positions, poly, rounds=4, probes=6, limit=None,
+           table=None, ctab=None):
+    """Slide each point along the ring until the area it gets wrong stops falling.
+
+    Coordinate descent, one point at a time, and each point may only move
+    *between its two neighbours*. That constraint is not a detail: it is what
+    keeps the points in order round the ring, and points in order round a ring
+    are what stop the polygon crossing itself. An optimiser free to move a
+    point anywhere would happily trade a self-intersection for a lower area.
+
+    The candidates for a point are the ring vertices inside its gap plus a few
+    evenly spaced probes. Vertices matter because a corner is where the arc
+    departs a chord fastest, so the best place for a point is very often
+    exactly on one; the probes cover the long straight runs between.
+
+    `limit` bounds how far a point may travel from where it arrived, as a
+    fraction of the ring. Without it this is a per-frame optimiser and nothing
+    more: it finds the best placement for each frame independently, a
+    *different* best placement each time, and the points slide sideways between
+    keyframes while the shape crawls. Measured on the probe, chaining it
+    unbounded cost part_024 8.45px -> 99.63px between frames, while being
+    plainly better inside every frame it was asked about. With a limit it can
+    only tidy what the correspondence already decided.
+    """
+    k, m = len(positions), len(poly)
+    if k < 3 or m < 3:
+        return positions
+    cum, total = arc_table(poly) if table is None else table
+    if total <= 0.0:
+        return positions
+    ctab = cross_table(poly) if ctab is None else ctab
+
+    pos = np.array(positions, dtype=np.float64, copy=True)
+    s = arc_of(pos, poly, (cum, total))
+    vert_s = cum[:m] / total
+    step = np.arange(1, probes + 1) / (probes + 1.0)
+
+    for _ in range(rounds):
+        moved = False
+        for i in range(k):
+            lo, hi = s[(i - 1) % k], s[(i + 1) % k]
+            width = (hi - lo) % 1.0
+            if width <= 1e-9:
+                continue
+            inside = (vert_s - lo) % 1.0
+            picks = inside[(inside > 1e-9) & (inside < width - 1e-9)]
+            off = np.concatenate([step * width, picks])
+            if limit is not None:
+                # Keep to a leash around where this point arrived, measured
+                # the short way round the ring.
+                here = (s[i] - lo) % 1.0
+                gap = np.abs(off - here)
+                off = off[np.minimum(gap, 1.0 - gap) <= limit]
+                if not len(off):
+                    continue
+            want = (lo + off) % 1.0
+            cand = at_arc(want, poly, (cum, total))
+            before, after = pos[(i - 1) % k], pos[(i + 1) % k]
+            cost = _pair_cost(poly, ctab, before, cand, after)
+            j = int(np.argmin(cost))
+            now = float(_pair_cost(poly, ctab, before, pos[i:i + 1], after)[0])
+            if cost[j] < now - 1e-9:
+                pos[i] = cand[j]
+                s[i] = want[j]
+                moved = True
+        if not moved:
+            break
+    return pos
