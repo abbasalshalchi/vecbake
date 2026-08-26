@@ -668,6 +668,34 @@ def bake_iter(context, settings: BakeSettings):
             prev_pts = pts
         return worst
 
+    def walk_shapes(names):
+        """Every shape these objects take, at each frame and each half-frame.
+
+        Walked once and kept, because more than one decision needs it and the
+        walking is the expensive part -- pulling a mesh out of the depsgraph
+        and projecting it, sixty times over, dwarfs anything done with the
+        result. Sizing an outline and choosing how to place it were each doing
+        this separately, which made the second one look expensive when what it
+        actually cost was a repeat of the first.
+        """
+        mine = [o for o in objects if o.name in set(names)]
+        if not mine:
+            return
+        for name in names:
+            ring_cache.setdefault(name, {})
+        for fi, frame in enumerate(frames):
+            scene.frame_set(frame)
+            for name, got in _rings_of(context.evaluated_depsgraph_get(),
+                                       mine).items():
+                ring_cache[name][(fi, 0)] = got
+            if fi + 1 < len(frames):
+                scene.frame_set(frame, subframe=0.5)
+                for name, (_, poly) in _rings_of(
+                        context.evaluated_depsgraph_get(), mine).items():
+                    if poly is not None:
+                        ring_cache[name][(fi, 1)] = poly
+            yield ("Sizing", fi + 1, len(frames))
+
     def size_outlines(names):
         """How many points should each merged outline carry for the whole clip?
 
@@ -702,24 +730,7 @@ def bake_iter(context, settings: BakeSettings):
         direction, and part_083 swings from 9.47px at thirteen points to 3.85px
         at fourteen -- but not worth searching both ways.
         """
-        wanted_names = set(names)
-        mine = [o for o in objects if o.name in wanted_names]
-        if not mine:
-            return
-        cache = {o.name: {} for o in mine}
-
-        for fi, frame in enumerate(frames):
-            scene.frame_set(frame)
-            for name, got in _rings_of(context.evaluated_depsgraph_get(),
-                                       mine).items():
-                cache[name][(fi, 0)] = got
-            if fi + 1 < len(frames):
-                scene.frame_set(frame, subframe=0.5)
-                for name, (_, poly) in _rings_of(
-                        context.evaluated_depsgraph_get(), mine).items():
-                    if poly is not None:
-                        cache[name][(fi, 1)] = poly
-            yield ("Sizing", fi + 1, len(frames))
+        cache = ring_cache
 
         for name in names:
             hi = outline_slots.get(name, 0)
@@ -765,8 +776,6 @@ def bake_iter(context, settings: BakeSettings):
         cannot be judged a frame at a time: each frame's answer depends on the
         one before it.
         """
-        wanted_names = set(names)
-        mine = [o for o in objects if o.name in wanted_names]
         # Each object gets a few ways of drawing itself to choose between. The
         # third exists because sizing and placing are decided in that order and
         # they interact: part_024 keeps 13 points at 6.26px, having been sized
@@ -786,34 +795,9 @@ def bake_iter(context, settings: BakeSettings):
         cost = {n: [0.0] * len(options[n]) for n in names}
         mid_truth: dict[str, object] = {}
 
-        def rings(dg, v, m, cp, cf, ortho):
-            out = {}
-            for obj in mine:
-                plan = plans.get(obj.name)
-                if plan is None or not plan.outline_n:
-                    continue
-                ev = obj.evaluated_get(dg)
-                me = ev.to_mesh()
-                try:
-                    ring, poly, _ = silhouette_of(plan, me, ev, v, m,
-                                                  width, height, cp, cf, ortho)
-                finally:
-                    ev.to_mesh_clear()
-                out[obj.name] = (ring, poly)
-            return out
-
-        def camera_at(dg):
-            v, m = camera_matrices(scene, cam, dg, width, height)
-            ce = cam.evaluated_get(dg)
-            cp = np.array(ce.matrix_world.translation, dtype=np.float64)
-            cf = np.array(
-                (ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
-            return v, m, cp, cf, ce.data.type == "ORTHO"
-
-        for fi, frame in enumerate(frames):
-            scene.frame_set(frame)
-            dg = context.evaluated_depsgraph_get()
-            here = rings(dg, *camera_at(dg))
+        for fi in range(len(frames)):
+            here = {n: ring_cache.get(n, {}).get((fi, 0), (None, None))
+                    for n in names}
 
             now = {}
             for name, (ring, poly) in here.items():
@@ -844,13 +828,7 @@ def bake_iter(context, settings: BakeSettings):
                         0.5 * (before[k] + after[k]), middle))
             last = now
 
-            mid_truth = {}
-            if fi + 1 < len(frames):
-                scene.frame_set(frame, subframe=0.5)
-                dg2 = context.evaluated_depsgraph_get()
-                mid_truth = {n: poly for n, (_, poly)
-                             in rings(dg2, *camera_at(dg2)).items()}
-            yield ("Refining", fi + 1, len(frames))
+            mid_truth = {n: ring_cache.get(n, {}).get((fi, 1)) for n in names}
 
         for name in names:
             scores = cost[name]
@@ -925,6 +903,9 @@ def bake_iter(context, settings: BakeSettings):
     # Point counts the sizing pass changed, as (what one frame asked for, what
     # the clip actually wanted).
     sized: dict[str, tuple[int, int]] = {}
+    # Every merged candidate's silhouette at every frame and half-frame, walked
+    # once. Sizing and placing both need it and the walk is what costs.
+    ring_cache: dict[str, dict] = {}
     uncarried: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
@@ -973,8 +954,11 @@ def bake_iter(context, settings: BakeSettings):
             # has to be settled before any element is built -- which is here,
             # between the pass that measured an upper bound for it and the pass
             # that writes geometry against it.
-            if settings.size_by_gap and step == 1 and outline_slots:
-                yield from size_outlines(sorted(outline_slots))
+            if step == 1 and outline_slots and (
+                    settings.size_by_gap or settings.refine_gate_px > 0.0):
+                yield from walk_shapes(sorted(outline_slots))
+            if settings.size_by_gap and ring_cache:
+                size_outlines(sorted(outline_slots))
 
             judging = can_judge
             restart()
@@ -1003,8 +987,8 @@ def bake_iter(context, settings: BakeSettings):
                     n for n, p in plans.items()
                     if n in wanted and n not in merge_fallback
                     and p.outline_n and p.carry_cost > settings.refine_gate_px)
-                if gated:
-                    yield from try_refine(gated)
+                if gated and ring_cache:
+                    try_refine(gated)
 
             uncarried = sorted(
                 n for n, p in plans.items()

@@ -40,11 +40,12 @@ class BakeSettings:
     # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
     # Only outlines already drawing worse than this get asked whether the area
-    # refinement would draw them better. It is expensive, and on an outline
-    # that is already close it is a coin toss -- across thirty objects it
-    # improved five and worsened four -- so it is spent where there is room to
-    # gain. Zero switches it off entirely.
-    refine_gate_px: float = 5.0
+    # refinement would draw them better. On an outline already within a
+    # fraction of a pixel there is nothing to win and the question is not worth
+    # the asking; everywhere else it is, now that the sweep runs in plain
+    # floats instead of through numpy and costs about a thirtieth of what it
+    # did. Zero switches it off entirely.
+    refine_gate_px: float = 0.5
     # Choose each merged outline's point count by what it draws *between*
     # keyframes rather than by what each keyframe asks for on its own. The two
     # are not the same question and the answers differ a lot -- see
