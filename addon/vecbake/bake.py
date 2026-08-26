@@ -957,6 +957,33 @@ def bake_iter(context, settings: BakeSettings):
             if step == 1 and outline_slots and (
                     settings.size_by_gap or settings.refine_gate_px > 0.0):
                 yield from walk_shapes(sorted(outline_slots))
+            # Most of what gets refused is refused for being far past saving,
+            # and it costs a fortune to find out politely: sizing tries eight
+            # point counts and the refinement three placements, all of it on
+            # the objects with the biggest rings, and then the gap test throws
+            # the answer away. One chain at the count already measured says so
+            # for a fraction of that.
+            #
+            # The bar is set high on purpose. Sizing has never gained more than
+            # about a factor of two -- part_042 at 5.34px to 2.46px -- and the
+            # refinement about the same, so an outline several times past the
+            # slack is not going to be brought under it by either.
+            if ring_cache and settings.merge_slack_px > 0.0:
+                hopeless = []
+                for name in sorted(outline_slots):
+                    shapes = ring_cache.get(name)
+                    if not shapes:
+                        continue
+                    if _gap_cost(shapes, outline_slots[name]) > (
+                            settings.merge_slack_px * 4.0):
+                        hopeless.append(name)
+                if hopeless:
+                    merge_fallback = sorted(set(merge_fallback) | set(hopeless))
+                    no_merge.update(hopeless)
+                    for name in hopeless:
+                        outline_slots.pop(name, None)
+                        ring_cache.pop(name, None)
+
             if settings.size_by_gap and ring_cache:
                 size_outlines(sorted(outline_slots))
 

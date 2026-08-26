@@ -45,12 +45,19 @@ hole negative and splicing them *without* normalising the direction fills the
 hole as a hole. 53 frames of the probe's clip need exactly that, so the
 orientation is preserved rather than tidied.
 
-What does not work is loops that never touch -- a tube seen down its bore, an
-outer ring and an inner one with nothing between them. Joining those needs a
-segment bridging the gap and back, which encloses no area and would fill
-correctly, but a merged outline is stroked, so the bridge draws as a line
-across the hole. Those objects keep drawing face by face. On the probe that is
-37 of the 81; the other 44 merge.
+Loops that never touch -- a tube seen down its bore, an outer ring and an inner
+one with nothing between them -- are joined by a segment run out and back. It
+encloses no area, so the fill is exactly right: outer boundary one way, bore
+the other, and the nonzero rule leaves the hole open. Measured on a 100/60
+annulus, the bridged path encloses 20,102 square pixels where the true annulus
+is 20,106 and a hole-less fill would give 31,416.
+
+The bridge is drawn, though, because a merged outline is stroked, and that was
+the objection that kept these objects drawing face by face. It is answerable:
+the bridge runs from the outer ring to the inner one, which crosses the
+*material*, not the hole. So the same shape filled again on top of it, without
+a stroke, covers the line exactly -- and that second fill is where bake.py
+hides the seam.
 
 An earlier attempt resolved junctions and stopped there, and bought no merges
 at all: it fixed branches, and the objects that branch in one frame split in
@@ -65,9 +72,9 @@ import collections
 import numpy as np
 
 
-# How much of a silhouette's area may be thrown away with pieces that do not
-# touch the main one. A speck below this is worth losing to gain the merge; a
-# tube's bore is nowhere near it, and keeps the object drawing face by face.
+# How small a separate piece has to be before it is dropped rather than bridged
+# to. A speck this size is not worth a seam across the shape to reach; anything
+# bigger is real geometry and gets bridged.
 SPECK = 0.01
 
 
@@ -216,6 +223,28 @@ def _splice(loops):
     return ring
 
 
+def _bridge(ring, piece, xy):
+    """Join a piece that touches nothing to the ring, by a seam out and back.
+
+    The seam is doubled -- along and straight back -- so it encloses no area at
+    all and the fill is decided entirely by the two boundaries it joins. Each
+    keeps the direction it was traced in, so a bore stays wound against the
+    outside of the tube and the nonzero rule leaves the hole open.
+
+    It is placed at the closest pair of vertices between the two, which keeps
+    it short, keeps it inside the material it crosses, and makes it a stable
+    choice from frame to frame: the nearest approach of a bore to its own
+    outside does not jump about as the object turns.
+    """
+    a, b = np.asarray(ring), np.asarray(piece)
+    gap = np.linalg.norm(xy[a][:, None, :] - xy[b][None, :, :], axis=2)
+    i, j = np.unravel_index(int(np.argmin(gap)), gap.shape)
+    rot = list(piece[j:]) + list(piece[:j])
+    out = list(ring)
+    out[i + 1:i + 1] = rot + [rot[0], ring[i]]
+    return out
+
+
 def walk_loop(plan, edges, xy):
     """The silhouette as `(anchor ids, vertex indices)`, or None.
 
@@ -242,13 +271,22 @@ def walk_loop(plan, edges, xy):
         groups = _touching(loops)
         areas = [sum(abs(_area(xy[np.asarray(loops[i])])) for i in g)
                  for g in groups]
-        best = int(np.argmax(areas))
         total = sum(areas)
-        if total > 0.0 and (total - areas[best]) / total >= SPECK:
-            # Real geometry sits in a piece that does not touch the one being
-            # kept, and no way to reach it that a stroke would not draw.
+        order = sorted(range(len(groups)), key=lambda g: -areas[g])
+        big = [g for g in order
+               if total <= 0.0 or areas[g] / total >= SPECK]
+        # A tube seen down its bore is two pieces. A silhouette that has come
+        # apart into five is not a tube, and bridging it does not help: on
+        # part_003 the nearest approach between pieces moves in 59 frames of
+        # 60, so the ring is cut somewhere different almost every frame and
+        # nothing downstream can carry it. Those keep drawing face by face.
+        if len(big) > 2:
             return None
-        ring = _splice([loops[i] for i in groups[best]])
+        ring = _splice([loops[i] for i in groups[order[0]]])
+        for g in order[1:]:
+            if g not in big:
+                continue                  # a speck, not worth a seam to reach
+            ring = _bridge(ring, _splice([loops[i] for i in groups[g]]), xy)
     if len(ring) < 3:
         return None
 

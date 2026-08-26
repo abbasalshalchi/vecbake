@@ -119,9 +119,23 @@ r = ring_of(SQ_E + [(4, 5), (5, 6), (6, 4)],
 check("a speck too small to matter is dropped",
       r is not None and sorted(r) == [0, 1, 2, 3], r)
 
-check("a real second piece refuses the merge",
-      ring_of(SQ_E + [(4, 5), (5, 6), (6, 4)],
-              SQ_XY + [(0.2, 0.2), (0.8, 0.2), (0.5, 0.8)]) is None)
+# A square with a real hole in it: the inner boundary is traced the other way,
+# so a seam out and back leaves the hole open rather than filling it solid.
+BORE_E = SQ_E + [(4, 5), (5, 6), (6, 4)]
+BORE_XY = SQ_XY + [(0.3, 0.3), (0.5, 0.7), (0.7, 0.3)]
+got = walk(BORE_E, BORE_XY)
+check("a real second piece is bridged, not refused", got is not None)
+if got is not None:
+    pts = np.asarray(BORE_XY, dtype=np.float64)[got[1]]
+    x, y = pts[:, 0], pts[:, 1]
+    area = abs(0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    hole = 0.5 * abs((0.5 - 0.3) * (0.3 - 0.3) - (0.7 - 0.3) * (0.7 - 0.3)) * 2
+    check("...and the hole stays open", area < 1.0 - 1e-9,
+          f"encloses {area:.4f} of the square's 1.0")
+    check("...with the seam enclosing nothing",
+          abs(area - (1.0 - 0.08)) < 0.02, f"{area:.4f}")
+    check("...and the seam's repeats claim no anchor",
+          int((got[0] < 0).sum()) >= 2, got[0].tolist())
 
 r = ring_of(SQ_E + [(2, 4), (4, 5)], SQ_XY + [(2.0, 2.0), (3.0, 3.0)])
 check("a dangling chain is dropped and the ring survives",
