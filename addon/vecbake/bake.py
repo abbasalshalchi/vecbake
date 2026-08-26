@@ -620,6 +620,125 @@ def bake_iter(context, settings: BakeSettings):
         cf = np.array((ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
         carry_state["mid"] = look(dg, v2, m2, cp, cf, ce.data.type == "ORTHO")
 
+    def _cam_at(dg):
+        v, m = camera_matrices(scene, cam, dg, width, height)
+        ce = cam.evaluated_get(dg)
+        cp = np.array(ce.matrix_world.translation, dtype=np.float64)
+        cf = np.array(
+            (ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
+        return v, m, cp, cf, ce.data.type == "ORTHO"
+
+    def _rings_of(dg, objs):
+        """`{name: (anchors, polygon)}` for these objects at this instant."""
+        v, m, cp, cf, ortho = _cam_at(dg)
+        out = {}
+        for obj in objs:
+            plan = plans.get(obj.name)
+            if plan is None:
+                continue
+            ev = obj.evaluated_get(dg)
+            me = ev.to_mesh()
+            try:
+                ring, poly, _ = silhouette_of(plan, me, ev, v, m, width, height,
+                                              cp, cf, ortho)
+            finally:
+                ev.to_mesh_clear()
+            out[obj.name] = (ring, poly)
+        return out
+
+    def _gap_cost(shapes, n):
+        """Worst error between keyframes if this outline carried `n` points."""
+        prev_state = prev_pts = None
+        worst = 0.0
+        for fi in range(len(frames)):
+            got = shapes.get((fi, 0))
+            if got is None or got[0] is None:
+                prev_state = prev_pts = None
+                continue
+            ring, poly = got
+            pos, ids = outline_mod.carry(poly, ring, n, settings.dissolve_px,
+                                         prev_state)
+            pts = outline_mod.evaluate(pos, poly)
+            prev_state = (ids, pts, ring, poly)
+            if prev_pts is not None:
+                mid = shapes.get((fi - 1, 1))
+                if mid is not None:
+                    worst = max(worst, outline_mod.stray(
+                        0.5 * (prev_pts + pts), mid))
+            prev_pts = pts
+        return worst
+
+    def size_outlines(names):
+        """How many points should each merged outline carry for the whole clip?
+
+        It used to be the largest number any single frame asked for, at the
+        dissolve tolerance -- so that every frame is well drawn *as a keyframe*.
+        That is the wrong question. An element's points are interpolated, and
+        what a viewer sees is the shape between two keyframes; a count that
+        flatters each frame on its own does not have to serve the space between
+        them.
+
+        It does not, and not by a little. More points means more slots that must
+        each hold a place on an outline that is changing, and the extra ones
+        settle on features that come and go, then wander when they go. Measured
+        between keyframes across twenty objects, choosing the count by what it
+        actually draws gives 13% fewer points and a *lower* error on fourteen of
+        them, the same on six and worse on none. part_083 draws better with six
+        points than with eleven; part_070 better with fourteen than
+        twenty-three.
+
+        So: take the old answer as an upper bound, try a ladder of smaller
+        counts, and keep whichever draws best between keyframes. Ties go to
+        fewer points, because points are the file.
+        """
+        wanted_names = set(names)
+        mine = [o for o in objects if o.name in wanted_names]
+        if not mine:
+            return
+        cache = {o.name: {} for o in mine}
+
+        for fi, frame in enumerate(frames):
+            scene.frame_set(frame)
+            for name, got in _rings_of(context.evaluated_depsgraph_get(),
+                                       mine).items():
+                cache[name][(fi, 0)] = got
+            if fi + 1 < len(frames):
+                scene.frame_set(frame, subframe=0.5)
+                for name, (_, poly) in _rings_of(
+                        context.evaluated_depsgraph_get(), mine).items():
+                    if poly is not None:
+                        cache[name][(fi, 1)] = poly
+            yield ("Sizing", fi + 1, len(frames))
+
+        for name in names:
+            hi = outline_slots.get(name, 0)
+            shapes = cache.get(name)
+            if hi < 5 or not shapes:
+                continue                      # nothing worth taking away
+            best_n = hi
+            best_err = _gap_cost(shapes, hi)
+            tried = {hi}
+            ladder = sorted({max(3, int(round(hi * f)))
+                             for f in (0.4, 0.5, 0.6, 0.7, 0.8, 0.9)})
+            for n in ladder:
+                if n in tried or not (3 <= n <= hi):
+                    continue
+                tried.add(n)
+                err = _gap_cost(shapes, n)
+                if err < best_err - 1e-9:
+                    best_n, best_err = n, err
+            # A step either side of the winner, which the ladder is too coarse
+            # to have looked at.
+            for n in (best_n - 1, best_n + 1):
+                if n in tried or not (3 <= n <= hi):
+                    continue
+                tried.add(n)
+                err = _gap_cost(shapes, n)
+                if err < best_err - 1e-9:
+                    best_n, best_err = n, err
+            outline_slots[name] = best_n
+            sized[name] = (hi, best_n)
+
     def try_refine(names):
         """Would the area refinement draw these outlines better than plain?
 
@@ -637,9 +756,23 @@ def bake_iter(context, settings: BakeSettings):
         """
         wanted_names = set(names)
         mine = [o for o in objects if o.name in wanted_names]
-        chain = {n: {"plain": None, "ref": None} for n in names}
+        # Each object gets a few ways of drawing itself to choose between. The
+        # third exists because sizing and placing are decided in that order and
+        # they interact: part_024 keeps 13 points at 6.26px, having been sized
+        # without knowing a refinement was available, when 21 points placed
+        # well draw it at 5.47px. Neither pass can see that on its own, so the
+        # count it was sized down from is offered back here, refined.
+        options = {}
+        for name in names:
+            n_now = plans[name].outline_n
+            opts = [(n_now, False), (n_now, True)]
+            was = sized.get(name, (n_now, n_now))[0]
+            if was != n_now and was >= 3:
+                opts.append((was, True))
+            options[name] = opts
+        chain = {n: [None] * len(options[n]) for n in names}
         last: dict[str, tuple] = {}
-        cost = {n: [0.0, 0.0] for n in names}
+        cost = {n: [0.0] * len(options[n]) for n in names}
         mid_truth: dict[str, object] = {}
 
         def rings(dg, v, m, cp, cf, ortho):
@@ -674,32 +807,30 @@ def bake_iter(context, settings: BakeSettings):
             now = {}
             for name, (ring, poly) in here.items():
                 if ring is None:
-                    chain[name] = {"plain": None, "ref": None}
+                    chain[name] = [None] * len(options[name])
                     continue
-                n = plans[name].outline_n
                 drawn = []
-                for kind in ("plain", "ref"):
+                for k, (n, refined) in enumerate(options[name]):
                     pos, ids = outline_mod.carry(poly, ring, n,
                                                  settings.dissolve_px,
-                                                 chain[name][kind])
-                    if kind == "ref":
+                                                 chain[name][k])
+                    if refined:
                         pos = outline_mod.refine_exact(
                             pos, poly, rounds=outline_mod.REFINE_ROUNDS,
                             limit=outline_mod.REFINE_LEASH / max(n, 1))
                     pts = outline_mod.evaluate(pos, poly)
-                    chain[name][kind] = (ids, pts, ring, poly)
+                    chain[name][k] = (ids, pts, ring, poly)
                     drawn.append(pts)
                 now[name] = drawn
 
-            for name, (a_plain, a_ref) in last.items():
+            for name, before in last.items():
                 if name not in now or mid_truth.get(name) is None:
                     continue
-                b_plain, b_ref = now[name]
+                after = now[name]
                 middle = mid_truth[name]
-                cost[name][0] = max(cost[name][0], outline_mod.stray(
-                    0.5 * (a_plain + b_plain), middle))
-                cost[name][1] = max(cost[name][1], outline_mod.stray(
-                    0.5 * (a_ref + b_ref), middle))
+                for k in range(min(len(before), len(after))):
+                    cost[name][k] = max(cost[name][k], outline_mod.stray(
+                        0.5 * (before[k] + after[k]), middle))
             last = now
 
             mid_truth = {}
@@ -711,11 +842,20 @@ def bake_iter(context, settings: BakeSettings):
             yield ("Refining", fi + 1, len(frames))
 
         for name in names:
-            plain, refined = cost[name]
-            if refined < plain - 1e-9:
+            scores = cost[name]
+            best = min(range(len(scores)), key=lambda k: scores[k])
+            if best == 0 or scores[best] >= scores[0] - 1e-9:
+                continue                       # what it already does is best
+            n, refined = options[name][best]
+            plans[name].carry_cost = scores[best]
+            if refined:
                 refine_set.add(name)
-                plans[name].carry_cost = refined
                 plans[name].use_refine = True
+            if n != plans[name].outline_n:
+                # Sizing took this one too far down given how well it can be
+                # placed. Hand the points back before anything is written.
+                outline_slots[name] = n
+                sized[name] = (sized.get(name, (n, n))[0], n)
 
     def sample_pass():
         for fi, frame in enumerate(frames):
@@ -771,6 +911,9 @@ def bake_iter(context, settings: BakeSettings):
     # because the pass that decides it is not the pass that writes it, and
     # plans are rebuilt from scratch between the two.
     refine_set: set[str] = set()
+    # Point counts the sizing pass changed, as (what one frame asked for, what
+    # the clip actually wanted).
+    sized: dict[str, tuple[int, int]] = {}
     uncarried: list[str] = []
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
@@ -814,6 +957,13 @@ def bake_iter(context, settings: BakeSettings):
                 frame_items.clear()
                 frame_ortho.clear()
                 vertex_cache.clear()
+
+            # The count an outline carries is fixed for the whole clip, so it
+            # has to be settled before any element is built -- which is here,
+            # between the pass that measured an upper bound for it and the pass
+            # that writes geometry against it.
+            if settings.size_by_gap and step == 1 and outline_slots:
+                yield from size_outlines(sorted(outline_slots))
 
             judging = can_judge
             restart()
@@ -1025,6 +1175,11 @@ def bake_iter(context, settings: BakeSettings):
             "merged_uncarried": uncarried,
             # Outlines drawn with the area refinement, and what it was worth.
             "merged_refined": sorted(refine_set),
+            # Outlines the clip wanted smaller than any one frame did, as
+            # {name: [asked for, kept]}, and the points that saved.
+            "merged_resized": {n: [a, b] for n, (a, b) in sorted(sized.items())
+                               if a != b},
+            "merged_points_saved": sum(a - b for a, b in sized.values()),
         }
     )
     return vec

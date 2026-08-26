@@ -45,6 +45,12 @@ class BakeSettings:
     # improved five and worsened four -- so it is spent where there is room to
     # gain. Zero switches it off entirely.
     refine_gate_px: float = 5.0
+    # Choose each merged outline's point count by what it draws *between*
+    # keyframes rather than by what each keyframe asks for on its own. The two
+    # are not the same question and the answers differ a lot -- see
+    # bake.size_outlines. Off falls back to the largest count any single frame
+    # wants, which is what shipped before.
+    size_by_gap: bool = True
     edge_mode: str = "HIDDEN"     # HIDDEN = only edges with a front-facing face
                                   # WIRE   = every edge, see-through
                                   # BOUNDARY = silhouette + open/boundary edges
