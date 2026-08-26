@@ -690,6 +690,17 @@ def bake_iter(context, settings: BakeSettings):
         So: take the old answer as an upper bound, try a ladder of smaller
         counts, and keep whichever draws best between keyframes. Ties go to
         fewer points, because points are the file.
+
+        Searching *upward* as well was tried and taken out again. It is not
+        that it finds nothing -- part_042 halves its error again at twenty-four
+        points against sixteen -- but that what it finds does not matter: the
+        downward search had already taken that part from 5.34px to about 3px,
+        and the parts setting the worst case in the clip are elsewhere. On the
+        whole model it produced the same file, the same element count, the same
+        253 merges and an identical worst-case ranking, for 46% more bake time.
+        The curve is worth knowing about -- it is not monotone in either
+        direction, and part_083 swings from 9.47px at thirteen points to 3.85px
+        at fourteen -- but not worth searching both ways.
         """
         wanted_names = set(names)
         mine = [o for o in objects if o.name in wanted_names]
