@@ -297,6 +297,33 @@ def _overlap_centre(a, b, is_ortho, cells=24):
     A centre moves continuously because the region does, and it is the same
     point every frame for the same geometry. That is worth more here than a
     better average, because the ordering only needs the sign.
+
+    One point over the *whole* region, and it does not have to be a point either
+    element covers: two shapes can meet in several places, and the mean of those
+    places is a fourth place between them. A bar laid across a bracket with three
+    webs is decided from the gap between two of them.
+
+    Deciding per patch instead was built and measured, 2026-08-28: split the
+    shared cells into connected components, sample each at its own centre, and
+    let the pair go the way most of the shared *area* wants. It is the better
+    rule on paper -- every sample lands on a pixel both elements cover, and the
+    verdict is the one that paints fewest pixels wrong for that pair -- and it
+    reduces to exactly this function when the pair meets in one place, which is
+    seven pairs in eight.
+
+    It bought nothing. Ray-cast wrong pixels 538 -> 580 of 24,000, which is
+    inside the noise on that count; occlusion violations 10,474 -> 10,422; and
+    the bake 5% longer. Not for want of cases: 12.5% of overlapping pairs on the
+    probe meet in more than one patch, 9.9% have no patch holding 90% of the
+    overlap, and 7.5% are close enough for the vote to decide them. The union
+    centroid simply lands in the dominant patch nearly every time it matters,
+    and where it does not, the pair is one that crosses -- so both answers are
+    wrong somewhere and picking the cheaper one locally does not survive the
+    rest of the graph.
+
+    What was not separated, and would have to be for a second attempt: sampling
+    per patch and voting by area are two changes, and they were measured
+    together.
     """
     a_fill = a["kind"] == FILL_KIND
     b_fill = b["kind"] == FILL_KIND

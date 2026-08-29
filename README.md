@@ -214,7 +214,7 @@ other, and adjacent faces of a box each test as "behind" the other. Both
 produce 2-cycles between every neighbouring pair, saturating the graph with
 cycles until it silently degrades back to centroid order.
 
-Three further traps, all fixed:
+Five further traps, all fixed:
 
 - **Don't skip pairs whose depth ranges are disjoint.** It looks safe — seed
   depth already orders them — but the topological sort reorders *globally*, so
@@ -235,6 +235,32 @@ Three further traps, all fixed:
   never spend an assertion to break a cycle while any measured edge is available
   — a component dominated by assertions otherwise exhausts its measured edges
   partway through the budget and the remainder comes out of the facts.
+- **A merged part is a surface, not a face.** The plane fit above is exact for a
+  face and a description of something else for a whole part: the points a merged
+  element hands over are its silhouette *ring*, so the plane gets fitted to the
+  rim of a bowl and then asked about the bowl's middle. The Voyager dish's back
+  shell missed its own depth by 1.35 units that way, on a shell 0.067 thick, and
+  the beams standing inside it sorted behind it. A merged element hands over real
+  surface samples instead — its front-facing vertices, capped — and the depth at
+  a query point is the nearest sample's, so nothing is fitted and nothing
+  approximated. The depth *range* has to come off the same samples: `resolve`
+  settles a pair outright when two ranges do not overlap, so a range read from
+  the rim decides pairs it never measured at all. Worth 910 → 290 of the wrong
+  pixels a ray-cast audit finds, and it costs nothing: the bake is the same
+  length to the second.
+- **An assertion is keyed by element name, so merging can void it in silence.**
+  `edge_face_keys` names the faces an edge borders — and a merged object has no
+  face elements, so those keys match nothing, and a key that matches nothing
+  reads exactly like an edge that borders nothing. Only 12% of the assertions in
+  the probe's scene were landing. A merged object asserts against the fill it
+  actually draws; the strokes it keeps are creases, sharp edges and open
+  boundaries, all of them lying *on* that surface. Same-object fill-over-stroke
+  reversals fell 628 → 94 over a 60-frame orbit.
+
+Both were found by asking what the audit said rather than what the code looked
+like, and neither is visible in a still frame — the first reads as a part
+sitting inside another, the second as an interior line thinning and thickening
+as the camera moves.
 
 ### 3. Keyframe reduction can destroy a correct order
 

@@ -67,6 +67,11 @@ def collect_objects(context, settings: BakeSettings):
 # An untouched Principled BSDF and an untouched viewport colour are both this.
 NEUTRAL_GREY = (0.8, 0.8, 0.8)
 
+# How many surface samples a merged element hands the ordering pass. Enough to
+# describe a part's curvature, few enough that the nearest-sample lookup stays
+# cheap -- the pass asks for one point per pair of elements.
+PROBE_CAP = 256
+
 
 def _display_color(color):
     """Scene-linear -> sRGB, the space CSS and SVG hex actually mean.
@@ -307,6 +312,7 @@ class ObjectPlan:
         self.vert_co_world = self.vert_co @ self.matrix3.T
 
         self.loop_start, self.loop_total = _loop_totals(me)
+        self.face_of_loop = None       # built on demand, see _surface_probe
         self.loop_verts = np.empty(len(me.loops), dtype=np.int32)
         me.loops.foreach_get("vertex_index", self.loop_verts)
 
@@ -396,9 +402,21 @@ class ObjectPlan:
         self.edge_crease = _edge_attribute(me, "crease_edge", self.nedges, float)
 
     def edge_face_keys(self, edge_index):
-        """Element keys of the faces this edge borders, if they are drawn."""
+        """Element keys of the surfaces this edge lies on, if they are drawn.
+
+        A merged object draws one fill for its whole silhouette, so the faces
+        this edge borders are not elements any more and naming them asserts
+        nothing: no element in the frame answers to those keys. That is how
+        merging quietly dropped this assertion for most of the scene. The
+        strokes a merged object keeps are its creases, sharp edges and open
+        boundaries -- interior detail lying *on* the surface the merged fill
+        draws, so that fill can no more paint over them than a face can paint
+        over its own border.
+        """
         if not self.fills:
             return ()
+        if self.merge_fill:
+            return (f"{self.name}/m",)
         return tuple(
             f"{self.name}/f{int(face)}"
             for face in (self.edge_face_a[edge_index], self.edge_face_b[edge_index])
@@ -1134,6 +1152,16 @@ def bake_iter(context, settings: BakeSettings):
         held, never = order_mod.hold_unranked(slots, ranked)
         order_report = {"held": held, "unranked": never,
                         "pool": "; ".join(notes)}
+        # What the pass had to give up to produce a total order. These are the
+        # numbers that move when the ordering gets better or worse, and until
+        # now they were readable only by attaching a spy: a bake reported how
+        # many elements it ranked and nothing about how much of the evidence it
+        # discarded doing it.
+        order_report.update({k: v for k, v in order_mod.LAST_STATS.items()
+                             if k in ("constraints", "cycle_breaks",
+                                      "constraints_dropped", "assertions",
+                                      "assertions_lost",
+                                      "assertions_face_not_drawn")})
 
     yield ("Reducing keyframes", 0, 1)
 
@@ -1181,6 +1209,13 @@ def bake_iter(context, settings: BakeSettings):
             "order_held_frames": order_report["held"],
             "order_unranked": order_report["unranked"],
             "order_pool": order_report.get("pool", ""),
+            "order_constraints": order_report.get("constraints", 0),
+            "order_cycle_breaks": order_report.get("cycle_breaks", 0),
+            "order_constraints_dropped": order_report.get("constraints_dropped", 0),
+            "order_assertions": order_report.get("assertions", 0),
+            "order_assertions_lost": order_report.get("assertions_lost", 0),
+            "order_assertions_unmatched": order_report.get(
+                "assertions_face_not_drawn", 0),
             # Objects with no single silhouette loop to merge: two separate
             # loops, or a genus above zero. Losing the slot *order* is no
             # longer on this list -- slots are positions around the loop now,
@@ -1614,10 +1649,28 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                                  if plan.shading else 1.0)
             if visible and collect is not None:
                 lv_loop = walk[1]
-                collect.append({
+                item = {
                     "key": key, "kind": 1, "seed": slot["depth"][fi],
                     "pts": xy[lv_loop], "depths": depth[lv_loop],
-                })
+                }
+                # The ordering pass compares two fills by evaluating each where
+                # they overlap, and for every other element it does that against
+                # a plane fitted to that element's own points. For a merged
+                # element those points are the silhouette ring, which is the
+                # *rim* of the part -- so the plane is fitted to the edge of a
+                # bowl and then asked about its middle. The Voyager dish's back
+                # shell missed its own depth by up to 1.35 units that way, on a
+                # shell 0.067 thick, and the beams sitting inside it sorted
+                # behind it. A quadratic halves that on the dish and makes
+                # part_005 worse, so there is no polynomial worth picking.
+                #
+                # Hand over the surface instead: the depth at a query point is
+                # the nearest sample's, so nothing is fitted and nothing is
+                # approximated.
+                probe = _surface_probe(plan, face_facing, xy, depth)
+                if probe is not None:
+                    item["probe"] = probe
+                collect.append(item)
     elif plan.fills:
         lv = plan.loop_verts
         for fidx in range(nf):
@@ -1669,6 +1722,42 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     # order.resolve().
                     "on_faces": plan.edge_face_keys(eidx),
                 })
+
+
+def _surface_probe(plan, facing, xy, depth):
+    """A merged part's front surface, as screen points carrying real depths.
+
+    Front-facing rather than drawn: what occludes is the near side, and the
+    silhouette these samples sit inside was found from the same set, so the
+    outline and the surface it bounds cannot disagree about which side of the
+    part they describe.
+
+    The nearest and furthest vertices survive the thinning whatever else does.
+    `resolve` reads an element's depth range off these samples and settles a
+    pair outright when two ranges do not overlap, so a range short by one
+    vertex is not a slightly worse comparison -- it is a pair decided without
+    ever being measured.
+    """
+    nf = int(plan.nfaces)
+    if not nf or not plan.nverts or not facing.any():
+        return None
+    # Which face each loop belongs to is topology, and topology is fixed for
+    # the whole clip -- `plan.check` refuses a mesh that changes it. Rebuilding
+    # it per frame is three hundred objects' worth of arithmetic per pass, for
+    # an answer that was already known before the first frame.
+    face_of_loop = plan.face_of_loop
+    if face_of_loop is None:
+        face_of_loop = plan.face_of_loop = np.repeat(np.arange(nf),
+                                                     plan.loop_total)
+    fv = np.unique(plan.loop_verts[facing[face_of_loop]])
+    if len(fv) < 3:
+        return None
+    if len(fv) > PROBE_CAP:
+        d = depth[fv]
+        ends = fv[[int(d.argmin()), int(d.argmax())]]
+        thin = fv[np.linspace(0, len(fv) - 1, PROBE_CAP).astype(np.int64)]
+        fv = np.unique(np.concatenate([thin, ends]))
+    return xy[fv, 0].copy(), xy[fv, 1].copy(), depth[fv].copy()
 
 
 def _depth_budgets(elements, slots, nframes, settings, depth_range):
