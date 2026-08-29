@@ -51,7 +51,7 @@ def _shading_hint(context):
 
     angles = []
     for obj in objs:
-        deg = bake_mod._smooth_by_angle(obj)
+        deg, _read = bake_mod._smooth_by_angle(obj)
         angles.append(round(deg, 1) if deg is not None else None)
     unique = {a for a in angles}
     if len(unique) == 1:

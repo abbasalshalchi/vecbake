@@ -90,9 +90,14 @@ bpy.ops.object.shade_auto_smooth(angle=np.radians(30.0))
 
 check("the modifier is what got added",
       [m.type for m in cyl.modifiers] == ["NODES"], f"{[m.name for m in cyl.modifiers]}")
-reported = bake_mod._smooth_by_angle(cyl)
+reported, was_read = bake_mod._smooth_by_angle(cyl)
 check("its angle is read back",
       reported is not None and abs(reported - 30.0) < 0.01, f"got {reported}")
+# Blender 5.2 moved the modifier's inputs off its ID properties, and reading
+# them the old way there does not fail -- it reports the socket as unset, so the
+# angle silently becomes the 30-degree default. Which is this cylinder's angle,
+# so the check above would pass either way. This is the one that would not.
+check("...from the modifier, not from the fallback default", was_read)
 check("the mode agrees with Sharp Edges typed to the same number",
       strokes(cyl, "SHADING") == strokes(cyl, "SHARP", crease=30.0))
 

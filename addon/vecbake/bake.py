@@ -179,8 +179,43 @@ def _topology_signature(me):
     return (len(me.vertices), len(me.edges), len(me.polygons), len(me.loops))
 
 
+def _modifier_input(mod, identifier):
+    """What a geometry-nodes modifier holds for one input socket, or None.
+
+    Blender 5.2 moved these off the modifier's ID properties and onto
+    `modifier.properties.inputs`, one struct per socket identifier. Both paths
+    are read because the old one does not fail loudly on the new Blender: the
+    modifier still accepts a subscript and reports the socket as *unset*, which
+    is indistinguishable from a socket nobody configured. A reader written for
+    5.1 therefore gets a plausible answer and falls back to a default.
+
+    That is not hypothetical. Every Smooth by Angle modifier on the Voyager
+    probe carries 73.59 degrees; under 5.2 they all read as unset, the fallback
+    supplied 30, and the bake drew 1095 more strokes than the same file drew on
+    5.1 -- with nothing anywhere reporting that a value had been guessed.
+    """
+    inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+    socket = getattr(inputs, identifier, None) if inputs is not None else None
+    value = getattr(socket, "value", None) if socket is not None else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        held = mod[identifier]
+    except (KeyError, TypeError):
+        return None
+    if isinstance(held, (int, float)) and not isinstance(held, bool):
+        return float(held)
+    return None
+
+
 def _smooth_by_angle(obj):
-    """Degrees from the object's Smooth by Angle modifier, or None if absent."""
+    """(degrees, was it read) from a Smooth by Angle modifier, or (None, True).
+
+    The second half matters as much as the first. An angle that had to be
+    guessed changes which edges are creases, and creases are most of what gets
+    drawn -- so a guess is a different picture, not a rounding error, and the
+    caller reports how often it happened rather than letting it pass.
+    """
     for mod in getattr(obj, "modifiers", ()):
         if getattr(mod, "type", "") != "NODES":
             continue
@@ -195,16 +230,16 @@ def _smooth_by_angle(obj):
             if (getattr(item, "item_type", "") == "SOCKET"
                     and getattr(item, "in_out", "") == "INPUT"
                     and (item.name or "").lower() == "angle"):
-                try:
-                    return math.degrees(float(mod[item.identifier]))
-                except (KeyError, TypeError, ValueError):
-                    break
-        return 30.0        # present but unreadable: Blender's own default
-    return None
+                value = _modifier_input(mod, item.identifier)
+                if value is not None:
+                    return math.degrees(value), True
+                break
+        return 30.0, False     # present but unreadable: Blender's own default
+    return None, True
 
 
 def _shading(obj, me, nfaces):
-    """(per-face flat flags, mode, degrees) describing Blender's own shading.
+    """(per-face flat flags, mode, degrees, was the angle read) for this object.
 
     Blender 4.1 moved smoothing out of a per-face flag into attributes plus a
     "Smooth by Angle" node modifier, so both are read: `sharp_face` marks the
@@ -223,12 +258,12 @@ def _shading(obj, me, nfaces):
         except (TypeError, AttributeError, RuntimeError):
             sharp[:] = False
 
-    angle = _smooth_by_angle(obj)
+    angle, read = _smooth_by_angle(obj)
     if angle is not None:
-        return sharp, "ANGLE", angle
+        return sharp, "ANGLE", angle, read
     if nfaces and sharp.all():
-        return sharp, "FLAT", 0.0
-    return sharp, "SMOOTH", 180.0
+        return sharp, "FLAT", 0.0, True
+    return sharp, "SMOOTH", 180.0, True
 
 
 def _loop_totals(me):
@@ -351,7 +386,8 @@ class ObjectPlan:
                 pass
 
         # how Blender itself is shading this object, for curve_mode SHADING
-        self.face_sharp, self.shade_mode, self.shade_angle = _shading(obj, me, self.nfaces)
+        (self.face_sharp, self.shade_mode, self.shade_angle,
+         self.shade_angle_read) = _shading(obj, me, self.nfaces)
 
         self.crease_angle = float(obj.get("vecbake_crease_angle", settings.crease_angle))
 
@@ -1209,6 +1245,12 @@ def bake_iter(context, settings: BakeSettings):
             "order_held_frames": order_report["held"],
             "order_unranked": order_report["unranked"],
             "order_pool": order_report.get("pool", ""),
+            # Objects whose Smooth by Angle modifier was found but whose angle
+            # could not be read, so the crease threshold was guessed. Should be
+            # zero; anything else means this bake drew a different set of lines
+            # from the one the scene asks for.
+            "shading_angle_guessed": sorted(
+                name for name, p in plans.items() if not p.shade_angle_read),
             "order_constraints": order_report.get("constraints", 0),
             "order_cycle_breaks": order_report.get("cycle_breaks", 0),
             "order_constraints_dropped": order_report.get("constraints_dropped", 0),
