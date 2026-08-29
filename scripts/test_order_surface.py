@@ -184,13 +184,29 @@ face = {"key": "part/m", "kind": order.FILL_KIND, "seed": 10.0,
 line = {"key": "part/e3", "kind": 0, "seed": 10.0,
         "pts": np.array([[50.0, 150.0], [250.0, 150.0]]),
         "depths": np.array([10.0, 10.0]), "on_faces": ("part/m",)}
-r = order.resolve([face, dict(line)], is_ortho=True)
+r = order.resolve([dict(face), dict(line)], is_ortho=True)
 asserted = order.LAST_STATS["assertions"]
 unmatched = order.LAST_STATS["assertions_face_not_drawn"]
 check("a merged fill is held behind the stroke lying on it",
       r[0] > r[1], f"fill={r[0]} stroke={r[1]}")
 check("...and the assertion is recorded, not merely implied",
       (asserted, unmatched) == (1, 0), f"{asserted} asserted, {unmatched} unmatched")
+
+# Recorded even though sampling had already put the pair the right way round,
+# which is not bookkeeping: `asserted` is the set the cycle breaker will not
+# spend, so the record is what stops it eating this pair later. Dropping it was
+# measured and cost 1853 lines painted over by their own face.
+
+# The other half: when sampling gets it wrong, the assertion has to correct it.
+# A fill measuring a whole unit in front of the edge lying on it is the
+# non-planar n-gon case the mechanism was written for.
+sunk = dict(face, depths=np.full(4, 9.0))
+r = order.resolve([sunk, dict(line)], is_ortho=True)
+check("a fill measured in front of its own stroke is put back behind it",
+      r[0] > r[1], f"fill={r[0]} stroke={r[1]}")
+check("...having retracted the measured edge rather than leaving a 2-cycle",
+      order.LAST_STATS["cycle_breaks"] == 0,
+      f"{order.LAST_STATS['cycle_breaks']} breaks")
 
 line["on_faces"] = ("part/f7",)          # what merging used to leave behind
 order.resolve([face, dict(line)], is_ortho=True)

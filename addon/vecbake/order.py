@@ -695,9 +695,21 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 continue
             asserted.add((i, j))
             if j in after[i]:
-                # Sampling already agrees. Leave it alone rather than raising it
-                # to span: a measured edge at its measured weight stays available
-                # to the cycle breaker, and there is nothing to correct here.
+                # Sampling already agrees, so there is no edge to add: leave it
+                # at its measured weight rather than raising it to span.
+                #
+                # It is still recorded as an assertion, and the record is the
+                # point. `asserted` is the set the cycle breaker refuses to
+                # spend, so listing the pair is what keeps the breaker off the
+                # edge holding this fill behind its own outline -- even though
+                # nothing here created that edge.
+                #
+                # Not recording it was tried, on the reasoning that a measured
+                # edge should stay breakable like any other. It is, and the
+                # breaker breaks it: `lines_under_own_face` went 0 -> 1853 over
+                # seven frames of the probe, buying 877 fewer violations
+                # elsewhere. A face eating its own outline is visible; those
+                # were not.
                 continue
             if i in after[j]:
                 # Sampling put the fill over its own boundary -- this is the
@@ -750,6 +762,18 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # break needs as many breaks as there are cyclic edges, and each
             # costs a full scan -- on interpenetrating geometry that is
             # thousands of passes.
+            #
+            # `live` spans every component that is stuck, so this tenth is a
+            # tenth of all of them together, and one deadlock can cost evidence
+            # in components that merely happen to be stuck at the same moment.
+            # Taking the weakest edge per component instead was measured: it
+            # does discard less -- 23,724 -> 21,540 constraints over seven
+            # frames, and 19 of the 108 extra violations per frame come back --
+            # and it costs 179 cycle breaks -> 17,491, which is 17,491 full
+            # scans and takes a 2.4-minute bake past 10.5. The violations that
+            # matter got worse doing it (clear ones 107 -> 117). The tenth
+            # stays. Making the scan incremental would change the trade; that
+            # is the piece of work this needs, not a different budget.
             #
             # Bound that tenth by *count*. Taking the tenth-percentile weight as
             # a threshold and dropping everything at or below it is not the same
