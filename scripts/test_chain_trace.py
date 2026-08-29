@@ -1,6 +1,6 @@
-"""Invariants of chain._trace. Run inside Blender:
+"""Invariants of chain._trace.
 
-    exec(open('scripts/test_chain_trace.py').read())
+    "<blender>/<version>/python/bin/python.exe" scripts/test_chain_trace.py
 
 The one that matters most is `members[i]` joining `path[i]` to `path[i + 1]`.
 Everything downstream slices those two lists together -- straddle cuts, the
@@ -10,7 +10,9 @@ they ever drift apart the damage shows up somewhere else entirely.
 
 import numpy as np
 
-from vecbake.chain import _trace
+import _addon
+
+_trace = _addon.load("chain")._trace
 
 
 def _cont(edge_verts, eligible):

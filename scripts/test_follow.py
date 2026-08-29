@@ -1,6 +1,6 @@
-"""Flat elements following their neighbours' curves. Run inside Blender:
+"""Flat elements following their neighbours' curves.
 
-    exec(open('scripts/test_follow.py').read())
+    "<blender>/<version>/python/bin/python.exe" scripts/test_follow.py
 
 The thing worth guarding is the *agreement*: a follower's inserted points have
 to land on the very curve the owner draws, in every frame, or the fix trades a
@@ -11,8 +11,11 @@ import math
 
 import numpy as np
 
-from vecbake import follow
-from vecbake.ir import FILL, STROKE, Element
+import _addon
+
+follow = _addon.load("follow")
+_ir = _addon.load("ir")
+FILL, STROKE, Element = _ir.FILL, _ir.STROKE, _ir.Element
 
 
 class Settings:

@@ -1,6 +1,6 @@
-"""When the clip index is written, and when it is not. Run inside Blender:
+"""When the clip index is written, and when it is not.
 
-    exec(open('scripts/test_index_written.py').read())
+    "<blender>/<version>/python/bin/python.exe" scripts/test_index_written.py
 
 The rule under test: an index answers "which clip do I play?", so it exists
 exactly when that is a real question. Exercises the decision against files on
@@ -14,7 +14,16 @@ import os
 import shutil
 import tempfile
 
-from vecbake.api import _clip_payload, _clip_row, _clips_on_disk, _is_clip
+import _addon
+
+# api.py imports Blender for the parts that bake; the four helpers below
+# only read and write files, so a stub is enough to get at them.
+_addon.stub_blender()
+_api = _addon.load("api")
+_clip_payload = _api._clip_payload
+_clip_row = _api._clip_row
+_clips_on_disk = _api._clips_on_disk
+_is_clip = _api._is_clip
 
 PAYLOAD = {"w": 800, "h": 600, "dur": 0.5, "motion": {"scale": 0.4, "direction": "out"},
            "stats": {"elements": 12}, "meta": {"camera": "a cam", "from": "x", "to": "y"}}
@@ -103,7 +112,7 @@ def test_second_camera_baked_separately_lists_both():
 
 def test_cdata_escape_survives_the_round_trip():
     """emit_lerpa splits a literal "]]>" across two sections; undo it exactly."""
-    from vecbake import emit_lerpa
+    emit_lerpa = _addon.load("emit_lerpa")
     payload = dict(PAYLOAD, meta={"camera": "]]> odd"})
     text = ('<svg data-lerpa="1"><metadata id="lerpa-data">'
             + emit_lerpa._cdata(json.dumps(payload)) + "</metadata></svg>")
