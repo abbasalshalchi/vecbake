@@ -56,3 +56,6 @@ snapshots/
 # drift silently.
 tools/player.js
 
+
+# Claude Code local dev server config
+.claude/
