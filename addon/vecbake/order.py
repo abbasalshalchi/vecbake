@@ -772,8 +772,31 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # and it costs 179 cycle breaks -> 17,491, which is 17,491 full
             # scans and takes a 2.4-minute bake past 10.5. The violations that
             # matter got worse doing it (clear ones 107 -> 117). The tenth
-            # stays. Making the scan incremental would change the trade; that
-            # is the piece of work this needs, not a different budget.
+            # stays.
+            #
+            # Making the scan incremental was the obvious next move and it does
+            # not work, for a reason worth writing down. Decompose once, then
+            # break each component on its own and re-decompose only the one that
+            # changed: components are independent, since an edge is only ever
+            # dropped from inside one, so the rescan should cost that
+            # component's size instead of the whole blocked set. Built, and it
+            # behaves exactly as designed -- cycle breaks 179 -> 7, roughly one
+            # a frame, discards down to the minimum 23,724 -> 21,546, the clear
+            # violations back from 107 to 82, `lines_under_own_face` still 0.
+            #
+            # It also takes the 13-frame bake from 146s to 1411s, ordering alone
+            # 78% of it, because the premise is false here. Measured at the
+            # first break of a frame: 6,764 elements blocked, in 10 components,
+            # and the biggest holds 5,215 of them. The deadlock is one enormous
+            # strongly connected component, so "re-check the component that
+            # changed" is "re-check almost everything", once per dropped edge.
+            #
+            # Which moves the question. With one 5,215-node SCC there is no
+            # cheaper schedule to find -- batching is already the right shape
+            # for this graph, and the tenth is already near the best it can do.
+            # The thing worth attacking is why 77% of the blocked elements are
+            # mutually deadlocked in the first place, not how the breaker pays
+            # for it afterwards.
             #
             # Bound that tenth by *count*. Taking the tenth-percentile weight as
             # a threshold and dropping everything at or below it is not the same
