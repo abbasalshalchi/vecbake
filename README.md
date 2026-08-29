@@ -257,6 +257,20 @@ truth independently and should report zero violations, zero flips, zero cycles.
 `scripts/check_occlusion.py` ray-casts the finished bake against the 3D scene
 and lists every pixel painted with the wrong thing.
 
+It paints the canvas once per frame and ray-casts only where two objects cover
+the same pixel. It used to work through one screen rectangle per *pair* of
+objects, which is quadratic in the object count: 46,000 rectangles a frame on
+the Voyager probe, each re-rasterising every element reaching into it. The
+answer was right and the run never ended, which for the measurement that grades
+every other one amounts to the same thing.
+
+`scripts/validate_bake.py` forces ordering onto one process, because it works by
+reading what `resolve()` was handed and that is invisible from outside the
+process calling it. It also imports the add-on the way it is actually installed,
+as an extension under `bl_ext`. Both were wrong at once, so the gate the section
+above tells you to run could not import, and would have graded an empty list and
+reported a pass if it had.
+
 ```python
 exec(open(r'.../scripts/check_occlusion.py').read())
 run()                      # the panel's settings, every frame
@@ -942,6 +956,7 @@ scripts/dev.py            reload() bake() check() install()
                           scene(confirm=True) rebuilds the test tower --
                           DESTRUCTIVE, it wipes every object in the scene
 scripts/validate_bake.py  occlusion + reduction audit
+scripts/test_order_*.py   ordering: cycles, scale, merged surfaces
 scripts/build_test_scene.py
 scripts/devserver.py      static server + POST /save/<name> snapshot endpoint
 player/demo.html          older harness for the bare .json track format

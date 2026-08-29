@@ -60,6 +60,7 @@ to be right, and that is the artist's call, not the baker's.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import replace
 
@@ -131,37 +132,60 @@ def _bbox(g):
     return (g[0::2].min(), g[0::2].max(), g[1::2].min(), g[1::2].max())
 
 
-def _rects_worth_testing(live, width, height, pad=2.0):
-    """Screen rectangles where two different objects overlap.
+def _paint(live, width, height):
+    """Paint one frame onto the canvas. Returns (topmost element, shared).
 
-    Everything else is a waste of a ray cast: an element can only be painted
-    over the wrong thing where there is another object to be wrong about.
+    `top` holds the index of the element the player would leave on each pixel,
+    and `shared` marks the pixels two different objects both cover -- the only
+    pixels where paint order can be wrong at all.
 
-    Clipped to the canvas, which is not pedantry. Geometry is deliberately kept
-    past the frame edge so it still draws when it crosses back in, so element
-    boxes run well outside it -- and a pixel nobody will ever see reported as
-    the worst error in the scene is worse than no report at all. The first run
-    of this ranked one at y=1040 on a 1000px canvas.
+    This used to be done inside a rectangle per *pair* of objects, which is
+    quadratic in the object count and unusable the moment a scene stops being a
+    test scene: the Voyager probe has 304 objects, so 46,000 rectangles a frame,
+    most of them overlapping each other, each re-rasterising every element that
+    reaches into it. Nothing was wrong with the answer -- the audit simply never
+    finished, and for the one measurement that grades every other, never
+    finishing is the same as being wrong.
+
+    Painting the canvas once costs the sum of the element bounding boxes
+    instead, which is what the work actually is. Bounds are clipped to the
+    canvas, and that is not pedantry: geometry is deliberately kept past the
+    frame edge so it still draws when it crosses back in, so element boxes run
+    well outside it, and a pixel nobody will ever see reported as the worst
+    error in the scene is worse than no report at all. The first version of
+    this ranked one at y=1040 on a 1000px canvas.
     """
-    boxes = {}
-    for el, g, _ in live:
-        b = _bbox(g)
-        cur = boxes.get(el.group)
-        boxes[el.group] = b if cur is None else (min(cur[0], b[0]), max(cur[1], b[1]),
-                                                 min(cur[2], b[2]), max(cur[3], b[3]))
-    names = sorted(boxes)
-    rects = []
-    for i, a in enumerate(names):
-        ax0, ax1, ay0, ay1 = boxes[a]
-        for b in names[i + 1:]:
-            bx0, bx1, by0, by1 = boxes[b]
-            x0 = max(max(ax0, bx0) - pad, 0.0)
-            x1 = min(min(ax1, bx1) + pad, float(width))
-            y0 = max(max(ay0, by0) - pad, 0.0)
-            y1 = min(min(ay1, by1) + pad, float(height))
-            if x1 > x0 and y1 > y0:
-                rects.append((x0, x1, y0, y1))
-    return rects
+    w, h = int(width), int(height)
+    top = np.full((h, w), -1, dtype=np.int32)
+    # Which object claimed a pixel first, and whether a second one has since
+    # claimed it too. Counting distinct objects per pixel would need a mask per
+    # object -- 304 canvas-sized masks on this scene -- and "at least two" is
+    # the whole of the answer wanted.
+    first = np.full((h, w), -1, dtype=np.int32)
+    shared = np.zeros((h, w), dtype=bool)
+    ids = {}
+    # far to near, so the last write is what the player draws
+    for i in sorted(range(len(live)), key=lambda k: -live[k][2]):
+        el, g, _d = live[i]
+        pad = 1.0 + (0.0 if el.kind in FILL_KINDS
+                     else (getattr(el, "width", 1.6) or 1.6) / 2.0)
+        bx0, bx1, by0, by1 = _bbox(g)
+        x0 = max(int(math.floor(bx0 - pad)), 0)
+        x1 = min(int(math.ceil(bx1 + pad)) + 1, w)
+        y0 = max(int(math.floor(by0 - pad)), 0)
+        y1 = min(int(math.ceil(by1 + pad)) + 1, h)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5)
+        mask = _element_mask(el, g, gx, gy)
+        if not mask.any():
+            continue
+        gid = ids.setdefault(el.group, len(ids))
+        held = first[y0:y1, x0:x1]
+        shared[y0:y1, x0:x1] |= mask & (held >= 0) & (held != gid)
+        held[mask & (held < 0)] = gid
+        top[y0:y1, x0:x1][mask] = i
+    return top, shared
 
 
 # ---------------------------------------------------------------------------
@@ -349,55 +373,21 @@ def run(settings=None, frames=None, margin=0.05, budget=1200, diagnose=True,
                     for el in vec.elements if el.opacity.sample(t) > 0.5]
             if len(live) < 2:
                 continue
-            rects = _rects_worth_testing(live, vec.width, vec.height)
-            if not rects:
-                continue
-
             scene.frame_set(start + fi * step)
             truth = _Truth(scene, vec.width, vec.height)
 
-            seen = set()
-            candidates = []
-            for x0, x1, y0, y1 in rects:
-                gx, gy = np.meshgrid(np.arange(int(x0), int(x1)) + 0.5,
-                                     np.arange(int(y0), int(y1)) + 0.5)
-                gx, gy = gx.ravel(), gy.ravel()
-                if gx.size == 0:
-                    continue
-                near = [(el, g, d) for el, g, d in live
-                        if not (_bbox(g)[0] > x1 or _bbox(g)[1] < x0
-                                or _bbox(g)[2] > y1 or _bbox(g)[3] < y0)]
-                top = np.full(gx.shape, -1, dtype=np.int32)
-                coverage = {}
-                # far to near, so the last write is what the player draws
-                for i in sorted(range(len(near)), key=lambda i: -near[i][2]):
-                    el, g, _d = near[i]
-                    mask = _element_mask(el, g, gx, gy)
-                    top[mask] = i
-                    held = coverage.get(el.group)
-                    coverage[el.group] = mask if held is None else (held | mask)
-
-                # A rectangle where two objects' *boxes* meet is mostly pixels
-                # where the objects themselves do not, and spending the budget
-                # evenly over it dilutes the real overlap until nothing is hit:
-                # this found zero on a bake with four known errors in it. Count
-                # the objects actually covering each pixel and keep the ones
-                # with more than one, which is the only place order can be wrong.
-                objects_here = np.zeros(gx.shape, dtype=np.int16)
-                for mask in coverage.values():
-                    objects_here += mask
-                for q in np.nonzero((objects_here >= 2) & (top >= 0))[0]:
-                    px, py = float(gx[q]), float(gy[q])
-                    ident = (round(px, 1), round(py, 1))
-                    if ident in seen:
-                        continue
-                    seen.add(ident)
-                    candidates.append((px, py, near[int(top[q])][0]))
-
-            available += len(candidates)
-            if len(candidates) > budget:
-                keep = np.linspace(0, len(candidates) - 1, budget).astype(int)
-                candidates = [candidates[i] for i in keep]
+            top, shared = _paint(live, vec.width, vec.height)
+            # Only pixels two objects actually cover. Where their *boxes* merely
+            # meet is mostly pixels neither one is on, and spending the budget
+            # evenly over that dilutes the real overlap until nothing is hit: an
+            # earlier version found zero faults on a bake with four known ones.
+            ys, xs = np.nonzero(shared & (top >= 0))
+            available += len(xs)
+            if len(xs) > budget:
+                keep = np.linspace(0, len(xs) - 1, budget).astype(int)
+                ys, xs = ys[keep], xs[keep]
+            candidates = [(float(x) + 0.5, float(y) + 0.5, live[int(top[y, x])][0])
+                          for x, y in zip(xs, ys)]
 
             for px, py, el in candidates:
                 tested += 1

@@ -13,6 +13,11 @@ right answer" and "the player draws it":
 
 Both should be zero. Anything else shows up as slicing or flicker on playback.
 
+Ordering is forced onto a single process here, and that is not optional: the
+check reads what `resolve()` was handed, which is invisible from outside the
+process that calls it. It makes this slower than an ordinary bake. Without it
+the check grades an empty list and reports a pass.
+
 Run inside Blender:
     exec(open('scripts/validate_bake.py').read())
 """
@@ -25,12 +30,34 @@ import bpy
 
 
 def validate(settings=None, verbose=True):
-    import vecbake
-    from vecbake import order as order_mod
-    import vecbake.bake as bake_mod
-    from vecbake.settings import BakeSettings
+    from dataclasses import replace
+
+    # Installed, the add-on is an extension and lives under `bl_ext`; a plain
+    # `import vecbake` only works from a source checkout on the path. This file
+    # asked for the second and got an ImportError against every real install,
+    # which is not a check that passes wrongly -- it is a check nobody could
+    # have run at all.
+    try:
+        from bl_ext.user_default import vecbake
+        from bl_ext.user_default.vecbake import order as order_mod
+        from bl_ext.user_default.vecbake import bake as bake_mod
+        from bl_ext.user_default.vecbake.settings import BakeSettings
+    except ImportError:
+        import vecbake
+        from vecbake import order as order_mod
+        import vecbake.bake as bake_mod
+        from vecbake.settings import BakeSettings
 
     settings = settings or BakeSettings()
+    # Everything below works by standing in for `resolve()` and reading what it
+    # was handed, and it can only see a call made in this process. Ordering runs
+    # in a worker pool -- eleven of them on this machine, and `order_workers=0`
+    # means "as many as the machine has", so the default is a pool too. The
+    # stand-in then never fires, `resolved_per_frame` stays empty, and every
+    # count in the report is a sum over nothing: zero violations, zero flips,
+    # PASS. A check that cannot fail is worse than no check, and this is the one
+    # the README points at for any change to ordering.
+    settings = replace(settings, order_workers=1)
     resolved_per_frame = []
     violations = []
     eaten = []
@@ -120,6 +147,11 @@ def validate(settings=None, verbose=True):
         seq = [rank[k] for k in sorted(keys, key=lambda k: -by_key[k].depth.sample(t))]
         flips.append(sum(1 for a in range(len(seq)) for b in range(a + 1, len(seq))
                          if seq[a] > seq[b]))
+
+    if not resolved_per_frame:
+        raise RuntimeError(
+            "the ordering pass was never seen, so nothing was checked -- "
+            "resolve() ran somewhere this process cannot watch")
 
     report = {
         "frames": len(resolved_per_frame),
