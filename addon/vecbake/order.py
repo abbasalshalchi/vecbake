@@ -631,13 +631,26 @@ def resolve(items, is_ortho=False, tol=1e-4):
     # The 205 that remain are real: geometry that interpenetrates, where no
     # single scalar per element is right whatever is done here.
     #
-    # What that suggests, untried: rank the fills alone, then place each stroke
-    # into the order that produces. Every stroke's constraints run to fills, so
-    # given a total order on fills each one has an interval it may sit in, and a
-    # stroke whose interval is empty is a local conflict rather than something
-    # that costs fill-to-fill evidence elsewhere. It would also leave components
-    # small enough that re-checking one is cheap, which is the thing that made
-    # the incremental scan below unaffordable.
+    # Calling that an artefact was wrong, and ranking the fills alone to prove
+    # it is the measurement that shows why. Every stroke's constraints run to
+    # fills, so a total order on fills gives each stroke an interval to sit in
+    # and the deadlock stops being 1474 elements. Built, and it does exactly
+    # that -- cycle breaks 48 -> 17 over two frames, constraints discarded
+    # 5746 -> 1931, and *fewer* fill-to-fill edges spent, 1195 -> 450.
+    #
+    # The ray cast nearly doubles: 2.24% of sampled overlap pixels wrong -> 4.13%,
+    # with face fills alone going 143 -> 418. Keeping more fill-to-fill evidence
+    # and ordering fills worse is only possible if the evidence was never in
+    # those edges to begin with, and it was not:
+    #
+    #     fillA ->(asserted) strokeX ->(measured) fillB
+    #
+    # The stroke lies *on* fillA, so "fillB covers strokeX where they overlap"
+    # is a depth fact about fillA against fillB at that place, carried through
+    # the stroke. Kahn was using those chains transitively, and they are 83% of
+    # the edges. Take the strokes out and the fills are ordered on the 17% that
+    # remain, with seed depth filling the gap. A hairline cannot *decide* the
+    # order of two fills; it can and does *transmit* it.
     #
     # Only fills can meaningfully occlude -- strokes are hairlines, so
     # stroke-vs-stroke order is invisible and those pairs are skipped.
