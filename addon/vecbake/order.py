@@ -619,6 +619,26 @@ def resolve(items, is_ortho=False, tol=1e-4):
     span = float(dmax.max() - dmin.min()) if n else 0.0
     tol = max(tol, span * 1e-4)
 
+    # Strokes are in this graph as ordinary nodes, and that is where the
+    # deadlock comes from. Measured at the first break of a frame: the biggest
+    # strongly connected component held 1474 elements, of which 358 were fills
+    # and 1116 were strokes, and 83% of its internal edges ran fill<->line.
+    # Restrict it to fills and fill->fill edges and the biggest component is
+    # 205. A hairline cannot genuinely decide the order of two fills, so a cycle
+    # running fill -> line -> fill is an artefact of sharing one graph -- and it
+    # is seven eighths of what the cycle breaker pays for.
+    #
+    # The 205 that remain are real: geometry that interpenetrates, where no
+    # single scalar per element is right whatever is done here.
+    #
+    # What that suggests, untried: rank the fills alone, then place each stroke
+    # into the order that produces. Every stroke's constraints run to fills, so
+    # given a total order on fills each one has an interval it may sit in, and a
+    # stroke whose interval is empty is a local conflict rather than something
+    # that costs fill-to-fill evidence elsewhere. It would also leave components
+    # small enough that re-checking one is cheap, which is the thing that made
+    # the incremental scan below unaffordable.
+    #
     # Only fills can meaningfully occlude -- strokes are hairlines, so
     # stroke-vs-stroke order is invisible and those pairs are skipped.
     for i in np.nonzero(kinds == FILL_KIND)[0]:
