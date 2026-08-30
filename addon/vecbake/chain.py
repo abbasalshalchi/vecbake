@@ -430,6 +430,33 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
         # depth, on top of the very faces that should be covering half of it.
         # Facing is recorded per frame and compared whole, exactly like
         # visibility, so a split only happens where the two genuinely differ.
+        #
+        # It is the binding constraint on chaining, and it has been measured
+        # rather than assumed. Of 13,584 pairs of drawn edges that share a
+        # vertex on the probe, 3,827 agree on visibility and only 908 also
+        # agree on facing: this term refuses three quarters of what chaining
+        # could otherwise use, and only 549 edges end up merged.
+        #
+        # Removing it looks safe and is not. The argument for removing it is
+        # that `_straddle_cuts` below measures the same concern precisely --
+        # per frame, against the fills a chain overlaps, cutting where the depth
+        # comparison changes sign -- so this is a coarser copy of a test that
+        # already runs. Built and measured: edges merged 549 -> 826, elements
+        # 9452 -> 9214, the delivered file 1.86 -> 1.83MB, `lines_under_own_face`
+        # still 0, and **the ray cast 2.225% -> 2.446% of sampled overlap pixels
+        # wrong**. The straddle test does not catch all of it, so chains span a
+        # facing change, take one depth, and sort wrongly. 1.6% of the file for
+        # a tenth of the occlusion accuracy is the wrong way round.
+        #
+        # Restricting facing to the frames where the edge is drawn was tried
+        # first, on the theory that the arrays differ where nobody can see:
+        # it unlocks four pairs of 3,827. The disagreements are real and happen
+        # while both edges are drawn, because facing flips at the silhouette.
+        #
+        # Worth knowing before attacking this again: the key is not the ceiling
+        # it looks like. Freeing 4.2x more pairs bought 1.5x more merged edges,
+        # so `chain_max_turn` and the need for compatible pairs to form
+        # *contiguous* runs bind harder than the key does.
         keys = {}
         for e in eligible:
             slot = slots[f"{plan.name}/e{e}"]

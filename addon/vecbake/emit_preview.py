@@ -214,6 +214,8 @@ TEMPLATE = r"""<!doctype html>
       <div class="kv"><span>Duration</span><span id="s-dur">&mdash;</span></div>
       <div class="kv"><span>Frames</span><span id="s-frames">&mdash;</span></div>
       <div class="kv"><span>Canvas</span><span id="s-size">&mdash;</span></div>
+      <div class="kv" title="How long the player spends drawing one frame, and
+what that is worth in frames per second. 41.7ms is the budget at 24fps."><span>Render</span><span id="s-ms">&mdash;</span></div>
     </section>
 
     <section>
@@ -368,6 +370,7 @@ __PLAYER__
   });
 
   // ---- readouts ----
+  const ms = [];
   function tick() {
     // Re-frame every frame while soloing. This is the whole reason
     // groupBounds takes a time: the part moves, so the framing has to.
@@ -379,6 +382,17 @@ __PLAYER__
       $('s-peak').textContent = peak;
     }
     $('time').textContent = fmt(player.time) + ' / ' + fmt(player.duration) + ' s';
+    // What a frame actually costs. Smoothness is decided here and nowhere in
+    // the file: a dense scene is rasteriser-bound, and the number that tells
+    // you so is the one the player already keeps.
+    if (player.lastRenderMs) {
+      ms.push(player.lastRenderMs);
+      if (ms.length > 30) ms.shift();
+      const sorted = [...ms].sort((a, b) => a - b);
+      const med = sorted[sorted.length >> 1];
+      $('s-ms').textContent = med.toFixed(1) + ' ms  ' + (1000 / med).toFixed(0) + ' fps';
+      $('s-ms').style.color = med > 41.7 ? '#d8683f' : med > 16.7 ? '' : '#7fb069';
+    }
     if (player.playing) {
       $('scrub').value = Math.round(1000 * player.time / (player.duration || 1));
     }
