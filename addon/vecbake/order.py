@@ -652,8 +652,36 @@ def resolve(items, is_ortho=False, tol=1e-4):
     # remain, with seed depth filling the gap. A hairline cannot *decide* the
     # order of two fills; it can and does *transmit* it.
     #
-    # Only fills can meaningfully occlude -- strokes are hairlines, so
-    # stroke-vs-stroke order is invisible and those pairs are skipped.
+    # Only fills can meaningfully occlude, so stroke-vs-stroke pairs are skipped.
+    #
+    # "Invisible" is what that used to claim and it is not quite true. Two
+    # strokes of different colours that cross do show which is on top, and
+    # `stroke_source = MATERIAL` gives every edge the colour of the face it
+    # borders, so a scene can have as many stroke colours as it has materials.
+    # Skipping those pairs leaves their order to wherever the topological sort
+    # happens to put them, and it changes between frames.
+    #
+    # Measured rather than argued, because the Voyager cannot show it: its 38
+    # materials are untouched Principled defaults, so every fill is
+    # NEUTRAL_GREY and every stroke darkens to the same colour. Recoloured with
+    # 237 distinct hues -- far more variety than a real model, where colour
+    # follows the part -- 7131 strokes over a sixty-frame orbit gave 1285
+    # stroke-vs-stroke reversals that do not hold, of which:
+    #
+    #     1057  are between strokes of the same colour
+    #      189  are between strokes that never actually cross
+    #       39  are visible, and they total 217 px2 for the whole clip
+    #
+    # Under four square pixels a frame, on a canvas of two million. Most
+    # reversals are same-colour because the strokes that overlap belong to the
+    # same part, and a part is one colour.
+    #
+    # Constraining them would mean testing every stroke against every other --
+    # the largest population in the scene, squared -- and adding those edges to
+    # a graph whose density is already what cycle breaking spends its budget on.
+    # The nine-stick scene built to provoke this found one visible reversal, at
+    # 5.3 px2. If it is ever worth doing, do it for pairs that both cross *and*
+    # differ in colour, not for the whole class.
     for i in np.nonzero(kinds == FILL_KIND)[0]:
         i = int(i)
         overlap = (
