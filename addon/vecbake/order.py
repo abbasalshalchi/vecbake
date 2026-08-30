@@ -84,6 +84,34 @@ def _depths_at(item, qx, qy, is_ortho):
         # is why the beams sitting inside it sorted behind it. A quadratic
         # halved that and made other parts worse, so fit nothing: read the
         # depth where the two elements actually overlap.
+        #
+        # Taking the nearest sample makes this a step function of the query
+        # point: as the overlap between two parts drifts, the sample that wins
+        # changes and the depth jumps the whole gap. Parts whose depths run
+        # close trade places on that step, which is 17 more fill-vs-fill
+        # reversals that do not hold, all on merged elements. Invisible in a
+        # scene that draws every fill one colour -- but `pick()` returns
+        # whichever is on top, and that is what a part explorer runs on.
+        #
+        # Weighting every sample by inverse fourth-power distance removes the
+        # step: nothing enters or leaves a set, so the field is continuous. It
+        # was built and measured, and it is better at both things it was asked
+        # about --
+        #
+        #     ray cast          538 wrong of 24,000 -> 480   (2.24% -> 2.00%)
+        #     fill/fill reversals that do not hold  341 -> 336
+        #
+        # -- and it takes the sixty-frame bake from 12.5 minutes to 55. The
+        # graph is not what got slower: constraints 3,035,580 -> 3,033,740,
+        # cycle breaks 1783 -> 1571, drops 507,597 -> 483,366, all slightly
+        # *better*. It is this lookup, which turns out to dominate the ordering
+        # pass. Eleven array operations on a few hundred samples instead of six,
+        # several million times a frame.
+        #
+        # Reverted on that. Continuity is worth having and it is not worth four
+        # times the bake for five reversals nobody can see. Anything cheaper has
+        # to be continuous too: k nearest samples still steps when the k-th
+        # changes, so it buys nothing.
         px, py, pd = probe
         d2 = ((qx[:, None] - px[None, :]) ** 2
               + (qy[:, None] - py[None, :]) ** 2)
