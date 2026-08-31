@@ -213,6 +213,17 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "Paint Order hardest of all. Approximate: it works from a "
                     "coverage grid, so something visible only through a very narrow "
                     "gap can be missed")
+    occlusion_strokes: BoolProperty(
+        name="Cull Hidden Strokes", default=False,
+        description="Also drop strokes that stay behind other objects' fills in "
+                    "every frame. Hidden-line removal only ever asked whether an "
+                    "edge is behind its own object; an edge behind a different "
+                    "object is still drawn, and then painted over. Strokes are the "
+                    "larger half of most scenes, so this is where the remaining "
+                    "overdraw is. Held to a stricter test than fills -- a stroke is "
+                    "kept unless its cell and every neighbouring cell are covered -- "
+                    "because a stroke lying along a fill's edge would otherwise be "
+                    "culled by the sliver the grid rounds away")
     occlusion_px: FloatProperty(
         name="Cull Detail", default=6.0, min=1.0, max=32.0, subtype="PIXEL",
         description="Coverage grid cell size for Cull Hidden. Smaller sees narrower "
@@ -404,6 +415,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.cull_offscreen = self.cull_offscreen
         s.occlusion_cull = self.occlusion_cull
         s.occlusion_px = self.occlusion_px
+        s.occlusion_strokes = self.occlusion_strokes
         s.accurate_order = self.accurate_order
         s.order_workers = self.order_workers
         s.stroke_color = tuple(self.stroke_color)
@@ -827,6 +839,7 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "cull_offscreen")
         grid.prop(props, "occlusion_cull")
         if props.occlusion_cull:
+            grid.prop(props, "occlusion_strokes")
             grid.prop(props, "occlusion_px")
             if not props.fills:
                 box.label(text="Needs Fills — strokes use hidden-line removal",

@@ -79,6 +79,7 @@ class BakeSettings:
     cull_offscreen: bool = True
     occlusion_cull: bool = False   # drop fills hidden behind other fills
     occlusion_px: float = 6.0      # coverage grid cell, in pixels
+    occlusion_strokes: bool = False  # cull strokes hidden behind fills too
     offscreen_margin: float = 24.0
 
     # --- style ------------------------------------------------------------

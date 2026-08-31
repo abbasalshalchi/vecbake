@@ -51,7 +51,6 @@ import time
 
 from . import occlude
 from . import order
-from .ir import FILL
 
 # One frame's results, written by the worker and picked up here. The worker
 # writes to a scratch name and renames, so a file that exists is a file that
@@ -286,19 +285,19 @@ def cull_hidden(elements, slots, frame_items, settings, nframes, width, height,
     is 3.6% of that bake but a fifth of what is left once the ordering pass is
     no longer the whole run.
 
-    The result cannot depend on the split. A fill is culled only if it showed
+    The result cannot depend on the split. An element is culled only if it showed
     nothing in *every* frame, so the frames combine as a union of the keys that
     showed and a sum of the ones that did not; both are order-independent, and
     neither is decided until every frame has reported.
     """
     grid = occlude.frame_grid(settings, width, height)
-    fills = [el for el in elements if el.kind == FILL]
-    if not fills:
+    items = occlude.cullable(elements, settings)
+    if not items:
         return {"culled": 0, "hidden": 0, "cells": 0}
 
-    # Built here, not in the workers: sorting a frame's fills near-to-far needs
-    # the depth slots, which are the baker's and do not travel.
-    live = {fi: occlude.live_fills(fills, slots, fi) for fi in range(nframes)}
+    # Built here, not in the workers: sorting a frame near-to-far needs the depth
+    # slots, which are the baker's and do not travel.
+    live = {fi: occlude.live_elements(items, slots, fi) for fi in range(nframes)}
     todo = [fi for fi in range(nframes) if live[fi]]
 
     def build(fi):
@@ -313,7 +312,7 @@ def cull_hidden(elements, slots, frame_items, settings, nframes, width, height,
     for _fi, payload in _drive(todo, build, here, workers, report, "culling"):
         seen.update(payload["seen"])
         hidden += payload["hidden"]
-    return occlude.finish(fills, seen, hidden, slots, frame_items, grid)
+    return occlude.finish(items, seen, hidden, slots, frame_items, grid)
 
 
 def merge_stats(rows):
