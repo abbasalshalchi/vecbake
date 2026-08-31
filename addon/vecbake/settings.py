@@ -39,6 +39,8 @@ class BakeSettings:
     # measured as written rather than as it might ideally be placed -- see
     # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
+    weld_seams: bool = False       # treat coincident open edges as interior
+    weld_tol: float = 1e-4         # how close endpoints must be, scene units
     # Only outlines already drawing worse than this get asked whether the area
     # refinement would draw them better. On an outline already within a
     # fraction of a pixel there is nothing to win and the question is not worth

@@ -132,6 +132,19 @@ class VECBAKE_PG_settings(PropertyGroup):
                      "per object with a vecbake_merge_fill custom property"),
         default=False,
     )
+    weld_seams: BoolProperty(
+        name="Weld Seams", default=False,
+        description="Treat an open edge that exactly meets an open edge on another "
+                    "object as the interior edge it really is, and judge it by the "
+                    "angle between the two faces like any other. Splitting a part so "
+                    "its pieces each merge is the cheapest way to cut fills, and "
+                    "without this it costs a line down every cut: the halves still "
+                    "touch, but each sees an open border and draws it")
+    weld_tol: FloatProperty(
+        name="Weld Distance", default=1e-4, min=1e-6, max=1.0, precision=5,
+        description="How close two endpoints must be to count as the same point. "
+                    "A clean split leaves them identical; raise this only if a "
+                    "modifier or an applied transform has moved one side")
     merge_slack_px: FloatProperty(
         name="Merge Slack", default=6.0, min=0.0, soft_max=32.0, max=512.0,
         subtype="PIXEL",
@@ -405,6 +418,8 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.strokes, s.fills = self.strokes, self.fills
         s.merge_fills = self.merge_fills
         s.merge_slack_px = self.merge_slack_px
+        s.weld_seams = self.weld_seams
+        s.weld_tol = self.weld_tol
         s.edge_mode = self.edge_mode
         s.crease_angle = math.degrees(self.crease_angle)
         s.curve_mode = self.curve_mode
@@ -806,6 +821,9 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "merge_fills", toggle=True)
         if props.merge_fills:
             grid.prop(props, "merge_slack_px")
+        grid.prop(props, "weld_seams")
+        if props.weld_seams:
+            grid.prop(props, "weld_tol")
         grid.prop(props, "always_freestyle")
         grid.prop(props, "always_crease")
         grid.prop(props, "accurate_order")

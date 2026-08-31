@@ -277,6 +277,129 @@ def _loop_totals(me):
     return starts, totals
 
 
+def adopt_welds(plan, obj, me, index, q):
+    """Give one plan its half of the weld index."""
+    if not index or not plan.nedges:
+        return 0
+    nv = len(me.vertices)
+    co = np.empty(nv * 3, dtype=np.float64)
+    me.vertices.foreach_get("co", co)
+    m = np.array(obj.matrix_world, dtype=np.float64)
+    world = co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+    found = 0
+    for e in np.nonzero(plan.edge_face_count < 2)[0]:
+        a, b = plan.edge_verts[e]
+        pa = tuple(np.round(world[a] / q).astype(np.int64))
+        pb = tuple(np.round(world[b] / q).astype(np.int64))
+        key = (pa, pb) if pa <= pb else (pb, pa)
+        partners = index.get(key)
+        if not partners:
+            continue
+        other = next((n for name, _, n in partners
+                      if name != obj.name and n is not None), None)
+        if other is None:
+            continue
+        plan.edge_welded[e] = True
+        plan.edge_weld_normal[e] = other
+        # Both halves hold the same edge, so both would draw it, and a crease
+        # down a cut would come out twice as heavy as the same crease anywhere
+        # else. One side owns it: the first object name in the pair, which is
+        # stable across a re-bake and does not depend on evaluation order.
+        owner = min(name for name, _, _ in partners)
+        plan.edge_weld_owner[e] = (owner == obj.name)
+        found += 1
+    return found
+
+
+def weld_index(objects, depsgraph, settings):
+    """Find boundary edges that different objects share, and pair them up.
+
+    Splitting a mesh so its pieces each merge is the cheapest way to cut fills
+    -- one merged fill against a fill per face -- and it costs a line. The cut
+    leaves an open boundary on both halves, boundary edges are drawn, and a
+    seam appears across a surface that has none.
+
+    Nothing about that line is real. The two halves still meet exactly: the cut
+    duplicated the vertices, it did not move them. So an edge on one piece whose
+    endpoints coincide with an edge on another is not a boundary at all, it is
+    an interior edge that happens to be stored twice, and it should be judged
+    the way every other interior edge is -- by the angle between the faces on
+    either side.
+
+    Returns `{(rounded endpoints): [(object name, edge index, face normal)]}`,
+    from which each plan takes its own half. Rounded, because the two copies are
+    bit-identical only until a modifier or an object transform touches one of
+    them; the quantum is `weld_px` in scene units.
+
+    Costs one mesh evaluation per object, once, before sampling starts. Only
+    boundary edges are indexed -- interior ones already know their neighbour.
+
+    Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
+    baked over 8 frames:
+
+                    elements   fills   strokes
+      whole              203      97       106
+      cut, weld off      250      62       188
+      cut, weld on       139      62        77
+
+    The fills are why anyone would cut: 97 face fills become 62, because pieces
+    that ring cleanly merge where the whole part never could. The strokes are
+    what it costs, and welding is what stops it costing them -- 188 back down to
+    77, and the difference between the two cut bakes is exactly the seam lines.
+
+    What welding does *not* undo: a merged fill is an opaque silhouette. Drawn
+    face by face, part_012 reads as an open tube with its far rim visible
+    through it; drawn as merged pieces it is a solid cylinder. That is what
+    merging means, not a fault in the weld, and it is the real limit on this as
+    a strategy -- cut the parts that should read solid, and leave the hollow
+    ones alone.
+    """
+    if not getattr(settings, "weld_seams", False):
+        return {}
+    q = max(1e-9, float(getattr(settings, "weld_tol", 1e-4)))
+    index: dict = {}
+    for obj in objects:
+        eval_obj = obj.evaluated_get(depsgraph)
+        me = eval_obj.to_mesh()
+        try:
+            edge_verts, adj_edge, adj_face = _edge_face_adjacency(me)
+            if not len(edge_verts):
+                continue
+            count = np.zeros(len(edge_verts), dtype=np.int32)
+            np.add.at(count, adj_edge, 1)
+            open_edges = np.nonzero(count < 2)[0]
+            if not len(open_edges):
+                continue
+            face_of = {}
+            for e, f in zip(adj_edge, adj_face):
+                face_of.setdefault(int(e), int(f))
+            nv = len(me.vertices)
+            co = np.empty(nv * 3, dtype=np.float64)
+            me.vertices.foreach_get("co", co)
+            co = co.reshape(-1, 3)
+            m = np.array(obj.matrix_world, dtype=np.float64)
+            world = co @ m[:3, :3].T + m[:3, 3]
+            nf = len(me.polygons)
+            normals = np.empty(nf * 3, dtype=np.float64)
+            me.polygons.foreach_get("normal", normals)
+            normals = normals.reshape(-1, 3) @ np.linalg.inv(m[:3, :3])
+            lens = np.linalg.norm(normals, axis=1, keepdims=True)
+            normals = normals / np.where(lens < 1e-12, 1.0, lens)
+            for e in open_edges:
+                a, b = edge_verts[e]
+                pa = tuple(np.round(world[a] / q).astype(np.int64))
+                pb = tuple(np.round(world[b] / q).astype(np.int64))
+                key = (pa, pb) if pa <= pb else (pb, pa)
+                fi = face_of.get(int(e))
+                index.setdefault(key, []).append(
+                    (obj.name, int(e), normals[fi] if fi is not None else None))
+        finally:
+            eval_obj.to_mesh_clear()
+    # only pairs that actually met something on another object are seams
+    return {k: v for k, v in index.items()
+            if len(v) > 1 and len({name for name, _, _ in v}) > 1}
+
+
 def _edge_face_adjacency(me):
     """Flat (edge_index, face_index) pairs. Built once -- topology is static."""
     lookup = {}
@@ -375,6 +498,13 @@ class ObjectPlan:
             elif self.edge_face_b[edge_index] < 0:
                 self.edge_face_b[edge_index] = face_index
         self.edge_has_pair = (self.edge_face_a >= 0) & (self.edge_face_b >= 0)
+
+        # Filled by `adopt_welds` when Weld Seams is on: which open edges are
+        # really interior edges shared with another object, and the normal of
+        # the face on the far side, so the crease angle can still be measured.
+        self.edge_welded = np.zeros(self.nedges, dtype=bool)
+        self.edge_weld_owner = np.zeros(self.nedges, dtype=bool)
+        self.edge_weld_normal = np.zeros((self.nedges, 3), dtype=np.float64)
 
         # edges the artist marked sharp in Blender count as creases whatever
         # the angle says
@@ -900,7 +1030,18 @@ def bake_iter(context, settings: BakeSettings):
                 outline_slots[name] = n
                 sized[name] = (sized.get(name, (n, n))[0], n)
 
+    # Built once, before any sampling: which open edges are really shared with
+    # another object. Needs every object's evaluated mesh at once, which is why
+    # it cannot live in ObjectPlan -- a plan only ever sees its own.
+    welds: dict = {}
+    weld_q = max(1e-9, float(getattr(settings, "weld_tol", 1e-4)))
+    welded_edges = 0
+    if getattr(settings, "weld_seams", False):
+        scene.frame_set(frames[0])
+        welds = weld_index(objects, context.evaluated_depsgraph_get(), settings)
+
     def sample_pass():
+        nonlocal welded_edges
         for fi, frame in enumerate(frames):
             scene.frame_set(frame)
             depsgraph = context.evaluated_depsgraph_get()
@@ -919,6 +1060,9 @@ def bake_iter(context, settings: BakeSettings):
                     plan = plans.get(obj.name)
                     if plan is None:
                         plan = ObjectPlan(obj, me, settings)
+                        if welds:
+                            welded_edges += adopt_welds(plan, obj, me, welds,
+                                                        weld_q)
                         if obj.name in no_merge:
                             plan.merge_fill = False
                         plan.outline_n = outline_slots.get(obj.name)
@@ -1262,6 +1406,10 @@ def bake_iter(context, settings: BakeSettings):
             # loops, or a genus above zero. Losing the slot *order* is no
             # longer on this list -- slots are positions around the loop now,
             # which are monotone by construction -- see outline.py.
+            # Open edges found to be shared with another object and so not
+            # drawn as borders. Zero with Weld Seams on means nothing matched:
+            # the pieces are not touching, or weld_tol is too tight.
+            "welded_edges": welded_edges,
             "merged_fallback": merge_fallback,
             # The gap test: how many merged outlines it actually scored, the
             # worst of them as (outline as drawn, faces instead) in pixels
@@ -1512,6 +1660,12 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         any_front = front_count > 0
         all_front = front_count == plan.edge_face_count
         boundary = plan.edge_face_count < 2
+        # A welded edge is not an open border -- the surface continues on the
+        # other object. Leaving it in `boundary` is exactly the seam that Weld
+        # Seams exists to remove, and it would be drawn whatever the angle,
+        # because boundary bypasses `reachable` too.
+        if plan.edge_welded.any():
+            boundary = boundary & ~plan.edge_welded
         # Silhouette stays a statement about *facing*, so it is built from
         # front_count alone -- it is where the surface turns away, whether or
         # not the far side happens to be drawn.
@@ -1561,6 +1715,20 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         # reports 180, which makes none of them one and leaves the silhouette.
         limit = plan.shade_angle if mode == "SHADING" else plan.crease_angle
         crease = np.zeros(ne, dtype=bool)
+        # A welded edge is an interior edge stored twice, so it gets the same
+        # question every interior edge gets: how far do the two faces turn
+        # through? The far face belongs to another object, so its normal was
+        # recorded when the weld was found rather than looked up here.
+        if ne and plan.edge_welded.any():
+            w = plan.edge_welded & (plan.edge_face_a >= 0)
+            if w.any():
+                own = world_n[plan.edge_face_a[w]]
+                far = plan.edge_weld_normal[w]
+                cos_w = math.cos(math.radians(
+                    plan.shade_angle if mode == "SHADING" else plan.crease_angle)) - 1e-9
+                crease[w] = np.einsum("ij,ij->i", own, far) < cos_w
+            # and only the owning half draws it
+            crease &= ~(plan.edge_welded & ~plan.edge_weld_owner)
         if ne and nf and plan.edge_has_pair.any():
             pair = plan.edge_has_pair
             na = world_n[plan.edge_face_a[pair]]
@@ -1614,7 +1782,10 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         # from the other end: `part_002.002/m` over `part_001.001` goes from
         # 4px to 21px wrong at a worst gap of 6.56, because the boom no longer
         # states its own extent.
-        edge_shown = (crease | plan.edge_marked_sharp | boundary | silhouette) & (reachable | boundary)
+        marked = plan.edge_marked_sharp
+        if plan.edge_welded.any():
+            marked = marked & ~(plan.edge_welded & ~plan.edge_weld_owner)
+        edge_shown = (crease | marked | boundary | silhouette) & (reachable | boundary)
     else:  # HIDDEN
         edge_shown = reachable | boundary
 
