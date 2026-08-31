@@ -1588,6 +1588,32 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 flat = np.zeros(ne, dtype=bool)
                 np.logical_or.at(flat, plan.adj_edge, plan.face_sharp[plan.adj_face])
                 crease |= flat & bends
+        # A boundary edge is exempt from `reachable`, and the exemption is load
+        # bearing. It looks redundant next to the open-shell fallback in
+        # c5462e5 -- if a culled shell is drawn from its other side anyway, the
+        # face is drawn and the rim is reachable without any help. It is not:
+        # that fallback is per object and all or nothing (`if not
+        # draw_faces.any()`), it lives in the merged-outline path, and it never
+        # touches `face_drawn`. A shell only *partly* turned away keeps its
+        # far region culled, and the exemption is the only thing drawing the
+        # rim of that region.
+        #
+        # Which matters because every material in this scene has
+        # `use_backface_culling` off, so Blender draws both sides and the bake
+        # does not. Measured on 20 frames of the reduced Voyager at tol 1.0,
+        # dropping the exemption to `& reachable`: elements 7365 -> 6799, the
+        # delivered file 0.97 -> 0.84MB gzipped, and **the ray cast 2.225% ->
+        # 2.471% of sampled overlap pixels wrong**. All 572 lost elements are
+        # strokes, no object loses every stroke, and the arithmetic looked like
+        # a 13% saving for nothing.
+        #
+        # It is not. One of the 572 is `part_001.001/c1_0`: the magnetometer
+        # boom is two quads, one of them faces away, and that chain is its long
+        # edge. Without it the boom -- the largest single feature in frame --
+        # collapses from a band to a hairline. The ray cast sees the same thing
+        # from the other end: `part_002.002/m` over `part_001.001` goes from
+        # 4px to 21px wrong at a worst gap of 6.56, because the boom no longer
+        # states its own extent.
         edge_shown = (crease | plan.edge_marked_sharp | boundary | silhouette) & (reachable | boundary)
     else:  # HIDDEN
         edge_shown = reachable | boundary
