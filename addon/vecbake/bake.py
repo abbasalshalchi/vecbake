@@ -343,10 +343,29 @@ def weld_index(objects, depsgraph, settings):
       cut, weld on        17       4        13
 
     Fills 41 to 4, and the strokes end up where they started. Off, the cut draws
-    a heavy ring around the seam; on, the ring is gone. Two small chevrons
-    survive at the far end, where more than two pieces meet at one vertex: the
-    pair lookup takes an arbitrary partner there and judges the angle against the
-    wrong neighbour. Worth fixing, and it is the honest state today.
+    a heavy ring around the seam; on, the ring is gone.
+
+    Not all of it. Two chevrons survive, and they are **not strokes** -- rendering
+    the split bake one element at a time puts them on `part_018.005/m`, a merged
+    fill. This is the half of the seam welding does not reach, and it is
+    structural rather than a tuning miss.
+
+    A merged fill is the outline of the region an object draws, walked in
+    merge.py. For a piece of a split part that region ends at the cut, so the
+    walk goes round the cut and the fill is stroked along it -- the seam
+    reappears as the outline of the fill instead of as a boundary edge. Nothing
+    in `edge_shown` can suppress that, because no edge is being drawn.
+
+    The two ways out both cost something. Walking the group as one surface,
+    stepping across welded edges into the neighbouring object, gives the right
+    outline and puts back the very walk that failed and made the part unmergeable
+    to begin with. Keeping the per-piece walk and skipping the welded spans when
+    stroking needs the outline to carry which of its spans are real, which is a
+    format change and a player change.
+
+    So: 10.3% of the part's ink still differs from the whole against 14.5%
+    unwelded. Welding removes the stroke half of the seam and leaves the fill
+    half, which is worth having and is not the whole job.
 
     Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
     baked over 8 frames:
