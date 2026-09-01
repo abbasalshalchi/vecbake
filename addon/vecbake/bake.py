@@ -334,6 +334,20 @@ def weld_index(objects, depsgraph, settings):
     Costs one mesh evaluation per object, once, before sampling starts. Only
     boundary edges are indexed -- interior ones already know their neighbour.
 
+    On part_018.001 -- a closed solid, 62 faces, split along its 80 sharp edges
+    into 5 pieces, 8 frames -- which is the case this is for:
+
+                    elements   fills   strokes
+      whole               52      41        11
+      cut, weld off       42       4        38
+      cut, weld on        17       4        13
+
+    Fills 41 to 4, and the strokes end up where they started. Off, the cut draws
+    a heavy ring around the seam; on, the ring is gone. Two small chevrons
+    survive at the far end, where more than two pieces meet at one vertex: the
+    pair lookup takes an arbitrary partner there and judges the angle against the
+    wrong neighbour. Worth fixing, and it is the honest state today.
+
     Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
     baked over 8 frames:
 
