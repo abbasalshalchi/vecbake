@@ -295,8 +295,8 @@ def adopt_welds(plan, obj, me, index, q):
         partners = index.get(key)
         if not partners:
             continue
-        other = next((n for name, _, n in partners
-                      if name != obj.name and n is not None), None)
+        other = next((n for name, idx, n in partners
+                      if (name, idx) != (obj.name, int(e)) and n is not None), None)
         if other is None:
             continue
         plan.edge_welded[e] = True
@@ -305,8 +305,8 @@ def adopt_welds(plan, obj, me, index, q):
         # down a cut would come out twice as heavy as the same crease anywhere
         # else. One side owns it: the first object name in the pair, which is
         # stable across a re-bake and does not depend on evaluation order.
-        owner = min(name for name, _, _ in partners)
-        plan.edge_weld_owner[e] = (owner == obj.name)
+        owner = min((name, idx) for name, idx, _ in partners)
+        plan.edge_weld_owner[e] = (owner == (obj.name, int(e)))
         found += 1
     return found
 
@@ -345,27 +345,26 @@ def weld_index(objects, depsgraph, settings):
     Fills 41 to 4, and the strokes end up where they started. Off, the cut draws
     a heavy ring around the seam; on, the ring is gone.
 
-    Not all of it. Two chevrons survive, and they are **not strokes** -- rendering
-    the split bake one element at a time puts them on `part_018.005/m`, a merged
-    fill. This is the half of the seam welding does not reach, and it is
-    structural rather than a tuning miss.
+    Two marks survive on that bake and they are *not* a weld failure, though it
+    took three wrong answers to establish it. Leave-one-out over every element
+    puts them on `part_018.001/e19` and `/c0_1` -- strokes, not fills. Those edges
+    are welded, are owned, and their measured dihedral is 90.00 degrees: piece
+    001 is the end cap, normal (1, 0, 0), and its partner across the weld is a
+    tube facet at (0, 0.459, -0.888). The cap meets the body at a right angle,
+    the shading threshold here is 73.59 degrees, so the edge is a crease and
+    drawing it is correct. Welding found it, measured it, and kept it on purpose.
 
-    A merged fill is the outline of the region an object draws, walked in
-    merge.py. For a piece of a split part that region ends at the cut, so the
-    walk goes round the cut and the fill is stroked along it -- the seam
-    reappears as the outline of the fill instead of as a boundary edge. Nothing
-    in `edge_shown` can suppress that, because no edge is being drawn.
+    Which sets the rule for where to cut. A cut along an edge the bake already
+    considers a crease is free -- the line was there anyway. A cut along a
+    genuinely sharp edge that the bake did *not* draw, because the sharp angle
+    sits below the shading threshold, is also free. What is not free is
+    assuming the two thresholds agree: this test split at 30 degrees while the
+    bake creases at 73.59, so it cut plenty of edges the bake calls smooth and
+    a few, like the cap rim, that it does not.
 
-    The two ways out both cost something. Walking the group as one surface,
-    stepping across welded edges into the neighbouring object, gives the right
-    outline and puts back the very walk that failed and made the part unmergeable
-    to begin with. Keeping the per-piece walk and skipping the welded spans when
-    stroking needs the outline to carry which of its spans are real, which is a
-    format change and a player change.
-
-    So: 10.3% of the part's ink still differs from the whole against 14.5%
-    unwelded. Welding removes the stroke half of the seam and leaves the fill
-    half, which is worth having and is not the whole job.
+    10.3% of the part's ink still differs from the whole against 14.5% unwelded,
+    and the remainder is the merged-versus-per-face silhouette difference, not
+    the seam.
 
     Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
     baked over 8 frames:
@@ -428,9 +427,12 @@ def weld_index(objects, depsgraph, settings):
                     (obj.name, int(e), normals[fi] if fi is not None else None))
         finally:
             eval_obj.to_mesh_clear()
-    # only pairs that actually met something on another object are seams
-    return {k: v for k, v in index.items()
-            if len(v) > 1 and len({name for name, _, _ in v}) > 1}
+    # Any open edge that meets another open edge at the same place is a seam,
+    # including one on the *same* object. Requiring two different objects was a
+    # bug: splitting along sharp edges and separating by loose parts leaves
+    # plenty of cuts that did not disconnect anything -- a slit through a piece,
+    # not a division of it -- and both sides of those stayed boundaries and drew.
+    return {k: v for k, v in index.items() if len(v) > 1}
 
 
 def _edge_face_adjacency(me):
