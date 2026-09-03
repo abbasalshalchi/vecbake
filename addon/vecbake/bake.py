@@ -295,17 +295,20 @@ def adopt_welds(plan, obj, me, index, q):
         partners = index.get(key)
         if not partners:
             continue
-        other = next((n for name, idx, n in partners
-                      if (name, idx) != (obj.name, int(e)) and n is not None), None)
-        if other is None:
+        far = next(((n, c) for name, idx, n, c in partners
+                    if (name, idx) != (obj.name, int(e)) and n is not None), None)
+        if far is None:
             continue
+        other, other_c = far
         plan.edge_welded[e] = True
         plan.edge_weld_normal[e] = other
+        if other_c is not None:
+            plan.edge_weld_center[e] = other_c
         # Both halves hold the same edge, so both would draw it, and a crease
         # down a cut would come out twice as heavy as the same crease anywhere
         # else. One side owns it: the first object name in the pair, which is
         # stable across a re-bake and does not depend on evaluation order.
-        owner = min((name, idx) for name, idx, _ in partners)
+        owner = min((name, idx) for name, idx, _, _ in partners)
         plan.edge_weld_owner[e] = (owner == (obj.name, int(e)))
         found += 1
     return found
@@ -362,9 +365,20 @@ def weld_index(objects, depsgraph, settings):
     bake creases at 73.59, so it cut plenty of edges the bake calls smooth and
     a few, like the cap rim, that it does not.
 
-    10.3% of the part's ink still differs from the whole against 14.5% unwelded,
-    and the remainder is the merged-versus-per-face silhouette difference, not
-    the seam.
+    `reachable` had to learn about welds too, and that closed the question. Its
+    job is "is any face touching this edge being drawn", and for a welded edge
+    the second face lives on another object, so it was judging against half the
+    surface. Feeding the partner's facing in -- from the normal and centre the
+    weld already recorded -- brings the split part's stroke set into line with
+    the whole part's: the cap rim that appeared as two chevrons is now the whole
+    ellipse, which is what the whole part draws as well. Render either bake's
+    strokes on their own and both show it.
+
+    9.5% of the part's ink still differs from the whole, against 14.5% unwelded.
+    What is left is not a seam. In the whole part that rim ends up behind the
+    body's fills and is hidden; across five pieces it paints in front. That is
+    paint order over one object versus five, and it is the next thing to chase,
+    not this.
 
     Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
     baked over 8 frames:
@@ -417,6 +431,11 @@ def weld_index(objects, depsgraph, settings):
             normals = normals.reshape(-1, 3) @ np.linalg.inv(m[:3, :3])
             lens = np.linalg.norm(normals, axis=1, keepdims=True)
             normals = normals / np.where(lens < 1e-12, 1.0, lens)
+            # centres as well: whether the far face points at the camera is a
+            # perspective question, and that needs a position, not just a normal
+            centers = np.empty(nf * 3, dtype=np.float64)
+            me.polygons.foreach_get("center", centers)
+            centers = centers.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
             for e in open_edges:
                 a, b = edge_verts[e]
                 pa = tuple(np.round(world[a] / q).astype(np.int64))
@@ -424,7 +443,9 @@ def weld_index(objects, depsgraph, settings):
                 key = (pa, pb) if pa <= pb else (pb, pa)
                 fi = face_of.get(int(e))
                 index.setdefault(key, []).append(
-                    (obj.name, int(e), normals[fi] if fi is not None else None))
+                    (obj.name, int(e),
+                     normals[fi] if fi is not None else None,
+                     centers[fi] if fi is not None else None))
         finally:
             eval_obj.to_mesh_clear()
     # Any open edge that meets another open edge at the same place is a seam,
@@ -540,6 +561,7 @@ class ObjectPlan:
         self.edge_welded = np.zeros(self.nedges, dtype=bool)
         self.edge_weld_owner = np.zeros(self.nedges, dtype=bool)
         self.edge_weld_normal = np.zeros((self.nedges, 3), dtype=np.float64)
+        self.edge_weld_center = np.zeros((self.nedges, 3), dtype=np.float64)
 
         # edges the artist marked sharp in Blender count as creases whatever
         # the angle says
@@ -1709,6 +1731,25 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         # at all, and it follows whichever faces are actually being drawn.
         drawn_count = np.zeros(ne, dtype=np.int32)
         np.add.at(drawn_count, plan.adj_edge, face_drawn[plan.adj_face].astype(np.int32))
+        # A welded edge's other face belongs to another object, so it is missing
+        # from `adj_face` and `reachable` would judge the edge against half the
+        # surface it really has. Splitting a part would then hide edges the whole
+        # part drew, purely because the neighbour moved out of the mesh -- the
+        # same fault the `boundary` and `crease` terms already needed telling
+        # about. The far normal and centre were recorded with the weld, so its
+        # facing is the same arithmetic `project_object` does.
+        if plan.edge_welded.any():
+            w = np.nonzero(plan.edge_welded)[0]
+            n_far = plan.edge_weld_normal[w]
+            if is_ortho:
+                far_facing = n_far @ cam_fwd
+            else:
+                far_facing = np.einsum("ij,ij->i",
+                                       n_far, plan.edge_weld_center[w] - cam_pos)
+            # `see_through` is a property of the far object's material, which is
+            # not reachable from here; front-facing is the case that matters and
+            # keeping too much is the safe direction.
+            drawn_count[w[far_facing < 0.0]] += 1
         reachable = drawn_count > 0
     else:
         any_front = np.ones(ne, dtype=bool)
