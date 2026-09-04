@@ -1396,7 +1396,7 @@ def bake_iter(context, settings: BakeSettings):
         if plan.seam_hits is None or not plan.seam_frames:
             continue
         share = plan.seam_hits / float(plan.seam_frames)
-        mask = share >= 0.5
+        mask = share >= 1.0 - 1e-9
         if not mask.any():
             continue
         el = element_by_key.get(f"{plan.name}/m")
@@ -1754,10 +1754,15 @@ def project_object(plan, me, eval_obj, view, mvp, width, height,
 
 
 # How much of a clip a span has to spend on the weld before the stroke gives it
-# up. Swept over "any frame", "half the frames" and "every frame" on
-# part_018.001: the three agree, because a cut piece's rim is its boundary in
-# every frame it is drawn at all. Half, so a span that genuinely changes its
-# mind goes with the majority rather than with one frame either way.
+# up. All of it: a span the frames disagree about keeps its line.
+#
+# Swept on part_018.001, where 8 of 63 spans do disagree -- ink differing from
+# the whole part was 7.622% taking any frame's word for it, 7.666% by majority
+# and 7.445% requiring every frame. The safest reading is also the best one,
+# which is the useful part: where the mask is in doubt the stroke is the thing
+# to keep, because a line drawn over a seam is a smaller error than a piece of
+# real silhouette missing. On a clean cut it makes no difference at all -- the
+# cube's spans are unanimous in all 249 frames.
 
 
 def _seam_spans(plan, ring_verts, pos, nslots):
