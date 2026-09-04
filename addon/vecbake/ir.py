@@ -92,6 +92,14 @@ class Element:
     # Not a Track -- deciding it per frame would let the shape pop as the
     # camera moves. None means every vertex is a corner. See curves.py.
     smooth: object = None
+    # Merged outlines only. Static per-point bool: the span leaving this point
+    # lies on a weld, so the fill keeps it and the stroke skips it. That is the
+    # seam a cut leaves behind -- the piece's own boundary is the cut, and the
+    # outline stroke would draw it in the outline colour on both halves. Fixed
+    # for the clip for the same reason `smooth` is: deciding it per frame makes
+    # the line flicker along the arc as the camera moves. None means stroke the
+    # whole ring, which is what every unwelded outline wants. See bake._seam_spans.
+    seam: object = None
 
     def is_closed(self) -> bool:
         """Does the last point join back to the first?"""
@@ -145,7 +153,11 @@ class VecScene:
                     depth=reverse_track(el.depth, self.duration),
                     shade=reverse_track(el.shade, self.duration),
                     # reversing is a time transform; vertex order is untouched
-                    smooth=el.smooth,
+                    smooth=el.smooth, seam=el.seam,
+                    # Was being dropped, which left a reversed copy's merged
+                    # outlines filled but never stroked -- the same clip
+                    # drawing differently backwards.
+                    edge_color=el.edge_color,
                 )
             )
         meta = dict(self.meta)

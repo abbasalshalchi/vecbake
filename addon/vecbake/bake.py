@@ -295,20 +295,23 @@ def adopt_welds(plan, obj, me, index, q):
         partners = index.get(key)
         if not partners:
             continue
-        far = next(((n, c) for name, idx, n, c in partners
+        far = next(((name, n, c, f) for name, idx, n, c, f in partners
                     if (name, idx) != (obj.name, int(e)) and n is not None), None)
         if far is None:
             continue
-        other, other_c = far
+        other_name, other, other_c, other_face = far
         plan.edge_welded[e] = True
         plan.edge_weld_normal[e] = other
         if other_c is not None:
             plan.edge_weld_center[e] = other_c
+        # Who is on the other side, so the ordering pass can say what that
+        # object's own fill is allowed to do to this edge. See edge_weld_keys.
+        plan.edge_weld_partner[e] = (other_name, other_face)
         # Both halves hold the same edge, so both would draw it, and a crease
         # down a cut would come out twice as heavy as the same crease anywhere
         # else. One side owns it: the first object name in the pair, which is
         # stable across a re-bake and does not depend on evaluation order.
-        owner = min((name, idx) for name, idx, _, _ in partners)
+        owner = min((name, idx) for name, idx, _, _, _ in partners)
         plan.edge_weld_owner[e] = (owner == (obj.name, int(e)))
         found += 1
     return found
@@ -343,10 +346,21 @@ def weld_index(objects, depsgraph, settings):
                     elements   fills   strokes
       whole               52      41        11
       cut, weld off       42       4        38
-      cut, weld on        17       4        13
+      cut, weld on        19       4        15
 
     Fills 41 to 4, and the strokes end up where they started. Off, the cut draws
     a heavy ring around the seam; on, the ring is gone.
+
+    The ring the *outline* draws is a separate one, and it survived all of the
+    above because it is not an edge decision at all. A merged outline is a
+    stroked fill, `merge.silhouette_edges` counts drawn faces, and a cut piece's
+    rim has exactly one -- so the cut joins that piece's silhouette and both
+    halves paint it in the outline colour. Exempting welded edges there does not
+    work: the loop then fails to close and `_loops` drops it, and the piece
+    loses its fill altogether. So the fill keeps the cut and the stroke gives it
+    up, per span, via `_seam_spans` and the `sw` mask the player and the static
+    SVG both honour. On a cube cut in two that is the whole of the seam: 1,710
+    differing pixels down to 4.
 
     Two marks survive on that bake and they are *not* a weld failure, though it
     took three wrong answers to establish it. Leave-one-out over every element
@@ -374,11 +388,42 @@ def weld_index(objects, depsgraph, settings):
     ellipse, which is what the whole part draws as well. Render either bake's
     strokes on their own and both show it.
 
-    9.5% of the part's ink still differs from the whole, against 14.5% unwelded.
-    What is left is not a seam. In the whole part that rim ends up behind the
-    body's fills and is hidden; across five pieces it paints in front. That is
-    paint order over one object versus five, and it is the next thing to chase,
-    not this.
+    That left the picture 9.5% different from the whole part against 14.5%
+    unwelded, and none of the remainder was a seam: it was paint order. Chased,
+    because it looks exactly like one. Two faults, and they are the same fault
+    upside down -- `edge_face_keys` asserts "a fill can never paint over an edge
+    that lies on it", which a merged fill cannot honour, because one opaque
+    silhouette draws a part's near wall and its far wall at a single depth. The
+    cap's rim at the near end was eaten by the tube's fill; the rim at the far
+    end was drawn straight through it.
+
+    Only a weld can separate those two, and it already had what it needed --
+    the far face's normal and centre, so whether that face points at the camera
+    is a per-frame fact. Front-facing means the edge is on the neighbour's near
+    wall and its fill must stay behind; facing away means the edge is round the
+    back and that same fill is the thing that should be hiding it. See
+    `ObjectPlan.edge_weld_keys` and the `under_faces` half of `order.resolve`.
+    Chained strokes carry the same assertions, and a chain that straddles the
+    neighbour's silhouette asserts neither direction.
+
+    Measured, ink differing from the whole part over the clip:
+
+                    before   after
+      weld off      14.54%  14.54%
+      weld on        9.53%   7.53%
+
+    A closed test says the rest is not weld business either. A cube cut in two
+    is the case where the whole part *also* merges, so identity is reachable:
+    with the user's own settings the cut differs from the joined cube by **4
+    pixels of 358,264**, and all four are the near half's fill clipping the far
+    half's outline cap where the cut meets the silhouette. On part_018 the
+    whole part never merges -- 41 face fills against 4 merged ones -- so the
+    two are different pictures by construction and 7.5% is what that costs, not
+    a defect to chase.
+
+    Union-merging the pieces' outlines would close that gap and is the wrong
+    move: the pieces merge *because* they were cut, and the union is the whole
+    part's silhouette, which is exactly the thing that would not ring.
 
     Measured on part_012.001, split along its 186 sharp edges into 41 pieces and
     baked over 8 frames:
@@ -386,7 +431,7 @@ def weld_index(objects, depsgraph, settings):
                     elements   fills   strokes
       whole              203      97       106
       cut, weld off      250      62       188
-      cut, weld on       139      62        77
+      cut, weld on       154      62        92
 
     The fills are why anyone would cut: 97 face fills become 62, because pieces
     that ring cleanly merge where the whole part never could. The strokes are
@@ -445,7 +490,8 @@ def weld_index(objects, depsgraph, settings):
                 index.setdefault(key, []).append(
                     (obj.name, int(e),
                      normals[fi] if fi is not None else None,
-                     centers[fi] if fi is not None else None))
+                     centers[fi] if fi is not None else None,
+                     -1 if fi is None else int(fi)))
         finally:
             eval_obj.to_mesh_clear()
     # Any open edge that meets another open edge at the same place is a seam,
@@ -562,6 +608,19 @@ class ObjectPlan:
         self.edge_weld_owner = np.zeros(self.nedges, dtype=bool)
         self.edge_weld_normal = np.zeros((self.nedges, 3), dtype=np.float64)
         self.edge_weld_center = np.zeros((self.nedges, 3), dtype=np.float64)
+        # (partner object name, its face index) per welded edge, or None.
+        self.edge_weld_partner = [None] * self.nedges
+        # frame -> the welded edges the neighbour's fill is allowed to hide.
+        # Kept because chaining rebuilds an item's assertions long after the
+        # frame that could work them out, and only a few edges are ever welded.
+        self.weld_cover_frames = {}
+        # (vertex pair) -> edge index, built once when the merged outline first
+        # needs to ask whether a span of its ring lies on a weld.
+        self.edge_of_pair = None
+        # How many drawn frames put each outline slot's outgoing span on a
+        # weld, and how many drawn frames there were. See seam_mask.
+        self.seam_hits = None
+        self.seam_frames = 0
 
         # edges the artist marked sharp in Blender count as creases whatever
         # the angle says
@@ -623,6 +682,46 @@ class ObjectPlan:
         # marked -- so absence is normal and means "none".
         self.edge_freestyle = _edge_attribute(me, "freestyle_edge", self.nedges, bool)
         self.edge_crease = _edge_attribute(me, "crease_edge", self.nedges, float)
+
+    def edge_weld_keys(self, edge_index, may_cover):
+        """What the object across a weld may do to this edge, this frame.
+
+        A welded edge is an interior edge stored twice, so it lies *on* the
+        other piece's surface as much as on this one -- but which side of that
+        surface decides everything, and a merged fill cannot say. One opaque
+        silhouette covers a part's near wall and its far wall alike, at one
+        depth, so the same fill has to paint over the rim at the far end and
+        stay behind the rim at the near end. `on_faces` can only assert the
+        second, and asserting it everywhere is what drew the far rim straight
+        through the neighbour.
+
+        `may_cover` is the one case where the neighbour's fill is entitled to
+        hide this edge: its face across the weld points away from the camera.
+
+        A finer rule was tried and is worse. Where the far face points away and
+        this one does not, the edge is the neighbour's *silhouette* -- a front
+        face meeting a back one -- so arguably its fill ends there rather than
+        covering it. Nine strokes of part_018.002 are buried under
+        part_018.005 that way and the whole part draws all nine. Exempting the
+        silhouette case anyway costs more than it buys: against the whole part,
+        7.67% of ink differs under this rule, 8.30% exempting it, and 8.32%
+        leaving it unasserted for sampling to settle. At a silhouette the fill's
+        own boundary is on the line, so "covered" is the better guess even
+        where it is visibly wrong.
+
+        Returns `(keys the partner must stay behind, keys that may cover this)`,
+        each key offered in both spellings because whether the partner merged is
+        not known here. `resolve` takes whichever names a real element.
+        """
+        partner = self.edge_weld_partner[edge_index]
+        if partner is None:
+            return (), ()
+        name, face = partner
+        keys = ((f"{name}/m",) if face < 0
+                else ((f"{name}/m", f"{name}/f{face}"),))
+        if face < 0:
+            keys = ((f"{name}/m",),)
+        return ((), keys) if may_cover else (keys, ())
 
     def edge_face_keys(self, edge_index):
         """Element keys of the surfaces this edge lies on, if they are drawn.
@@ -1285,6 +1384,32 @@ def bake_iter(context, settings: BakeSettings):
     finally:
         scene.frame_set(original_frame)
 
+    # Which spans of a merged outline are the cut, and so must not be stroked.
+    # Settled once for the clip rather than per frame, like `smooth`: the point
+    # count and the slot order are both fixed by now -- neither chaining, the
+    # fill thinner nor the curve classifier touches a merged outline -- and a
+    # stroke that switched on and off along an arc as the camera moved would
+    # flicker where a seam should simply be absent.
+    seam_report = {"outlines": 0, "spans": 0, "unstable": 0}
+    element_by_key = {el.key: el for el in elements}
+    for plan in plans.values():
+        if plan.seam_hits is None or not plan.seam_frames:
+            continue
+        share = plan.seam_hits / float(plan.seam_frames)
+        mask = share >= 0.5
+        if not mask.any():
+            continue
+        el = element_by_key.get(f"{plan.name}/m")
+        if el is None:
+            continue
+        el.seam = mask
+        seam_report["outlines"] += 1
+        seam_report["spans"] += int(mask.sum())
+        # A span the frames disagree about. Reported rather than smoothed over:
+        # if this is not near zero the static mask is the wrong shape for the
+        # problem and the flag has to become a track after all.
+        seam_report["unstable"] += int(((share > 0.0) & (share < 1.0)).sum())
+
     chain_report = {"chains": 0, "edges_merged": 0, "paths": {}}
     if settings.chain_edges:
         yield ("Chaining edges", 0, 1)
@@ -1467,6 +1592,12 @@ def bake_iter(context, settings: BakeSettings):
             # drawn as borders. Zero with Weld Seams on means nothing matched:
             # the pieces are not touching, or weld_tol is too tight.
             "welded_edges": welded_edges,
+            # Merged outlines whose stroke skips the cut, how many of their
+            # spans it skips, and how many spans the frames disagreed about.
+            # `unstable` well above zero means the mask should be a track.
+            "welded_outlines": seam_report["outlines"],
+            "welded_spans": seam_report["spans"],
+            "welded_spans_unstable": seam_report["unstable"],
             "merged_fallback": merge_fallback,
             # The gap test: how many merged outlines it actually scored, the
             # worst of them as (outline as drawn, faces instead) in pixels
@@ -1622,6 +1753,69 @@ def project_object(plan, me, eval_obj, view, mvp, width, height,
                      face_front, face_ok, face_depth)
 
 
+# How much of a clip a span has to spend on the weld before the stroke gives it
+# up. Swept over "any frame", "half the frames" and "every frame" on
+# part_018.001: the three agree, because a cut piece's rim is its boundary in
+# every frame it is drawn at all. Half, so a span that genuinely changes its
+# mind goes with the majority rather than with one frame either way.
+
+
+def _seam_spans(plan, ring_verts, pos, nslots):
+    """Which outline slots start a span that lies on a weld.
+
+    A merged outline is one path, filled and then stroked, and that stroke is
+    the whole point of merging: which mesh edges are on a silhouette changes
+    every frame, so the line has to come from the fill. But a piece cut off
+    another has the cut in its own silhouette -- the cut *is* its boundary --
+    and stroking it draws the seam that welding exists to remove. Both halves
+    draw it, in the outline colour, and no edge decision can reach it because
+    it is not an edge element at all.
+
+    So the fill keeps the cut and the stroke does not. `pos` is where each slot
+    sits, as (ring segment, fraction); a span between two slots is on the weld
+    when the ring segment under its midpoint is a welded edge. Midpoint rather
+    than "every segment it covers": a span that straddles the end of the weld
+    has to choose, and choosing by where most of it lies keeps the join in the
+    same place from both sides.
+    """
+    m = len(ring_verts)
+    if m < 2 or nslots < 2:
+        return None
+    if plan.edge_of_pair is None:
+        plan.edge_of_pair = {
+            (int(a), int(b)) if a < b else (int(b), int(a)): i
+            for i, (a, b) in enumerate(plan.edge_verts)
+        }
+    lookup = plan.edge_of_pair
+    welded = np.zeros(m, dtype=bool)
+    for j in range(m):
+        a, b = int(ring_verts[j]), int(ring_verts[(j + 1) % m])
+        if a == b:
+            continue
+        e = lookup.get((a, b) if a < b else (b, a))
+        # A splice or bridge segment joins two points that share no edge. It is
+        # not a weld, and it is already covered by the second fill bake.py
+        # draws over it.
+        if e is not None and plan.edge_welded[e]:
+            welded[j] = True
+    if not welded.any():
+        return None
+
+    # Slot i's span runs to slot i+1. Both ends are (segment, fraction), so
+    # position along the ring in segment units is just their sum, and the
+    # midpoint is half a step forward from there.
+    #
+    # Forward *on the circle*, not in the array: slot 0 does not have to sit at
+    # the start of the ring, and a ring that visits a vertex twice carries two
+    # slots at the same place. Correcting only the last span's wrap left the
+    # second half of a two-segment cut stroked, which is exactly the seam this
+    # is here to remove.
+    here = (pos[:, 0] + pos[:, 1]) % m
+    step = (np.roll(here, -1) - here) % m
+    mid = (here + step * 0.5).astype(np.int64) % m
+    return welded[mid]
+
+
 def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
                   cam_pos, cam_fwd, is_ortho):
     """`(anchors, polygon, projected vertices)` this instant. Anchors and
@@ -1731,6 +1925,7 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         # at all, and it follows whichever faces are actually being drawn.
         drawn_count = np.zeros(ne, dtype=np.int32)
         np.add.at(drawn_count, plan.adj_edge, face_drawn[plan.adj_face].astype(np.int32))
+        weld_cover = np.zeros(ne, dtype=bool)
         # A welded edge's other face belongs to another object, so it is missing
         # from `adj_face` and `reachable` would judge the edge against half the
         # surface it really has. Splitting a part would then hide edges the whole
@@ -1750,12 +1945,27 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # not reachable from here; front-facing is the case that matters and
             # keeping too much is the safe direction.
             drawn_count[w[far_facing < 0.0]] += 1
+            # When may the neighbour's fill hide this edge? Only when the edge
+            # is round the back of *both* pieces.
+            #
+            # "The far face points away" looked like the test and is not. Where
+            # the far face points away and this one does not, the edge is the
+            # neighbour's *silhouette* -- by definition, a front face meeting a
+            # back one -- so its merged fill ends there rather than covering it,
+            # and the neighbour draws its own outline along the same line. Nine
+            # strokes of part_018.002 were being buried under part_018.005 that
+            # way, worth about 420 pixels; the whole part draws every one.
+            cover = np.zeros(ne, dtype=bool)
+            cover[w] = far_facing >= 0.0
+            plan.weld_cover_frames[fi] = set(np.nonzero(cover)[0].tolist())
+            weld_cover = cover
         reachable = drawn_count > 0
     else:
         any_front = np.ones(ne, dtype=bool)
         boundary = np.ones(ne, dtype=bool)
         silhouette = np.zeros(ne, dtype=bool)
         reachable = np.ones(ne, dtype=bool)
+        weld_cover = np.zeros(ne, dtype=bool)
 
     mode = plan.edge_mode
     # A merged outline draws this object's silhouette itself, so emitting the
@@ -1950,6 +2160,16 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     limit=outline_mod.REFINE_LEASH / max(plan.outline_n, 1))
             pts = outline_mod.evaluate(pos, poly)
             plan.outline_prev = (ring_ids, pts, ring, poly)
+            if plan.edge_welded.any():
+                # Wound from the same points, so it reverses exactly when
+                # `wound` reversed the ring above and the two stay in step.
+                ring_verts, _ = outline_mod.wound(walk[1], xy, xy[walk[1]])
+                span = _seam_spans(plan, ring_verts, pos, plan.outline_n)
+                if plan.seam_hits is None:
+                    plan.seam_hits = np.zeros(plan.outline_n, dtype=np.int64)
+                if span is not None:
+                    plan.seam_hits += span.astype(np.int64)
+                plan.seam_frames += 1
             visible = True
             if cull:
                 visible = not (
@@ -2029,14 +2249,21 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             slot["depth"][fi] = edge_depth[eidx]
             if visible and collect is not None:
                 pair = [int(a), int(b)]
-                collect.append({
+                item = {
                     "key": key, "kind": 0, "seed": float(edge_depth[eidx]),
                     "pts": np.array([pa, pb]), "depths": depth[pair],
                     # The faces this edge physically lies on. Their relative
                     # order is topology, not something to be measured -- see
                     # order.resolve().
                     "on_faces": plan.edge_face_keys(eidx),
-                })
+                }
+                if plan.edge_welded[eidx]:
+                    over, under = plan.edge_weld_keys(eidx, bool(weld_cover[eidx]))
+                    if over:
+                        item["on_faces"] = item["on_faces"] + over
+                    if under:
+                        item["under_faces"] = under
+                collect.append(item)
 
 
 def _surface_probe(plan, facing, xy, depth):

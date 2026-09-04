@@ -28,6 +28,75 @@ def _fmt(v, decimals):
     return str(int(r)) if r == int(r) else str(r)
 
 
+def _tangents(x, y, el, n):
+    """Catmull-Rom half-tangents at every point, zero at a corner."""
+    mask = getattr(el, "smooth", None)
+    tx, ty = [0.0] * n, [0.0] * n
+    if mask is None:
+        return tx, ty
+    flags = [bool(v) for v in mask]
+    if not any(flags) or len(flags) != n:
+        return tx, ty
+    closed = el.is_closed()
+    for i in range(n):
+        if not flags[i]:
+            continue
+        if closed:
+            a, b = (i - 1) % n, (i + 1) % n
+        elif 0 < i < n - 1:
+            a, b = i - 1, i + 1
+        else:
+            continue
+        tx[i] = (x[b] - x[a]) * 0.5
+        ty[i] = (y[b] - y[a]) * 0.5
+    return tx, ty
+
+
+def _run_data(pts, el, decimals, mask):
+    """`d` for the spans a merged outline's seam mask leaves stroked.
+
+    The fill keeps every point -- dropping the cut would change the shape --
+    so the mask is applied here and only here. Same tangents as the filled
+    path, so the line sits exactly on the boundary it came from, and one `M`
+    wherever a run of kept spans begins.
+    """
+    n = len(pts) // 2
+    if n < 3 or mask is None or len(mask) != n:
+        return ""
+    skip = [bool(v) for v in mask]
+    if all(skip):
+        return ""
+    x = [pts[i * 2] for i in range(n)]
+    y = [pts[i * 2 + 1] for i in range(n)]
+    tx, ty = _tangents(x, y, el, n)
+    f = lambda v: _fmt(v, decimals)
+    # Begin where a run begins, so the run that wraps past the last span stays
+    # one subpath. Starting at span 0 regardless breaks it at that corner and
+    # leaves a zero-length subpath behind, which round caps paint as a dot.
+    # 0 when nothing is skipped: there is only one run and it starts anywhere.
+    start = next(((i + 1) % n for i in range(n)
+                  if skip[i] and not skip[(i + 1) % n]), 0)
+    out, pen = [], False
+    for k in range(n):
+        i = (start + k) % n
+        j = (i + 1) % n
+        if skip[i]:
+            pen = False
+            continue
+        if not pen:
+            out.append(f"M {f(x[i])},{f(y[i])}")
+            pen = True
+        if tx[i] == 0.0 and ty[i] == 0.0 and tx[j] == 0.0 and ty[j] == 0.0:
+            out.append(f"L {f(x[j])},{f(y[j])}")
+        else:
+            out.append(
+                f"C {f(x[i] + tx[i] / 3)},{f(y[i] + ty[i] / 3)}"
+                f" {f(x[j] - tx[j] / 3)},{f(y[j] - ty[j] / 3)}"
+                f" {f(x[j])},{f(y[j])}"
+            )
+    return " ".join(out)
+
+
 def _path_data(pts, el, decimals):
     """`d` for a curved element, or "" when it is a plain polyline.
 
@@ -120,7 +189,22 @@ def render_inner(vec: VecScene, time=None, decimals=2, class_prefix="vb", seam_f
         if el.kind == FILL:
             fill = _hex(el.color, shade)
             attrs.append(f'fill="{fill}"')
-            if el.edge_color is not None and el.width > 0.0 and opacity > 0.999:
+            # Spans of this outline that are a weld: kept by the fill,
+            # dropped by the line, and drawn as a separate path afterwards
+            # because one SVG shape cannot stroke part of itself.
+            seam = getattr(el, "seam", None)
+            outlined = (el.edge_color is not None and el.width > 0.0
+                        and opacity > 0.999)
+            runs = cut = ""
+            if outlined and seam is not None:
+                runs = _run_data(pts, el, decimals, seam)
+                # The complement: the cut itself, which takes the hairline
+                # treatment rather than the line. Only along the cut -- round
+                # the whole ring it would sit under the outline everywhere
+                # else, and two strokes blend differently from one.
+                cut = _run_data(pts, el, decimals,
+                                [0 if v else 1 for v in seam])
+            if outlined and seam is None:
                 # A merged outline draws its own silhouette, so the resting
                 # states have to draw it too. Without this the static SVG that
                 # every .lerpa embeds would show these shapes unoutlined while
@@ -130,6 +214,8 @@ def render_inner(vec: VecScene, time=None, decimals=2, class_prefix="vb", seam_f
                 # that as well. See outline.py.
                 attrs.append(f'stroke="{_hex(el.edge_color)}"')
                 attrs.append(f'stroke-width="{_fmt(el.width, 2)}"')
+            elif outlined:
+                pass          # both lines are emitted below, as their own paths
             elif seam_fix and opacity > 0.999:
                 # close the antialiasing hairline between abutting polygons,
                 # exactly as the Canvas player does
@@ -146,6 +232,21 @@ def render_inner(vec: VecScene, time=None, decimals=2, class_prefix="vb", seam_f
                 out.append(f'<path d="{curved} Z" {" ".join(attrs)}/>')
             else:
                 out.append(f'<polygon points="{coords}" {" ".join(attrs)}/>')
+            if cut:
+                # The cut: filled by the shape, and closed against the
+                # abutting half by a hairline in the fill's own colour.
+                out.append(
+                    f'<path d="{cut}" fill="none" stroke="{fill}"'
+                    f' stroke-width="{_fmt(seam_width, 2)}"'
+                    f' data-group="{escape(el.group)}"/>'
+                )
+            if runs:
+                out.append(
+                    f'<path d="{runs}" fill="none"'
+                    f' stroke="{_hex(el.edge_color)}"'
+                    f' stroke-width="{_fmt(el.width, 2)}"'
+                    f' data-group="{escape(el.group)}"/>'
+                )
         else:
             attrs.append(f'fill="none"')
             attrs.append(f'stroke="{_hex(el.color)}"')

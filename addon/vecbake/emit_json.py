@@ -90,8 +90,8 @@ def _encode_track(track, decimals, grid):
         len(json.dumps(sparse, separators=(",", ":"))) else sparse
 
 
-def _encode_smooth(mask):
-    """Per-vertex smooth flags: 1 for all, else a hex bitmask, else absent.
+def _encode_mask(mask):
+    """Per-vertex flags: 1 for all, else a hex bitmask, else absent.
 
     Bit i is vertex i, so the *last* hex digit carries vertices 0-3. A bitmask
     beats a list of indices here because it is the same size whether the path
@@ -172,9 +172,15 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
             item["oc"] = color_index(el.edge_color)
         if el.shade is not None:
             item["S"] = _encode_track(el.shade, 3, grid)
-        smooth = _encode_smooth(el.smooth)
+        smooth = _encode_mask(el.smooth)
         if smooth is not None:
             item["sm"] = smooth
+        # Spans of a merged outline that are a weld: filled, not
+        # stroked. Same encoding as `sm`, and absent unless the
+        # object was cut off another. See bake._seam_spans.
+        seam = _encode_mask(getattr(el, "seam", None))
+        if seam is not None:
+            item["sw"] = seam
         if include_ids:
             item["id"] = el.key
         els.append(item)

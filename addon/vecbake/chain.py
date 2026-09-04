@@ -18,6 +18,19 @@ should be hidden. Rather than guess from topology, we merge only when the
 sampled visibility arrays are bit-for-bit equal over the whole animation, which
 is exact and needs no assumptions about the edge mode in force.
 
+Chaining runs **per object**, and that is now the only thing separating a
+welded split from the part it was cut from. Measured on a cube cut in two
+(`scratchpad/cubeweld.py`, `merge_fills` off so both sides draw the same
+faces): split-with-weld against the joined cube differs by 151 of 358,146 ink
+pixels, and turning chaining off on *both* sides takes that to **zero on every
+frame**. So the weld rebuilds the topology exactly; what it cannot do is let a
+run of edges chain across the seam, because everything here is keyed by
+`plan.name` and looked up in that plan's `vertex_cache` and `matrix3`. The
+joined cube collapses three collinear pairs into one element each; the split
+one keeps six halves, which costs butt caps at the midpoints and -- the part
+that actually shows -- two depth scalars where there should be one, so the two
+halves can sort onto opposite sides of a fill.
+
 Dissolving reuses the keyframe reducer's philosophy: a vertex goes only if
 removing it never moves the drawn line by more than a tolerance **in pixels**,
 measured across every frame the chain is visible.
@@ -544,13 +557,31 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 # replace the member items the ordering pass will see
                 # a chain lies on every face any of its members lay on
                 on_faces = tuple({f for e in run_members for f in plan.edge_face_keys(e)})
+                welded = [e for e in run_members if plan.edge_welded[e]]
                 for fi in visible_frames:
                     xy, depths = vertex_cache[fi][plan.name]
                     seed = min(float(slots[k]["depth"][fi]) for k in run_keys)
+                    # A chain over welded edges carries their weld assertions
+                    # too, and they are a per-frame fact -- which side of the
+                    # neighbour's surface the run is on. A run that straddles
+                    # the neighbour's silhouette would assert both directions
+                    # about the same fill, so those keys assert nothing and are
+                    # left to be measured like anything else.
+                    over, under = set(), set()
+                    if welded:
+                        cover = plan.weld_cover_frames.get(fi, ())
+                        for e in welded:
+                            o, u = plan.edge_weld_keys(e, e in cover)
+                            over.update(o)
+                            under.update(u)
+                        both = over & under
+                        over -= both
+                        under -= both
                     chain_items.setdefault(fi, []).append({
                         "key": key, "kind": 0, "seed": seed,
                         "pts": xy[final_path], "depths": depths[final_path],
-                        "on_faces": on_faces,
+                        "on_faces": on_faces + tuple(sorted(over)),
+                        **({"under_faces": tuple(sorted(under))} if under else {}),
                         # The player closes the path, so it draws one more
                         # segment than the point list spells out. Without this
                         # the ordering pass never sees that segment and never

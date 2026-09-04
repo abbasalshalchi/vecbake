@@ -776,9 +776,26 @@ def resolve(items, is_ortho=False, tol=1e-4):
     index = {it["key"]: k for k, it in enumerate(items)}
     asserted = set()
     missing_face = 0
+
+    def lookup(face_key):
+        """An entry is a key, or a tuple of spellings of the same surface.
+
+        A weld names its neighbour without knowing whether that object merged,
+        so it offers both `name/m` and `name/f<n>`. Exactly one can be an
+        element, and counting the other as missing would put a few hundred
+        phantoms into `assertions_unmatched` every bake.
+        """
+        if isinstance(face_key, tuple):
+            for alt in face_key:
+                k = index.get(alt)
+                if k is not None:
+                    return k
+            return None
+        return index.get(face_key)
+
     for j, it in enumerate(items):
         for face_key in it.get("on_faces", ()):
-            i = index.get(face_key)
+            i = lookup(face_key)
             if i is None or i == j:
                 missing_face += i is None
                 continue
@@ -811,6 +828,34 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 indeg[i] -= 1
                 weight.pop((j, i), None)
             add_edge(i, j, span)
+
+    # The same statement the other way up, and it exists because a merged fill
+    # cannot make it for itself. `on_faces` says "this surface is under this
+    # edge", which is right for an edge on the near wall and wrong for the same
+    # kind of edge round the back: one opaque silhouette draws a part's near
+    # wall and its far wall at one depth, so the fill that must stay behind the
+    # near rim must also cover the far one.
+    #
+    # Only a weld can tell them apart, and it already did -- it recorded the far
+    # face's normal and centre, so whether that face points at the camera is
+    # known per frame. A cut cylinder is the case: the cap's rim at the near end
+    # was being eaten by the tube's fill, and the rim at the far end was being
+    # drawn straight through it. See bake.ObjectPlan.edge_weld_keys.
+    for j, it in enumerate(items):
+        for face_key in it.get("under_faces", ()):
+            i = lookup(face_key)
+            if i is None or i == j:
+                missing_face += i is None
+                continue
+            asserted.add((j, i))
+            if i in after[j]:
+                continue                      # sampling already agrees
+            if j in after[i]:
+                after[i].discard(j)
+                before[j].discard(i)
+                indeg[j] -= 1
+                weight.pop((i, j), None)
+            add_edge(j, i, span)
 
     # Kahn's algorithm, tie-broken by seed depth so unconstrained elements keep
     # their natural far-to-near ordering.
