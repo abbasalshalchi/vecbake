@@ -13,6 +13,14 @@
 
 const STROKE = 0;
 
+// Painter's order is resolved by sorting element indices on a depth scalar
+// every frame. A JS comparator costs n log n *calls* -- about 79,000 of them on
+// a 6,300-element frame -- so instead depth and index are packed into one double
+// and handed to the engine's native numeric sort, which takes no callback at
+// all. 30 bits of depth leaves the index room below it and the product well
+// inside a double's 53-bit mantissa.
+const DEPTH_STEPS = 1 << 30;
+
 const HEX_RE = /^#([0-9a-f]{3,8})$/i;
 const FUNC_RE = /^(rgba?|hsla?)\(([^)]*)\)$/i;
 
@@ -68,10 +76,12 @@ let probeCtx;   // lazily made once, module-level, only for the fallback below
  * server rendering still works.
  */
 function parseViaCanvas(css) {
-  if (typeof document === 'undefined') return null;
+  if (typeof document === 'undefined' && typeof OffscreenCanvas === 'undefined') return null;
   if (probeCtx === undefined) {
     try {
-      const c = document.createElement('canvas');
+      const c = typeof document !== 'undefined'
+        ? document.createElement('canvas')
+        : new OffscreenCanvas(1, 1);
       c.width = c.height = 1;                    // one pixel is all we read
       probeCtx = c.getContext('2d', { willReadFrequently: true });
     } catch { probeCtx = null; }
@@ -337,6 +347,12 @@ export class LerpaPlayer {
         depth: e.D ? new Track(e.D, 1, this.duration, samples) : null,
         shade: e.S ? new Track(e.S, 1, this.duration, samples) : null,
         smooth: decodeSmooth(e.sm, e.n),
+        // Spans of a merged outline that are a weld: filled, never stroked.
+        // Absent everywhere else, and absent from files written before Weld
+        // Seams, which then stroke the whole ring as they always did.
+        seam: e.sw === undefined ? null : decodeSmooth(e.sw, e.n),
+        // its complement, so the cut can be stroked on its own
+        seamOnly: e.sw === undefined ? null : invertMask(decodeSmooth(e.sw, e.n)),
         // fills always close; a stroke only when it chained into a ring
         closed: e.k !== STROKE || e.cl === 1,
         // A fill that carries its own outline colour draws its silhouette as
@@ -353,6 +369,12 @@ export class LerpaPlayer {
     }
 
     this._sorter = (a, b) => this.depths[b] - this.depths[a];
+    // Index needs its own bits under the depth; anything wider than the packing
+    // can hold falls back to the comparator rather than sorting wrongly.
+    let bits = 1;
+    while ((1 << bits) < this.elements.length + 1) bits++;
+    this._indexLimit = 1 << bits;
+    this._keys = bits <= 22 ? new Float64Array(this.elements.length) : null;
     this._tick = this._tick.bind(this);
     this.resize();
     if (this.canvas && typeof ResizeObserver !== 'undefined' && options.autoResize !== false) {
@@ -372,9 +394,28 @@ export class LerpaPlayer {
       return;
     }
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    // An OffscreenCanvas has no layout box, so there is nothing here to
+    // measure: whoever still holds the real element measures it and calls
+    // `resizeTo`. Until they do, the backing store it arrived with is the only
+    // size there is.
+    if (typeof this.canvas.getBoundingClientRect !== 'function') {
+      const d = this.dpr || 1;
+      return this.resizeTo(this.canvas.width / d, this.canvas.height / d, d);
+    }
     const rect = this.canvas.getBoundingClientRect();
-    const cw = Math.max(1, Math.round(rect.width || this.width));
-    const ch = Math.max(1, Math.round(rect.height || this.height));
+    return this.resizeTo(rect.width || this.width, rect.height || this.height, dpr);
+  }
+
+  /**
+   * Size the canvas and rebuild the view transform from numbers, not layout.
+   *
+   * Split out of `resize` so the drawing can live in a worker: measuring needs
+   * the DOM, applying does not.
+   */
+  resizeTo(cssWidth, cssHeight, dpr = this.dpr || 1) {
+    if (!this.canvas) return;
+    const cw = Math.max(1, Math.round(cssWidth));
+    const ch = Math.max(1, Math.round(cssHeight));
     this.canvas.width = Math.round(cw * dpr);
     this.canvas.height = Math.round(ch * dpr);
     const sx = cw / this.width, sy = ch / this.height;
@@ -457,6 +498,51 @@ export class LerpaPlayer {
   }
 
   /**
+   * Trace only the spans of a closed element that its seam mask leaves alone.
+   *
+   * A merged outline of a piece cut off another has the cut in its own
+   * silhouette, and stroking it draws the seam that welding exists to remove.
+   * The fill still needs those points -- drop them and the shape changes -- so
+   * the mask is applied to the stroke alone: same tangents, same curve, one
+   * `moveTo` wherever a run of kept spans begins.
+   */
+  _traceRuns(ctx, s, el, mask) {
+    const o = el.offset, n = el.npts, m = el.smooth;
+    const tan = (i) => {
+      if (!m || !m[i]) return [0, 0];
+      const a = (i - 1 + n) % n, b = (i + 1) % n;
+      return [(s[o + b * 2] - s[o + a * 2]) * 0.5,
+              (s[o + b * 2 + 1] - s[o + a * 2 + 1]) * 0.5];
+    };
+    // Begin where a run begins. Walking from span 0 regardless cuts in two the
+    // run that wraps past the last span, which shows as a break at that
+    // corner -- and where the ring repeats a vertex, as a spliced one does,
+    // what is left over is a zero-length subpath that round caps paint as a
+    // dot.
+    let start = 0;
+    for (let i = 0; i < n; i++) {
+      if (mask[i] && !mask[(i + 1) % n]) { start = (i + 1) % n; break; }
+    }
+    let [tix, tiy] = tan(start);
+    let pen = false;
+    for (let k = 0; k < n; k++) {
+      const i = (start + k) % n, j = (i + 1) % n;
+      const [tjx, tjy] = tan(j);
+      if (mask[i]) {
+        pen = false;
+      } else {
+        const xi = s[o + i * 2], yi = s[o + i * 2 + 1];
+        const xj = s[o + j * 2], yj = s[o + j * 2 + 1];
+        if (!pen) { ctx.moveTo(xi, yi); pen = true; }
+        if (tix === 0 && tiy === 0 && tjx === 0 && tjy === 0) ctx.lineTo(xj, yj);
+        else ctx.bezierCurveTo(xi + tix / 3, yi + tiy / 3,
+                               xj - tjx / 3, yj - tjy / 3, xj, yj);
+      }
+      tix = tjx; tiy = tjy;
+    }
+  }
+
+  /**
    * Evaluate every element at time `t` and sort the survivors back to front.
    *
    * Leaves point positions in `this.scratch` and the draw order in the first
@@ -467,6 +553,7 @@ export class LerpaPlayer {
     const els = this.elements, n = els.length;
     const scratch = this.scratch, depths = this.depths, order = this.order;
     let count = 0, i, el;
+    let dmin = Infinity, dmax = -Infinity;
 
     for (i = 0; i < n; i++) {
       el = els[i];
@@ -475,14 +562,43 @@ export class LerpaPlayer {
       if (a <= 0.004) continue;
       el.alpha = a > 1 ? 1 : a;
       el.geo.points(t, scratch, el.offset);
-      depths[i] = el.depth ? el.depth.scalar(t) : 0;
+      const d = el.depth ? el.depth.scalar(t) : 0;
+      depths[i] = d;
+      if (d < dmin) dmin = d;
+      if (d > dmax) dmax = d;
       order[count++] = i;
     }
     this.visible = count;
-
-    // subarray shares memory with `order`, so this sorts it in place
-    Array.prototype.sort.call(order.subarray(0, count), this._sorter);   // far -> near
+    if (count > 1) this._sortOrder(count, dmin, dmax);
     return count;
+  }
+
+  /**
+   * Put `order[0..count)` in painting sequence: farthest depth first.
+   *
+   * Depth is quantised into the high bits and the element index sits in the low
+   * ones, so one ascending numeric sort delivers both the ordering and the
+   * tie-break. Descending depth comes from storing `DEPTH_STEPS - q`, and equal
+   * depths fall back to ascending index -- which is what the stable comparator
+   * sort this replaces already did.
+   */
+  _sortOrder(count, dmin, dmax) {
+    const order = this.order, depths = this.depths, keys = this._keys;
+    if (!keys) {
+      // subarray shares memory with `order`, so this sorts it in place
+      Array.prototype.sort.call(order.subarray(0, count), this._sorter);
+      return;
+    }
+    const limit = this._indexLimit, span = dmax - dmin;
+    const scale = span > 0 ? DEPTH_STEPS / span : 0;
+    for (let k = 0; k < count; k++) {
+      const i = order[k];
+      const q = span > 0 ? (DEPTH_STEPS - (depths[i] - dmin) * scale) | 0 : 0;
+      keys[k] = q * limit + i;
+    }
+    const view = keys.subarray(0, count);
+    view.sort();                       // native, numeric, no callback
+    for (let k = 0; k < count; k++) order[k] = view[k] % limit;
   }
 
   /** Paint `count` already-solved elements under whatever transform ctx carries. */
@@ -546,6 +662,24 @@ export class LerpaPlayer {
           // fill: which mesh edges are on a silhouette changes every frame, so
           // as strokes it costs one element per edge that ever qualifies. This
           // also closes the seam, being wider than the hairline that would.
+          if (el.seam) {
+            // The cut is internal: it belongs to the fill and to none of the
+            // line. It still gets the hairline treatment, because the two
+            // halves abut and abutting polygons leave an antialiased gap --
+            // but only along the cut. Laying that hairline round the whole
+            // ring puts it under the outline everywhere else, and two strokes
+            // blend differently from one: 264 pixels of this cube's boundary
+            // shifted by about ten levels for a gap that is not there.
+            ctx.beginPath();
+            this._traceRuns(ctx, scratch, el, el.seamOnly);
+            ctx.strokeStyle = ctx.fillStyle;
+            ctx.lineWidth = seamW;
+            ctx.stroke();
+            // Restated again -- the filled path is closed, and this one is
+            // the set of arcs the cut leaves behind.
+            ctx.beginPath();
+            this._traceRuns(ctx, scratch, el, el.seam);
+          }
           const oc = this.overrides[el.outline] || this.palette[el.outline] || [0, 0, 0];
           ctx.strokeStyle = `rgb(${oc[0] | 0},${oc[1] | 0},${oc[2] | 0})`;
           ctx.lineWidth = Math.max(el.width * this.lineScale, seamW);
@@ -720,6 +854,22 @@ export class LerpaPlayer {
     return this;
   }
 
+  /** The same for many ids at once. `css` null clears them.
+   *
+   * Worth having its own method rather than a loop over `setElementColor`:
+   * that invalidates and repaints per id, so marking the Voyager's 253 merged
+   * fills would repaint the scene 253 times. Here it is one repaint.
+   */
+  setElementColors(ids, css) {
+    const rgb = css ? parseColor(css) : null;
+    for (const id of ids) {
+      if (rgb) this.elementColors.set(id, rgb);
+      else this.elementColors.delete(id);
+    }
+    this._invalidate();
+    return this;
+  }
+
   /** Fade or hide a whole named group. 0 hides it, 1 restores it.
    *
    * Multiplies the baked opacity rather than replacing it, so a part that the
@@ -886,6 +1036,13 @@ const DATA_ID = 'lerpa-data';
  * whose bit i is vertex i, anything else means none. Null for a plain
  * polyline so the draw loop can skip the curve path entirely.
  */
+function invertMask(m) {
+  if (!m) return null;
+  const out = new Uint8Array(m.length);
+  for (let i = 0; i < m.length; i++) out[i] = m[i] ? 0 : 1;
+  return out;
+}
+
 function decodeSmooth(sm, n) {
   if (sm === 1) { const m = new Uint8Array(n); m.fill(1); return m; }
   if (typeof sm !== 'string' || !sm) return null;

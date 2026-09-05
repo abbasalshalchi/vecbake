@@ -202,6 +202,10 @@ TEMPLATE = r"""<!doctype html>
         <button data-v="on" class="on">Seams</button>
         <button data-v="off">No seams</button>
       </div>
+      <button id="merged" title="Paint every merged fill red. A merged fill is
+one opaque silhouette standing in for a whole object's faces, so this shows at a
+glance which parts merged and which are still drawing face by face -- and, where
+pieces were split and welded, which silhouettes are abutting.">Mark merged</button>
     </div>
   </div>
 
@@ -289,6 +293,21 @@ __PLAYER__
   // antialiasing leaves hairlines between them; close to free to drop where
   // they do not, which is most dense scenes.
   seg('seams', v => { player.seamFix = (v === 'on'); player.render(player.time); });
+
+  // A merged fill is keyed `<object>/m` -- one silhouette for the whole object,
+  // where an unmerged one draws `<object>/f<n>` per face. Marking them is the
+  // quickest read on what a scene actually costs: fills are the expensive
+  // element, so the parts still drawing face by face are the ones to look at.
+  const mergedIds = player.elements
+    .map(e => e.id).filter(id => id && id.endsWith('/m'));
+  $('merged').title += `  (${mergedIds.length} of ${player.elements.length} elements)`;
+  if (!mergedIds.length) $('merged').disabled = true;
+  let marking = false;
+  $('merged').addEventListener('click', () => {
+    marking = !marking;
+    $('merged').classList.toggle('on', marking);
+    player.setElementColors(mergedIds, marking ? '#d8683f' : null);
+  });
 
   // ---- identify ----
   cv.addEventListener('pointerdown', e => {
