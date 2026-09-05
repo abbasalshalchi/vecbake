@@ -29,6 +29,22 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 
+    def translate_path(self, path):
+        """Serve the repo, and fall back to the website's public folder.
+
+        The site is a separate root -- its pages ask for `/hero/...`,
+        `/lerpa/...`, `/site.css` -- so it cannot be reached through a
+        subdirectory of this one without rewriting every absolute path in it.
+        Falling back only when the repo has no such file keeps `/out/...` and
+        the comparison pages working exactly as before.
+        """
+        full = super().translate_path(path)
+        if os.path.exists(full):
+            return full
+        rel = os.path.relpath(full, ROOT)
+        alt = os.path.join(ROOT, "lerpa-website", "public", rel)
+        return alt if os.path.exists(alt) else full
+
     def do_POST(self):
         if not self.path.startswith("/save/"):
             self.send_error(404)
