@@ -64,6 +64,31 @@ def _delta(rows):
     return out
 
 
+def _has_off_grid_key(times, grid):
+    """Does this track carry a key that is not on the sample grid?
+
+    Dense encoding throws the timeline away and rebuilds it by dividing the
+    duration evenly, so it can only carry keys the grid can express. Opacity is
+    now allowed keys *between* frames -- a fade with no geometry behind it is
+    closed off a sliver past the last frame the pose was real on -- and
+    resampling that onto the grid reads the track at the frames either side and
+    hands back exactly the frame-long fade it replaced. Silently, and only on
+    the elements that needed it.
+    """
+    if len(grid) < 2:
+        return False
+    step = grid[1] - grid[0]
+    if step <= 0.0:
+        return False
+    eps = step * 1e-6
+    last = len(grid) - 1
+    for t in times:
+        i = min(last, max(0, int(round(t / step))))
+        if abs(grid[i] - t) > eps:
+            return True
+    return False
+
+
 def _encode_track(track, decimals, grid):
     """Pick the cheaper of a dense (implicit-timeline) or sparse encoding."""
     if track is None:
@@ -79,7 +104,7 @@ def _encode_track(track, decimals, grid):
         "q": scale,
         "d": _delta(_flat_ints(track.values, scale)),
     }
-    if not grid:
+    if not grid or _has_off_grid_key(track.times, grid):
         return sparse
 
     # Dense: resample onto the sample grid and drop the times entirely. Worth

@@ -37,7 +37,13 @@ from . import outline as outline_mod
 from . import parallel
 from . import silhouette
 from .ir import FILL, STROKE, Element, Track, VecScene
-from .reduce import freeze_hidden, reduce_points, reduce_scalar, reduce_scalar_bounded
+from .reduce import (
+    blind_fade_samples,
+    freeze_hidden,
+    reduce_points,
+    reduce_scalar,
+    reduce_scalar_bounded,
+)
 from .settings import BakeSettings
 
 
@@ -2368,7 +2374,10 @@ def _finish(elements, slots, times, settings, width, height, fps, duration) -> V
 
         geo = freeze_hidden(slot["geo"], vis)
         el.geo = reduce_points(times, geo, settings.tol_px)
-        el.opacity = reduce_scalar(times, vis.tolist(), settings.tol_opacity)
+        # Opacity gets its own key times: a fade with no pose behind it is
+        # collapsed to the frame the pose was last real on.
+        ot, ov = blind_fade_samples(times, vis.tolist(), slot["geo"])
+        el.opacity = reduce_scalar(ot, ov, settings.tol_opacity)
         el.depth = reduce_scalar_bounded(times, slot["depth"].tolist(), depth_tol[el.key])
         if el.kind == FILL and settings.shading:
             el.shade = reduce_scalar(times, slot["shade"].tolist(), settings.tol_shade)

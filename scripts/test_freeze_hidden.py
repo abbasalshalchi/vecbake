@@ -114,6 +114,41 @@ h4 = reduce.freeze_hidden([A, None, A], [1.0, 0.0, 1.0])
 check("a boundary frame with nothing of its own borrows too", h4[1] == A,
       f"got {h4[1]}")
 
+
+# ---- blind fades ----------------------------------------------------------
+# A boundary frame with no pose is where freeze_hidden runs out of road: it has
+# to borrow, and whatever it borrows is a pose the fade is then drawn across.
+# blind_fade_samples takes the fade away instead of inventing the pose.
+T = [0.0, 1.0, 2.0, 3.0]
+
+ot, ov = reduce.blind_fade_samples(T, [1.0, 1.0, 0.0, 0.0], [A, A, None, None])
+check("a fade off a missing pose gains a key just past the last real frame",
+      len(ot) == 5 and abs(ot[2] - 1.02) < 1e-9, f"got {ot}")
+check("...and that key is zero, so nothing is drawn across the gap",
+      ov[2] == 0.0, f"got {ov}")
+
+ot, ov = reduce.blind_fade_samples(T, [0.0, 0.0, 1.0, 1.0], [None, None, A, A])
+check("a fade *in* off a missing pose is collapsed the same way",
+      len(ot) == 5 and abs(ot[2] - 1.98) < 1e-9, f"got {ot}")
+check("...to zero as well", ov[2] == 0.0, f"got {ov}")
+
+ot, ov = reduce.blind_fade_samples(T, [1.0, 1.0, 0.0, 0.0], [A, A, B, B])
+check("a hidden frame that has its own pose keeps its honest fade",
+      (ot, ov) == (T, [1.0, 1.0, 0.0, 0.0]), f"got {ot} {ov}")
+
+ot, ov = reduce.blind_fade_samples(T, [1.0, 1.0, 1.0, 1.0], [A, A, A, A])
+check("an element that is never hidden is left alone",
+      (ot, ov) == (T, [1.0, 1.0, 1.0, 1.0]), f"got {ot} {ov}")
+
+ot, ov = reduce.blind_fade_samples(T, [0.0, 1.0, 0.0, 0.0], [None, A, None, None])
+check("a lone visible frame is closed off on both sides",
+      len(ot) == 6, f"got {ot}")
+check("...and its own frame still carries the opacity it had",
+      ov[ot.index(1.0)] == 1.0, f"got {ov}")
+
+check("the samples stay sorted in time", all(a <= b for a, b in zip(ot, ot[1:])),
+      f"got {ot}")
+
 print()
 print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))
 raise SystemExit(1 if fails else 0)

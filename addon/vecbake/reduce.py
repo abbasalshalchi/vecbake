@@ -144,6 +144,47 @@ def reduce_points(times, values, tol) -> Track:
     return Track([times[i] for i in idx], [values[i] for i in idx])
 
 
+def blind_fade_samples(times, vis_samples, geo_samples, edge=0.02):
+    """Opacity samples with every fade that has no geometry behind it collapsed.
+
+    `freeze_hidden` lets a hidden frame beside a visible one keep its own pose,
+    so the fade across that frame is drawn on geometry that was really there.
+    A merged fill has no pose to keep on a frame whose silhouette is not a
+    single ring, and there is nothing to fall back on: the pose gets pinned to
+    the visible frame, the object moves on, and the element is drawn across the
+    whole frame at 75%, 50%, 25% alpha, standing still where the model no
+    longer is. On part_025 that is a 54px ghost of a fill -- the same stray the
+    boundary rule was written to kill, in the one case that rule cannot reach.
+
+    Rather than invent a pose, stop drawing where the poses stop: opacity
+    reaches zero a sliver past the last frame we had geometry for, so the
+    element goes out on the frame it was last correct on. That is a pop instead
+    of a fade, and only on the boundaries where the alternative is a fade
+    across a pose nobody ever computed.
+
+    Returns (times, values) -- its own key times, since the extra samples do
+    not sit on the frame grid.
+    """
+    n = len(vis_samples)
+    if n == 0:
+        return list(times), list(vis_samples)
+    shown = [vis_samples[i] > 0.0 and geo_samples[i] is not None for i in range(n)]
+    extra = []
+    for i in range(n):
+        if not shown[i]:
+            continue
+        for j in (i - 1, i + 1):
+            if not (0 <= j < n) or shown[j]:
+                continue
+            if geo_samples[j] is not None:
+                continue  # it kept its own pose; the fade is honest
+            extra.append((times[i] + (times[j] - times[i]) * edge, 0.0))
+    if not extra:
+        return list(times), list(vis_samples)
+    merged = sorted(list(zip(times, vis_samples)) + extra, key=lambda kv: kv[0])
+    return [t for t, _ in merged], [v for _, v in merged]
+
+
 def freeze_hidden(geo_samples, vis_samples):
     """Give every hidden frame the pose of the nearest frame that is not.
 

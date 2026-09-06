@@ -770,6 +770,52 @@ cell centre is never culled, and strokes are neither culled nor allowed to
 occlude, because hidden-line removal already decides which edges are behind
 geometry and does it against the real mesh.
 
+### What happens at the edge of a cull
+
+An element that is culled for part of a clip does not simply stop existing.
+Element identity is fixed for the whole clip, so the track still has a value at
+every frame, and the player still interpolates **across** the frame where the
+element switches off — for that whole frame it is drawn, at falling opacity, on
+geometry taken from both ends of the span.
+
+That makes the two frames either side of a flip the only ones that matter, and
+they are handled by two rules:
+
+- Hidden frames in the **interior** of a run are pinned to the nearest visible
+  pose. Nothing is drawn there, and pinning lets keyframe reduction collapse
+  the whole run to nothing.
+- A hidden frame **touching** a visible one keeps its own pose, because that is
+  the pose the fade is actually drawn against. Pin it too and the element hangs
+  where the object no longer is: on a part travelling 45–98 px a frame that
+  reads as a stray line with nothing to do with the model.
+
+There is one case the second rule cannot reach. A merged fill writes no pose at
+all on a frame whose silhouette is not a single ring, so it has nothing of its
+own to keep and must borrow — and the fade is then drawn across a borrowed
+pose. Rather than invent geometry, the **opacity** is brought to zero a sliver
+past the last frame the pose was real on. The element pops off instead of
+fading, and only on the boundaries where the alternative is a fade across a
+pose nobody computed.
+
+That leaves opacity carrying keys that do not sit on the sample grid, which
+the **dense** track encoding cannot express — it drops the timeline and rebuilds
+it by dividing the duration evenly. A track with an off-grid key is therefore
+forced to the sparse encoding. Skip that and the resample hands back exactly the
+frame-long fade the rule replaced, silently, on the elements that needed it.
+
+All of this is checked against the model rather than against each other: every
+element's evaluated points are compared with its object's true projected bounds
+at quarter-frame times, straight from Blender — and the check is gated on
+opacity, because an invisible element's pose is nobody's business. Without that
+gate the same check reports 57,402 offenders that are all correctly invisible.
+
+On the 9,377-element Voyager hero, over a full turn — 237 sub-frame instants,
+1,519,752 drawn-element checks, 39,378 of them mid-fade — nothing is drawn
+outside the bounds of the object it belongs to. The worst overrun anywhere is
+1.15 px, which is stroke width and rounding. Before the third rule it was six
+offenders reaching 54 px, and adding the rule cost **one keyframe** across the
+whole file.
+
 ### Seeing through
 
 The painter's order draws far to near and simply paints over, which is what lets
