@@ -330,6 +330,41 @@ baker, so the report names the face whose depth range spans the thing crossing
 it. Splitting that face is what gives the ordering the resolution to be right,
 and that is the artist's call.
 
+### Checking where things are drawn, not just what is in front
+
+`check_occlusion.py` grades what is drawn *in front of* what. `scripts/check_geometry.py`
+grades where things are drawn at all, which is the failure that reads as strokes
+flying around the model as it moves.
+
+```python
+exec(open(r'.../scripts/check_geometry.py').read())
+report = run(r'.../out/thing.lerpa_cam.svg')
+```
+
+It is **exhaustive, not sampled**, for the reason the occlusion audit restricts
+itself to overlaps: a stray is a few dozen pixels in a few hundred thousand, and
+random sampling walks straight past it.
+
+That is affordable because correspondence is free. `<obj>/f<n>` is polygon *n*'s
+loop vertices in order and `<obj>/e<n>` is edge *n*'s two vertices, so those are
+compared point for point against the true projection of those same vertices — no
+matching, no nearest neighbour, and a stroke joining the wrong vertices cannot
+pass. On a typical bake that is ~95% of the elements. Chains and merged outlines
+are a path of edges and a resampled silhouette ring, so neither is a vertex list
+to index into; what is still true of both is that every point lies **on a
+projected edge of its own object**, and they are graded by point-to-segment
+distance instead.
+
+The whole thing is gated on opacity. An element that is not drawn at a frame has
+no pose worth grading, and grading it anyway reports every correctly-hidden
+element in the file: on the Voyager hero that gate is the difference between
+zero offenders and 57,402 of them.
+
+It runs the pipeline end to end — sample, reduce, encode, decode — so it also
+catches an encoder that quietly resamples a track it should not have. Voyager
+hero, 9,377 elements over all 60 frames: **379,650 point-sets, none skipped,
+none over tolerance**, worst deviation 1.10 px against a 1 px bake.
+
 ## Reference
 
 ### Edge modes
