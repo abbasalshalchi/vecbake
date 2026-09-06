@@ -74,28 +74,45 @@ check("an element with nothing to borrow is returned as-is, not crashed on",
       ghost == [None] * 4)
 
 # --- an element must fade in and out where it belongs ----------------------
-# Opacity ramps over one frame and the player interpolates geometry across the
-# same span, so the pose at the last hidden frame is one the viewer watches the
-# element travel from. Every hidden frame therefore takes the nearest visible
-# pose: the run still collapses for the reducer, and both ends of it already
-# match the frame they ramp into.
+# Opacity ramps across the frame between the last visible frame and the first
+# hidden one, so the element is *drawn* for that whole frame -- 83% down to 17%
+# -- and its pose over that span is interpolated between the two. Pinning the
+# hidden end to the visible pose therefore holds the element still while the
+# object it belongs to moves off, and what the viewer sees is a ghost of the
+# stroke a frame of motion behind the model. Measured on a seven-primitive
+# scene: ten elements drawn up to 21px outside their own object's true bounds,
+# every one of them between frames and none on a boundary.
+#
+# So a hidden frame that touches a visible one keeps its own pose when the
+# sampler wrote one, and only the interior of a run is pinned.
 A = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 B = [9.0, 9.0, 8.0, 9.0, 8.0, 8.0, 9.0, 8.0]
-seq = [A, A, B, B, B, A]
+C = [4.0, 4.0, 5.0, 4.0, 5.0, 5.0, 4.0, 5.0]
+seq = [A, A, B, C, B, A]
 vis2 = [1.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 held = reduce.freeze_hidden(seq, vis2)
-check("a hidden frame beside a visible one matches it", held[2] == A,
+check("a hidden frame beside a visible one keeps its own pose", held[2] == B,
       f"got {held[2]}")
-check("...at the far end of the run too", held[4] == A, f"got {held[4]}")
-check("...and the run in between is one pose, so it collapses",
-      held[2] == held[3] == held[4], f"got {held[2:5]}")
+check("...at the far end of the run too", held[4] == B, f"got {held[4]}")
+check("...and the interior is still pinned, so the run collapses",
+      held[3] == A, f"got {held[3]}")
 
-# the pose it borrows really is the nearer one, not simply the last seen
-seq3 = [A, B, B, B, B, A]
+# The fault this used to guard is a frame with *no* pose, which is what a
+# merged fill writes when its outline is not one ring. There is nothing of its
+# own to keep, so it must still borrow -- and borrow the nearer end, or an
+# element reappearing far away fades in while travelling the whole distance.
+# That was part_001, the magnetometer boom, sweeping 2900px across the frame.
+seq3 = [A, None, None, None, None, A]
 vis3 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 h3 = reduce.freeze_hidden(seq3, vis3)
-check("early hidden frames take the pose before them", h3[1] == A, f"got {h3[1]}")
-check("late hidden frames take the pose after them", h3[4] == A, f"got {h3[4]}")
+check("a frame with no pose still borrows", all(g is not None for g in h3))
+check("early empty frames take the pose before them", h3[1] == A, f"got {h3[1]}")
+check("late empty frames take the pose after them", h3[4] == A, f"got {h3[4]}")
+
+# And a boundary frame with no pose of its own borrows rather than staying None
+h4 = reduce.freeze_hidden([A, None, A], [1.0, 0.0, 1.0])
+check("a boundary frame with nothing of its own borrows too", h4[1] == A,
+      f"got {h4[1]}")
 
 print()
 print(f"{len(fails)} failure(s)" + (": " + ", ".join(fails) if fails else ""))

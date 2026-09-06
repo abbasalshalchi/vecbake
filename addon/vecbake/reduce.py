@@ -166,12 +166,27 @@ def freeze_hidden(geo_samples, vis_samples):
     Nearest visible pose instead, so an element fades in and out where it
     belongs. Inside a long run the borrowed pose switches from one end to the
     other, and nobody sees that: it happens where opacity is zero.
+
+    Except at the two ends of the run, which is where the viewer *is* looking.
+    Opacity ramps across the frame between the last visible frame and the first
+    hidden one, so for that whole frame the element is drawn -- at 83% down to
+    17% -- and if its pose has already been pinned to the last visible frame it
+    sits still while the object it belongs to moves off. That is a ghost of the
+    stroke left behind, one frame of motion adrift, and on a part travelling
+    45-98px a frame it reads as a stray line with nothing to do with the model.
+
+    So a hidden frame that touches a visible one keeps its *own* pose when it
+    has one -- the sampler writes geometry for strokes and face fills whether
+    they are drawn or not -- and only the interior of a run gets pinned. The
+    interior is what RDP needed collapsed anyway, and the sweep between a
+    pinned interior frame and a true edge frame happens where opacity is zero
+    at both ends, so nothing is drawn along it.
     """
     n = len(geo_samples)
     if n == 0:
         return geo_samples
-    seen = [i for i in range(n)
-            if vis_samples[i] > 0.0 and geo_samples[i] is not None]
+    shown = [vis_samples[i] > 0.0 and geo_samples[i] is not None for i in range(n)]
+    seen = [i for i in range(n) if shown[i]]
     if not seen:
         # Never visible, or never drawn. The caller drops these; hand back what
         # came in rather than inventing a pose for it.
@@ -179,7 +194,11 @@ def freeze_hidden(geo_samples, vis_samples):
     out = list(geo_samples)
     at = 0
     for i in range(n):
-        if vis_samples[i] > 0.0 and geo_samples[i] is not None:
+        if shown[i]:
+            continue
+        # Touching a visible frame: this is a frame the fade is drawn across.
+        touches = (i > 0 and shown[i - 1]) or (i + 1 < n and shown[i + 1])
+        if touches and geo_samples[i] is not None:
             continue
         while at + 1 < len(seen) and abs(seen[at + 1] - i) <= abs(seen[at] - i):
             at += 1
