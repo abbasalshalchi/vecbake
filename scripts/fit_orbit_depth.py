@@ -66,7 +66,7 @@ def world_box(obj, dg):
     return lo, hi
 
 
-def run(tree_path, camera=None, samples=24, verbose=True):
+def run(tree_path, camera=None, samples=24, arc_degrees=None, verbose=True):
     tree = json.load(open(tree_path, encoding="utf-8"))
     scene = bpy.context.scene
     cam = camera or scene.camera
@@ -75,10 +75,20 @@ def run(tree_path, camera=None, samples=24, verbose=True):
 
     nodes = node_parts(tree)
     every = {n for parts in nodes.values() for n in parts}
-    # The clip's frames, and the period, which is one frame longer: the pose at
-    # frame_end + 1 is the pose at frame_start again.
+    # The clip's frames, and the period *of a whole turn* in frames -- which is
+    # not the clip when the clip is only an arc.
+    #
+    # A looping bake closes on the frame after the last one it holds, so its
+    # period is one frame longer than its range. An arc bake sweeps
+    # `arc_degrees` over its whole range instead, and the turn it belongs to is
+    # proportionally longer. Get this wrong and the fit is still a fit -- it
+    # just stops being the exact one, and reads as an honest limit of the model
+    # rather than a wrong angle.
     first, last = scene.frame_start, scene.frame_end
-    period = float(last - first + 1)
+    if arc_degrees:
+        period = float(last - first) * 360.0 / float(arc_degrees)
+    else:
+        period = float(last - first + 1)
 
     thetas, campos = [], []
     centres = {k: [] for k in nodes}
@@ -140,4 +150,4 @@ def run(tree_path, camera=None, samples=24, verbose=True):
 
 if __name__ == "__main__":
     args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[-1:]
-    run(args[0])
+    run(args[0], arc_degrees=float(args[1]) if len(args) > 1 else None)
