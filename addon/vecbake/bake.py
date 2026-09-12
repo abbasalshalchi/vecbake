@@ -557,6 +557,14 @@ class ObjectPlan:
         self.outline_n = None
         self.outline_need = 0
         self.outline_prev = None   # (anchors, points, ring, outline)
+        # A merged fill may carry several subpaths: a nozzle's mouth cut out of
+        # its bell, the four bells of a thruster quad. `outline_parts` is how
+        # the total splits between them and is fixed for the clip exactly as
+        # the total is; the rest is per-subpath state, one entry each.
+        self.outline_parts = None    # [points per subpath], None for one ring
+        self.outline_prevs = None    # one carry state per subpath
+        self.piece_verts = None      # last frame's vertices, to match pieces
+        self.piece_needs = None      # measuring: points each subpath earns
         # How far the best possible interpolation of this outline lands from
         # the real silhouette between keyframes, and what drawing the faces
         # instead would cost over the same gaps. Filled by the measuring pass.
@@ -1083,6 +1091,11 @@ def bake_iter(context, settings: BakeSettings):
             shapes = cache.get(name)
             if hi < 5 or not shapes:
                 continue                      # nothing worth taking away
+            if len(part_slots.get(name, ())) > 1:
+                # Sizing, refinement and the gap test all reason about one ring
+                # and one point count. A fill carrying several subpaths has
+                # neither, and takes the count each subpath measured for itself.
+                continue
             best_n = hi
             best_err = _gap_cost(shapes, hi)
             tried = {hi}
@@ -1228,6 +1241,7 @@ def bake_iter(context, settings: BakeSettings):
                         if obj.name in no_merge:
                             plan.merge_fill = False
                         plan.outline_n = outline_slots.get(obj.name)
+                        plan.outline_parts = part_slots.get(obj.name)
                         plan.use_refine = obj.name in refine_set
                         plans[obj.name] = plan
                         _make_elements(plan, settings, elements, slots, len(frames))
@@ -1270,6 +1284,11 @@ def bake_iter(context, settings: BakeSettings):
     # How many points each merged outline turned out to need. Empty on the
     # measuring pass, filled before the pass that writes geometry.
     outline_slots: dict[str, int] = {}
+    # And how each total is split between subpaths. `restart()` throws the plans
+    # away and rebuilds them, so anything the measuring pass learned has to live
+    # out here and be handed back at construction -- which is what
+    # `outline_slots` already does for the total.
+    part_slots: dict[str, list[int]] = {}
     # The gap test only means anything between adjacent frames. It judges the
     # geometry as written, so it runs on the pass that writes it -- not the one
     # that only counts points, where there is nothing yet to judge.
@@ -1301,6 +1320,10 @@ def bake_iter(context, settings: BakeSettings):
             merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
             no_merge.update(merge_fallback)
             outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
+            part_slots.update({n: list(plans[n].piece_needs)
+                               for n, need in wanted.items()
+                               if need >= 3 and plans[n].piece_needs
+                               and len(plans[n].piece_needs) > 1})
 
             def restart():
                 plans.clear()
@@ -1316,7 +1339,8 @@ def bake_iter(context, settings: BakeSettings):
             # that writes geometry against it.
             if step == 1 and outline_slots and (
                     settings.size_by_gap or settings.refine_gate_px > 0.0):
-                yield from walk_shapes(sorted(outline_slots))
+                yield from walk_shapes(sorted(n for n in outline_slots
+                                              if len(part_slots.get(n, ())) <= 1))
             # Most of what gets refused is refused for being far past saving,
             # and it costs a fortune to find out politely: sizing tries eight
             # point counts and the refinement three placements, all of it on
@@ -1332,7 +1356,7 @@ def bake_iter(context, settings: BakeSettings):
                 hopeless = []
                 for name in sorted(outline_slots):
                     shapes = ring_cache.get(name)
-                    if not shapes:
+                    if not shapes or len(part_slots.get(name, ())) > 1:
                         continue
                     if _gap_cost(shapes, outline_slots[name]) > (
                             settings.merge_slack_px * 4.0):
@@ -1373,7 +1397,8 @@ def bake_iter(context, settings: BakeSettings):
                 gated = sorted(
                     n for n, p in plans.items()
                     if n in wanted and n not in merge_fallback
-                    and p.outline_n and p.carry_cost > settings.refine_gate_px)
+                    and p.outline_n and p.carry_cost > settings.refine_gate_px
+                    and len(part_slots.get(n, ())) <= 1)
                 if gated and ring_cache:
                     try_refine(gated)
 
@@ -1661,6 +1686,11 @@ def _make_elements(plan: ObjectPlan, settings, elements, slots, nframes):
                 # topology and already cost one element each.
                 width=settings.stroke_width if settings.strokes else 0.0,
                 edge_color=plan.stroke_color if settings.strokes else None,
+                # Where one subpath stops and the next starts. None for the one
+                # ring every other outline is.
+                subpaths=(list(plan.outline_parts)
+                          if plan.outline_parts and len(plan.outline_parts) > 1
+                          else None),
             )
         )
         new_slot(key, plan.outline_n or plan.nverts)
@@ -1847,6 +1877,127 @@ def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
     ids, verts = walk
     ring, poly = outline_mod.wound(ids, seen.xy, seen.xy[verts])
     return ring, poly, seen.xy
+
+
+def _match_pieces(prev, pieces, cap):
+    """Which subpath slot each of this frame's pieces belongs to.
+
+    A slot has to hold the *same* piece from frame to frame or the fill tears:
+    the nozzle that was subpath 2 last frame cannot become subpath 0 in this
+    one. Area order will not do it -- a thruster quad is four pieces of nearly
+    equal area, and their ranking swaps on rounding.
+
+    Mesh vertices will. A piece is a set of silhouette vertices, and between two
+    frames a few degrees apart most of them are the same ones, so the overlap
+    identifies it. That is the rule `carry` already uses to keep a point on the
+    vertex it was on; this is the same idea one level up.
+
+    Returns `slots` -- the piece index in each slot, or None -- and the vertex
+    set of each piece, to match against next frame.
+    """
+    sets = [set(int(v) for v in verts) for _, verts, _ in pieces]
+    slots = [None] * len(prev)
+    if prev:
+        cand = sorted(
+            (-len(sets[i] & prev[k]), i, k)
+            for i in range(len(sets)) for k in range(len(prev))
+            if sets[i] & prev[k])
+        got_piece, got_slot = set(), set()
+        for _, i, k in cand:
+            if i in got_piece or k in got_slot:
+                continue
+            slots[k] = i
+            got_piece.add(i)
+            got_slot.add(k)
+    else:
+        got_piece = set()
+    for i in range(len(sets)):
+        if i in got_piece:
+            continue
+        for k in range(len(slots)):
+            if slots[k] is None:
+                slots[k] = i
+                break
+        else:
+            if len(slots) < cap:
+                slots.append(i)
+            # else: no room, and this piece goes undrawn this frame
+    return slots, sets
+
+
+def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
+                           face_visible, face_depth, face_shade,
+                           face_alpha_max, cull, bounds):
+    """One merged fill, carried as several subpaths.
+
+    Each piece is an ordinary outline: its own ring, its own slots, its own
+    `carry` state. Nothing here re-implements what one ring does -- it does it
+    once per piece and lays the points end to end, with the split recorded so
+    the player knows where one subpath stops and the next starts.
+    """
+    lo_x, lo_y, hi_x, hi_y = bounds
+    prev_sets = plan.piece_verts or []
+    cap = plan.outline_parts and len(plan.outline_parts) or merge.MAX_PIECES
+    slots, sets = _match_pieces(prev_sets, pieces, cap)
+
+    if plan.outline_n is None:
+        # Measuring. Record what each subpath earns; the totals are summed by
+        # the caller once every frame has been seen.
+        needs = list(plan.piece_needs or [])
+        while len(needs) < len(slots):
+            needs.append(0)
+        for k, i in enumerate(slots):
+            if i is None:
+                continue
+            ids, verts, ccw = pieces[i]
+            poly = outline_mod.polyline(ids, xy, xy[verts])
+            needs[k] = max(needs[k], outline_mod.need_for(poly, settings.dissolve_px))
+        plan.piece_needs = needs
+        if plan.outline_need >= 0:
+            plan.outline_need = sum(needs)
+        plan.piece_verts = sets
+        slot["vis"][fi] = 0.0
+        return
+
+    parts = plan.outline_parts or [plan.outline_n]
+    if plan.outline_prevs is None or len(plan.outline_prevs) != len(parts):
+        plan.outline_prevs = [None] * len(parts)
+
+    out = np.zeros((sum(parts), 2), dtype=np.float64)
+    at = 0
+    drawn_any = False
+    for k, n in enumerate(parts):
+        i = slots[k] if k < len(slots) else None
+        if i is None:
+            # No piece for this slot this frame. Collapse it onto a point: a
+            # subpath of coincident points has no area to fill and, with butt
+            # caps, no length to stroke. The alternative -- letting the subpath
+            # count change between frames -- cannot be expressed at all, since
+            # an element's shape is fixed for the whole clip.
+            out[at:at + n] = out[0] if at else xy[pieces[0][1][0]]
+            at += n
+            continue
+        ids, verts, ccw = pieces[i]
+        ring, poly = outline_mod.wound(ids, xy, xy[verts], ccw=ccw)
+        pos, ring_ids = outline_mod.carry(poly, ring, n, settings.dissolve_px,
+                                          plan.outline_prevs[k])
+        pts = outline_mod.evaluate(pos, poly)
+        plan.outline_prevs[k] = (ring_ids, pts, ring, poly)
+        out[at:at + n] = pts
+        at += n
+        drawn_any = True
+    plan.piece_verts = sets
+
+    visible = drawn_any
+    if visible and cull:
+        visible = not (out[:, 0].max() < lo_x or out[:, 0].min() > hi_x
+                       or out[:, 1].max() < lo_y or out[:, 1].min() > hi_y)
+    vis_faces = np.nonzero(face_visible)[0]
+    slot["geo"][fi] = out.ravel().tolist()
+    slot["vis"][fi] = float(face_alpha_max[vis_faces].max()) if visible and len(vis_faces) else 0.0
+    slot["depth"][fi] = float(face_depth[vis_faces].mean()) if len(vis_faces) else 0.0
+    slot["shade"][fi] = (float(face_shade[vis_faces].mean())
+                         if plan.shading and len(vis_faces) else 1.0)
 
 
 def _sample_object(plan, me, eval_obj, settings, slots, fi,
@@ -2111,11 +2262,24 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     if plan.fills and plan.merge_fill:
         key = f"{plan.name}/m"
         slot = slots[key]
-        walk = None
+        # A silhouette that comes apart is several subpaths of one fill now,
+        # not one ring with the pieces bridged together. `walk_pieces` hands
+        # them back separately and says which way each should be wound; a
+        # single piece is the common case and goes down exactly the path it
+        # always did.
+        pieces = None
         if face_facing.any():
-            walk = merge.walk_loop(plan, merge.silhouette_edges(plan, face_facing),
-                                   xy)
-        if walk is None:
+            pieces = merge.walk_pieces(plan, merge.silhouette_edges(plan, face_facing),
+                                       xy, face_facing)
+        walk = None
+        if pieces is not None and len(pieces) == 1:
+            walk = (pieces[0][0], pieces[0][1])
+        if pieces is not None and len(pieces) > 1:
+            _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
+                                   face_visible, face_depth, face_shade,
+                                   face_alpha_max=plan.face_alpha,
+                                   cull=cull, bounds=(lo_x, lo_y, hi_x, hi_y))
+        elif walk is None:
             if plan.outline_n is None and face_facing.any():
                 # There are faces pointing at the camera and no ring to be had
                 # from them. Merging anyway is what produced a part that draws
@@ -2147,9 +2311,9 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             # is the right answer. Only a fold that reverses leaves a hole.
             # Draw it and judge it, rather than assume it draws as a knot.
             if plan.outline_need >= 0:
-                plan.outline_need = max(
-                    plan.outline_need,
-                    outline_mod.need_for(poly, settings.dissolve_px))
+                want = outline_mod.need_for(poly, settings.dissolve_px)
+                plan.outline_need = max(plan.outline_need, want)
+                plan.piece_needs = [plan.outline_need]
             slot["vis"][fi] = 0.0
         else:
             ring, poly = outline_mod.wound(walk[0], xy, xy[walk[1]])

@@ -350,6 +350,9 @@ export class LerpaPlayer {
         // Spans of a merged outline that are a weld: filled, never stroked.
         // Absent everywhere else, and absent from files written before Weld
         // Seams, which then stroke the whole ring as they always did.
+        // Points per subpath for a merged fill that carries more than one ring.
+        // Null is the single closed ring everything else is.
+        subpaths: Array.isArray(e.sp) && e.sp.length > 1 ? e.sp : null,
         seam: e.sw === undefined ? null : decodeSmooth(e.sw, e.n),
         // its complement, so the cut can be stroked on its own
         seamOnly: e.sw === undefined ? null : invertMask(decodeSmooth(e.sw, e.n)),
@@ -464,15 +467,21 @@ export class LerpaPlayer {
    * The same formula lives in the add-on's curves.py and emit_svg.py. Change
    * one and the animation stops matching its own resting states.
    */
-  _trace(ctx, s, el, closed) {
-    const o = el.offset, n = el.npts, m = el.smooth;
+  _trace(ctx, s, el, closed, from, count) {
+    // `from`/`count` address one subpath inside the element. Defaulting them to
+    // the whole element keeps every existing caller on the path it was on, and
+    // the tangents wrap within the range, so a subpath closes on itself rather
+    // than reaching into its neighbour.
+    const start = from === undefined ? 0 : from;
+    const n = count === undefined ? el.npts : count;
+    const o = el.offset + start * 2, m = el.smooth;
     ctx.moveTo(s[o], s[o + 1]);
     if (!m) {
       for (let p = 1; p < n; p++) ctx.lineTo(s[o + p * 2], s[o + p * 2 + 1]);
       return;
     }
     let tix = 0, tiy = 0;
-    if (m[0] && closed) {
+    if (m[start] && closed) {
       tix = (s[o + 2] - s[o + (n - 1) * 2]) * 0.5;
       tiy = (s[o + 3] - s[o + (n - 1) * 2 + 1]) * 0.5;
     }
@@ -480,7 +489,7 @@ export class LerpaPlayer {
     for (let i = 0; i < last; i++) {
       const j = (i + 1) % n;
       let tjx = 0, tjy = 0;
-      if (m[j] && (closed || (j > 0 && j < n - 1))) {
+      if (m[start + j] && (closed || (j > 0 && j < n - 1))) {
         const a = closed ? (j - 1 + n) % n : j - 1;
         const b = closed ? (j + 1) % n : j + 1;
         tjx = (s[o + b * 2] - s[o + a * 2]) * 0.5;
@@ -494,6 +503,31 @@ export class LerpaPlayer {
         ctx.bezierCurveTo(xi + tix / 3, yi + tiy / 3, xj - tjx / 3, yj - tjy / 3, xj, yj);
       }
       tix = tjx; tiy = tjy;
+    }
+  }
+
+  /**
+   * Trace a closed element, as one ring or as its subpaths.
+   *
+   * A merged fill may carry several: a nozzle's mouth cut out of its bell, the
+   * four bells of a thruster quad. Each is closed on its own, and the nonzero
+   * winding rule fills them together -- a subpath wound against its container
+   * cuts a hole, one wound with it reads as another island. The baker settles
+   * which is which; here they are only laid down in order.
+   *
+   * The path is left open for the caller, which fills it and may then stroke
+   * the very same path.
+   */
+  _tracePath(ctx, s, el, closed) {
+    const sp = el.subpaths;
+    if (!sp) {
+      this._trace(ctx, s, el, closed);
+      if (closed) ctx.closePath();
+      return;
+    }
+    for (let i = 0, at = 0; i < sp.length; at += sp[i], i++) {
+      this._trace(ctx, s, el, closed, at, sp[i]);
+      ctx.closePath();
     }
   }
 
@@ -651,8 +685,7 @@ export class LerpaPlayer {
         ctx.globalAlpha = el.alpha;
         ctx.fillStyle = this._css(el, shade);
         ctx.beginPath();
-        this._trace(ctx, scratch, el, true);
-        ctx.closePath();
+        this._tracePath(ctx, scratch, el, true);
         ctx.fill();
         // Not on a translucent fill: globalAlpha applies per draw call, so a
         // stroke over its own fill blends twice along the boundary and rings
@@ -997,13 +1030,13 @@ export class LerpaPlayer {
       ctx.beginPath();
       // trace the curve, not the polyline, or hit testing drifts off the
       // shape the viewer can actually see
-      this._trace(ctx, scratch, el, el.closed);
       if (el.kind === STROKE) {
+        this._trace(ctx, scratch, el, el.closed);
         if (el.closed) ctx.closePath();
         ctx.lineWidth = Math.max(el.width, slop);
         if (ctx.isPointInStroke(x, y)) return { id: el.id, group: el.group, index: view[i] };
       } else {
-        ctx.closePath();
+        this._tracePath(ctx, scratch, el, true);
         if (ctx.isPointInPath(x, y)) return { id: el.id, group: el.group, index: view[i] };
       }
     }

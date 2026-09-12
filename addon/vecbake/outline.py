@@ -548,7 +548,7 @@ def need_for(poly, tol, cap=None, floor=3):
 # and its slots move together.
 
 
-def wound(loop, xy, pts=None):
+def wound(loop, xy, pts=None, ccw=True):
     """The ring as `(vertex ids, points)`, wound the way `polyline` describes.
 
     Same rule, with the ids kept alongside: reversing the points to fix the
@@ -559,13 +559,18 @@ def wound(loop, xy, pts=None):
     that pinches, spliced into one walk. Then an id is not enough to find the
     position, because the repeat carries -1 to keep it from claiming a vertex
     twice, and -1 would index the last vertex in the mesh.
+
+    `ccw` is False for a ring that has to run the other way: one subpath of a
+    multi-piece fill that nests inside another is a hole, and under the nonzero
+    winding rule a hole is only a hole if it is wound against its container.
     """
     ids = np.asarray(loop, dtype=np.int64)
     pts = (np.asarray(xy, dtype=np.float64)[ids] if pts is None
            else np.asarray(pts, dtype=np.float64))
     if len(pts) >= 3:
         x, y = pts[:, 0], pts[:, 1]
-        if float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum()) < 0.0:
+        area = float((x * np.roll(y, -1) - y * np.roll(x, -1)).sum())
+        if (area < 0.0) == bool(ccw):
             return ids[::-1], pts[::-1]
     return ids, pts
 

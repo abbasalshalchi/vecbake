@@ -69,6 +69,8 @@ from __future__ import annotations
 
 import collections
 
+import math
+
 import numpy as np
 
 
@@ -243,6 +245,163 @@ def _bridge(ring, piece, xy):
     out = list(ring)
     out[i + 1:i + 1] = rot + [rot[0], ring[i]]
     return out
+
+
+# How many separate pieces one merged fill may carry. A silhouette that comes
+# apart further than this is not a shape a single element should be describing.
+MAX_PIECES = 8
+
+
+def _face_boxes(plan, xy):
+    """Screen bounding box of every face, to reject most of them per probe."""
+    lv = plan.loop_verts
+    pts = xy[lv]
+    st = plan.loop_start
+    return (np.minimum.reduceat(pts[:, 0], st), np.maximum.reduceat(pts[:, 0], st),
+            np.minimum.reduceat(pts[:, 1], st), np.maximum.reduceat(pts[:, 1], st))
+
+
+def _covers(plan, xy, drawn, boxes, pt):
+    """Is this screen point under any drawn face of the object?
+
+    Not "is it inside this loop" -- inside is not defined for a spliced ring,
+    and it is the wrong question anyway. What settles a subpath is whether the
+    object is *there*, which other parts of the same object can decide from far
+    away: the far side of a torus fills the hole its near rim describes.
+    """
+    x, y = float(pt[0]), float(pt[1])
+    mnx, mxx, mny, mxy = boxes
+    cand = np.nonzero(drawn & (mnx <= x) & (mxx >= x) & (mny <= y) & (mxy >= y))[0]
+    for f in cand:
+        st = int(plan.loop_start[f])
+        n = int(plan.loop_total[f])
+        poly = xy[plan.loop_verts[st:st + n]]
+        inside = False
+        j = n - 1
+        for i in range(n):
+            yi, yj = poly[i, 1], poly[j, 1]
+            if (yi > y) != (yj > y):
+                if x < (poly[j, 0] - poly[i, 0]) * (y - yi) / (yj - yi + 1e-300) + poly[i, 0]:
+                    inside = not inside
+            j = i
+        if inside:
+            return True
+    return False
+
+
+def _coverage_side(plan, ring, xy, drawn, boxes, eps=0.75, probes=9):
+    """Which way this loop must run, or None if it should not be drawn at all.
+
+    A silhouette loop is not always a boundary of what the object covers. Where
+    the surface turns away but more of the same object lies behind it, the loop
+    is a fold: covered on both sides, bounding nothing. Drawn as a subpath it
+    punches a hole that is not there -- the torus at a shallow angle, whose far
+    side fills the middle, and the boss standing on a plate.
+
+    So each loop is sampled on both sides. Covered on one side only makes it a
+    real boundary, and it is wound so the covered side is on the left; that one
+    rule gives an outer boundary and a hole opposite windings without either
+    knowing the other exists, and gives two overlapping islands the same one.
+    Covered on both sides, or neither, and it is dropped.
+
+    Returns True to keep the traversal, False to reverse it, None to drop.
+    """
+    n = len(ring)
+    if n < 3:
+        return None
+    left = right = 0
+    step = max(1, n // probes)
+    for i in range(0, n, step):
+        a = xy[ring[i]]
+        b = xy[ring[(i + 1) % n]]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        ln = math.hypot(dx, dy)
+        if ln < 1e-9:
+            continue
+        mx, my = (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5
+        nx, ny = -dy / ln, dx / ln          # left of a->b
+        cl = _covers(plan, xy, drawn, boxes, (mx + nx * eps, my + ny * eps))
+        cr = _covers(plan, xy, drawn, boxes, (mx - nx * eps, my - ny * eps))
+        if cl and not cr:
+            left += 1
+        elif cr and not cl:
+            right += 1
+    if left == 0 and right == 0:
+        return None                          # a fold: covered either side, or neither
+    return left >= right
+
+
+def walk_pieces(plan, edges, xy, drawn, max_pieces=MAX_PIECES):
+    """The silhouette as a list of rings, one per separate piece.
+
+    `walk_loop` has to hand back a single ring, so where the silhouette comes
+    apart it bridges the pieces together -- and refuses outright past two,
+    because the bridge is cut somewhere different almost every frame and nothing
+    downstream can carry it.
+
+    A fill that can hold several subpaths needs no bridge. Each piece is its own
+    ring, carried on its own slots, and the nonzero winding rule fills them
+    together -- but only if they are wound to say what they are. `wound` forces
+    every ring counter-clockwise, which would fill a nozzle's mouth solid
+    instead of cutting it out, so the orientation has to come from nesting:
+    a piece inside an odd number of others is a hole and runs the other way.
+    That is returned alongside each piece rather than decided downstream, where
+    the other pieces are no longer in view.
+
+    Touching loops are still spliced. They share vertices, so the seam between
+    them is real geometry rather than a line invented to join two things that
+    were never connected.
+
+    Returns a list of `(anchor ids, vertex indices, counter-clockwise)` in
+    descending area, or None where there is nothing worth drawing.
+    """
+    if len(edges) < 3:
+        return None
+    ev = plan.edge_verts[edges]
+    loops = _loops(ev, xy)
+    if not loops:
+        return None
+
+    groups = _touching(loops)
+    areas = [sum(abs(_area(xy[np.asarray(loops[i])])) for i in g) for g in groups]
+    total = sum(areas)
+    order = sorted(range(len(groups)), key=lambda g: -areas[g])
+    big = [g for g in order if total <= 0.0 or areas[g] / total >= SPECK]
+    if not big or len(big) > max_pieces:
+        return None
+
+    rings = []
+    for g in big:
+        ring = _splice([loops[i] for i in groups[g]])
+        if len(ring) >= 3:
+            rings.append(ring)
+    if not rings:
+        return None
+
+    boxes = _face_boxes(plan, xy)
+    out = []
+    for ring in rings:
+        keep = _coverage_side(plan, ring, xy, drawn, boxes)
+        if keep is None:
+            continue                         # a fold, bounding nothing
+        verts = np.asarray(ring, dtype=np.int64)
+        ids = verts.copy()
+        seen = set()
+        for k, v in enumerate(ring):
+            if v in seen:
+                ids[k] = -1
+            else:
+                seen.add(v)
+        # `keep` is relative -- it says whether *this* traversal already has the
+        # covered side on its left -- and `wound` wants an absolute winding. The
+        # two are not the same thing, and confusing them gave two overlapping
+        # islands opposite windings that cancelled where they met: `_loops`
+        # walks them in whatever direction it finds them, so "reverse" and
+        # "keep" can mean the same final orientation for two different loops.
+        # Turn it into an absolute here, against the ring's own signed area.
+        a = _area(xy[verts])
+        out.append((ids, verts, (a > 0.0) if keep else (a < 0.0)))
+    return out or None
 
 
 def walk_loop(plan, edges, xy):

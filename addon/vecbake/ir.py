@@ -100,6 +100,11 @@ class Element:
     # the line flicker along the arc as the camera moves. None means stroke the
     # whole ring, which is what every unwelded outline wants. See bake._seam_spans.
     seam: object = None
+    # A merged fill that carries several subpaths: the points per subpath, in
+    # order, summing to `npts`. None is one closed ring, which is everything
+    # else. Nonzero winding fills them together, so a subpath wound against its
+    # container cuts a hole rather than filling solid.
+    subpaths: object = None
 
     def is_closed(self) -> bool:
         """Does the last point join back to the first?"""
@@ -153,7 +158,7 @@ class VecScene:
                     depth=reverse_track(el.depth, self.duration),
                     shade=reverse_track(el.shade, self.duration),
                     # reversing is a time transform; vertex order is untouched
-                    smooth=el.smooth, seam=el.seam,
+                    smooth=el.smooth, seam=el.seam, subpaths=el.subpaths,
                     # Was being dropped, which left a reversed copy's merged
                     # outlines filled but never stroked -- the same clip
                     # drawing differently backwards.

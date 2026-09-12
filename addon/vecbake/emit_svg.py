@@ -97,6 +97,27 @@ def _run_data(pts, el, decimals, mask):
     return " ".join(out)
 
 
+def _subpath_data(pts, subs, decimals):
+    """`d` for a fill that carries several subpaths, as `M ... Z` repeated.
+
+    SVG fills with the nonzero rule by default, the same as the canvas player,
+    so a subpath wound against its container cuts a hole and one wound with it
+    reads as another island -- and neither needs saying here. A `<polygon>`
+    cannot express any of it, which is why this exists.
+    """
+    out, at = [], 0
+    for n in subs:
+        # `pts` is flat -- x, y, x, y -- so a subpath of n points is 2n of them.
+        run = pts[at * 2:(at + n) * 2]
+        at += n
+        if len(run) < 6:
+            continue
+        out.append("M " + " L ".join(
+            f"{_fmt(run[i], decimals)},{_fmt(run[i + 1], decimals)}"
+            for i in range(0, len(run), 2)) + " Z")
+    return " ".join(out)
+
+
 def _path_data(pts, el, decimals):
     """`d` for a curved element, or "" when it is a plain polyline.
 
@@ -228,7 +249,15 @@ def render_inner(vec: VecScene, time=None, decimals=2, class_prefix="vb", seam_f
                 # hairline nobody can see through a translucent surface.
                 attrs.append(f'stroke="{fill}"')
                 attrs.append(f'stroke-width="{_fmt(seam_width, 2)}"')
-            if curved:
+            subs = getattr(el, "subpaths", None)
+            if subs and len(subs) > 1:
+                # Straight segments even where the element is curved: the curve
+                # tangents are worked out around one ring and would reach across
+                # the join into the next subpath. Our merged fills are not
+                # curved, and a correct shape beats a smoother wrong one.
+                out.append(f'<path d="{_subpath_data(pts, subs, decimals)}" '
+                           f'{" ".join(attrs)}/>')
+            elif curved:
                 out.append(f'<path d="{curved} Z" {" ".join(attrs)}/>')
             else:
                 out.append(f'<polygon points="{coords}" {" ".join(attrs)}/>')

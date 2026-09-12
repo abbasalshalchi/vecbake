@@ -206,6 +206,13 @@ def to_dict(vec: VecScene, include_ids=True, coord_decimals=2) -> dict:
         seam = _encode_mask(getattr(el, "seam", None))
         if seam is not None:
             item["sw"] = seam
+        # How a merged fill's points divide into subpaths, when it carries more
+        # than the one ring. Counts rather than offsets: they sum to `n`, so a
+        # reader that ignores this draws the pieces joined end to end instead of
+        # separately -- wrong, but not a crash.
+        subs = getattr(el, "subpaths", None)
+        if subs and len(subs) > 1:
+            item["sp"] = [int(v) for v in subs]
         if include_ids:
             item["id"] = el.key
         els.append(item)
