@@ -1927,7 +1927,8 @@ def _match_pieces(prev, pieces, cap):
 
 def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
                            face_visible, face_depth, face_shade,
-                           face_alpha_max, cull, bounds):
+                           face_alpha_max, cull, bounds,
+                           key=None, collect=None, face_facing=None):
     """One merged fill, carried as several subpaths.
 
     Each piece is an ordinary outline: its own ring, its own slots, its own
@@ -1998,6 +1999,26 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
     slot["depth"][fi] = float(face_depth[vis_faces].mean()) if len(vis_faces) else 0.0
     slot["shade"][fi] = (float(face_shade[vis_faces].mean())
                          if plan.shading and len(vis_faces) else 1.0)
+
+    # Hand the element to the ordering pass, exactly as the single-ring path
+    # does. Leaving it out is silent: the fill still draws, and sorts against
+    # everything else on nothing at all. The occlusion audit named it --
+    # "element not in this frame's ordering pass" against soyuz_015/m and
+    # soyuz_001/m, both of which carry subpaths.
+    if visible and collect is not None and key is not None:
+        every = np.concatenate([verts for _, verts, _ in pieces])
+        item = {
+            "key": key, "kind": 1, "seed": slot["depth"][fi],
+            "pts": xy[every], "depths": depth[every],
+        }
+        # Same reason as the single ring: a merged element's own points are the
+        # rim, so a plane fitted to them is asked about a middle it never saw.
+        # The surface answers with the nearest sample instead.
+        if face_facing is not None:
+            probe = _surface_probe(plan, face_facing, xy, depth)
+            if probe is not None:
+                item["probe"] = probe
+        collect.append(item)
 
 
 def _sample_object(plan, me, eval_obj, settings, slots, fi,
@@ -2278,7 +2299,9 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
                                    face_visible, face_depth, face_shade,
                                    face_alpha_max=plan.face_alpha,
-                                   cull=cull, bounds=(lo_x, lo_y, hi_x, hi_y))
+                                   cull=cull, bounds=(lo_x, lo_y, hi_x, hi_y),
+                                   key=key, collect=collect,
+                                   face_facing=face_facing)
         elif walk is None:
             if plan.outline_n is None and face_facing.any():
                 # There are faces pointing at the camera and no ring to be had
