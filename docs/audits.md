@@ -341,6 +341,27 @@ Worst errors:
 
 ---
 
+## 8. Preview bake with the confirmed adjustments
+
+13 September, `scripts/bake_confirmed.py`: the surface read and batched ordering
+(`20c2f71`), `apollo_003` drawn face by face (the best audited selection, §5), and
+`split_span_pct = 0` because the automatic selection is unaudited. Settings as the
+screening audit.
+
+| | |
+|---|---|
+| Bake, worker pool, wall clock | 260 s |
+| Elements | 18,338 — the same count as the audited split arm |
+| Drawn per frame | 10,603–11,107 |
+| Output | `out/preview-confirmed/apollo-soyuz-confirmed.lerpa_cam.preview.html` (8.7 MB), `.svg` (11.7 MB) |
+| Preview render, 1280×900 | 14–15 ms, 68–71 fps, no console errors |
+
+Checked by eye in the preview: the `apollo_018` thruster clusters sit on top of the
+service module through the clip, including the last frame, where the nearest-vertex
+read drew them underneath.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
