@@ -704,6 +704,24 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **A hidden inner ring stroked across a merged part** (seen 2026-09-13 in the
+  confirmed preview, [audits.md §8](audits.md#8-preview-bake-with-the-confirmed-adjustments)).
+  A long thin triangle runs from the Apollo probe tip across the docking module. It is
+  `dock_001/m`, a merged fill of three rings (`sp` 56 / 19 / 12); the triangle is one of
+  the small rings, inside the main one. Its points and its segments lie on real
+  projected edges (`check_geometry.py` 0 offenders; `check_outline_segments.py` worst
+  2.5 px), so it is a true silhouette loop — of geometry behind the part's own front
+  surface. Face by face that loop is hidden by nearer faces; merged, every ring's outline
+  is stroked. Not yet diagnosed further: whether the ring should exist at all.
+- **Half the `apollo_018` thrusters are not merged.** 16 identical meshes, identity
+  transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
+  merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.
+  Probably their outline changes character over the arc at their mounting angles. Their
+  tube end caps then show as open rim lines. `dock_004`, `007`, `010`–`015` fall back
+  for another reason, not yet read.
+- **A light-grey spike at the joint below the docking module** in the same frame; owned
+  by one of `dock_004 / 007 / 008 / 010–015` (it disappears with them hidden). Not yet
+  isolated.
 - **What is left of `apollo_003` over its fittings** after the surface read: 289 wrong
   pixels on the screening audit, 214 with `apollo_003` drawn face by face. Splitting
   still pays; *which* bodies to split has no justified criterion yet (the 50% depth
