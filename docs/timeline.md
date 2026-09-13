@@ -145,3 +145,6 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   `apollo_003` still pays after the fix (289 → 214) because one rank cannot describe a
   part that wraps a body — granularity, not measurement. Automatic splitting by evidence
   of interleaving is specified and handed off, not built. [Audits](audits.md).
+  That evening it is built in `scripts/` by another agent: right on a controlled scene
+  where the 50% rule fails twice, but on Apollo it splits 39 bodies and scores 342
+  wrong pixels against 214 — one cycle break is 261 of them. Rejected as built, open.

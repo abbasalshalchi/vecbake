@@ -239,6 +239,108 @@ Options considered on 13 September:
 
 ---
 
+## 7. Interleaving selector, first attempt
+
+Built 13 September by another agent from the §6 hand-off, kept entirely in `scripts/`
+(the shipping add-on is unchanged): `interleave_experiment.py` (the rule),
+`interleave_lab.py` (fixtures and a viewable lab scene), `test_interleave.py`,
+`check_interleave_evidence.py` (ray-cast check of saved witnesses), and an
+`--arm interleave` in `screen_surface_batch.py` (modes `select`, `bake`, `audit`).
+
+### The rule as built
+
+- During sampling, record every object's front-facing triangles per frame, from
+  Blender's own tessellation (so concave n-gons are exact).
+- **After** merge feasibility is settled — outline gap tests and fallbacks — so a body
+  that will be drawn face by face anyway is several independently ranked faces, not one
+  element. (An earlier arm selected before that and picked 59 bodies, 18 of which later
+  failed to merge; abandoned, `out/interleave/audit-any`.)
+- For every merged body B and every other element P overlapping it in a frame, rasterise
+  both front surfaces at **every output pixel centre** (triangle interpolation, inverse
+  depth for perspective, nearest surface where front faces overlap). Count pixels where
+  P is nearer than B by more than `resolve`'s tolerance (`max(1e-4, span·1e-4)`), and
+  pixels where it is further.
+- If both counts are non-zero **in the same frame**, select B — and P's object too if P
+  is merged. One frame is enough; the choice holds for the whole clip.
+- Re-sample the clip with the selected bodies in `no_merge`. `order.resolve` is not
+  changed.
+
+### Controlled scene
+
+`test_interleave.py`, 14 checks, passing. `--legacy` runs the same cases through
+`_deep_bodies` at 50% and **fails 2**: it misses the stepped body and splits the plate.
+
+| Fixture | Expected | 50% depth share | Interleaving rule |
+|---|---|---|---|
+| Stepped body (faces at depth 10 and 14) with a bracket at 12 across both | split the body | nothing | **stepped body** |
+| Sloping plate with a flush bolt | nothing | **plate** (wrong) | nothing |
+| Two separate boxes | nothing | nothing | nothing |
+
+Also pinned: signs from different frames never combine; opposite signs against two
+separately ranked faces are not a contradiction; hidden rear faces and touching inside
+tolerance produce no evidence; drawing the stepped body's faces separately is
+sufficient (`resolve` ranks left < bracket < right).
+
+### Apollo–Soyuz selection
+
+| | |
+|---|---|
+| Bodies selected | **39** |
+| Contradicting (body, part, frame) rows | 6,579, of which 725 had both sides merged (both split) |
+| Selection CPU | 63.9 s |
+| Largest minority side (pixels) | `apollo_002` / `apollo_003` 5,333; `apollo_000` 1,918; `apollo_013` 821; `dock_001`/`002` 199; `dock_003` 145; `dock_000` 144; `soyuz_049`/`037` 136 |
+| Bodies whose minority side never exceeds 16 px | **25**, 10 of them in all 31 frames |
+
+### Screening audit
+
+| | Nothing split | `apollo_003` by hand | **Interleaving rule** |
+|---|---|---|---|
+| Wrong pixels | 289 | **214** | 342 |
+| Rate | 3.21% | 2.38% | 3.80% |
+| Errors | 68 | 41 | **36** |
+| Measured wrong | 31 | 15 | 15 |
+| Order violated | 30 | 20 | 19 |
+| No constraint | 2 | 1 | 1 |
+| Occluder not drawn there | 3 | 3 | 0 |
+| Errors involving `apollo_003` | 24 (170 px) | 7 (109 px) | 10 (305 px) |
+| Elements | 18,324 | 18,338 | **27,809 (+52%)** |
+| Ordering CPU per frame (serial) | ~7.5 s | — | 11.3–14.2 s |
+| Bake CPU (serial ordering) | — | — | 978 s |
+| Whole audit | 928 s | 713 s | 3,004 s |
+
+Worst errors:
+
+| `apollo_003` by hand | px | Interleaving rule | px |
+|---|---|---|---|
+| `apollo_002/m` under `apollo_003` — measured wrong | 71 | **`apollo_003/f1` under `apollo_002`** — order violated | **261** |
+| `apollo_002/m` under `apollo_001` — order violated | 28 | `apollo_003/f1` under `apollo_001` — order violated | 13 |
+| `apollo_003/f5` under `apollo_013` — order violated | 19 | `apollo_002/f11` under `apollo_003` — measured wrong | 12 |
+| `apollo_000/m` under `apollo_002` — measured wrong | 14 | `apollo_002/f16` under `apollo_003` — measured wrong | 6 |
+
+### Reading
+
+- **Worse overall, and 52% more elements.** Verdict: not shippable as built.
+- **One error is 261 of the 342 px.** Without it the rule's errors total 81 px against
+  214 for the hand split, so more ranks do fix interleaving. What went wrong is a single
+  cycle break: with *both* `apollo_003` and `apollo_002` split, one large module face
+  (`f1`) sits in a cycle with `apollo_002`'s faces, and the breaker gave up the
+  constraint that mattered. Splitting removes cycles and creates new ones; one bad break
+  costs more than the rest saves.
+- **The selection is too broad for its cost.** 25 of 39 bodies contradict on ≤16 px.
+  The likely cause (reasoned, not yet measured): flush-mounted parts whose surface dips
+  a hair into the hull along the contact line — geometrically two-sided, but a sliver
+  splitting cannot repair.
+- **It splits both sides of a pair** where one would give the pair enough ranks.
+
+### Open questions, in order
+
+1. Split one side of a contradicting pair, not both — which one, by a rule.
+2. Tell a contact seam from a wrap without a pixel cutoff.
+3. Why `apollo_003/f1` still loses to `apollo_002` after both are split: a genuine
+   cycle, or a face whose own depth is mis-measured?
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

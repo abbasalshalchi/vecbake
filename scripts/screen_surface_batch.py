@@ -89,10 +89,10 @@ def parser():
     arg = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = arg.add_subparsers(dest="mode", required=True)
-    for mode in ("capture", "audit"):
+    for mode in ("capture", "audit", "select", "bake"):
         run = sub.add_parser(mode)
         run.add_argument("--out", type=Path, required=True)
-        run.add_argument("--arm", choices=("triangle", "split"), default="triangle")
+        run.add_argument("--arm", choices=("triangle", "split", "interleave"), default="triangle")
         run.add_argument("--frames", type=frame_numbers, default=[0, 15, 30])
         run.add_argument("--budget", type=int, default=3000)
         run.add_argument("--serial-timing", action="store_true")
@@ -165,6 +165,12 @@ def blender_run(args):
     props = configure(bpy.context.scene)
     settings = bpy.context.scene.vecbake.to_bake_settings(bpy.context)
     settings.order_workers = 1
+    if args.mode == "select" and args.arm != "interleave":
+        raise ValueError("select mode requires --arm interleave")
+    if args.arm == "interleave":
+        # Enable the old collection plumbing, not its percentage criterion.
+        # The scoped probe below replaces that criterion with pixel evidence.
+        settings.split_span_pct = 50.0
     manifest = {"arm": args.arm, "mode": args.mode, "frames": args.frames,
                 "budget": args.budget,
                 "fingerprint": fingerprint(bpy, bake, settings, props),
@@ -176,6 +182,7 @@ def blender_run(args):
     old_iter, old_imap = bake.bake_iter, parallel.imap_resolve
     old_resolve, old_read, old_bake_scene = order.resolve, order._surface_read, api.bake_scene
     old_nearest, old_diagnose = audit._Truth.nearest, audit._diagnose
+    old_extent = bake._front_extent
     counts = Counter()
     phase = ["idle"]
 
@@ -190,6 +197,50 @@ def blender_run(args):
     namespace = dict(bake.__dict__)
     namespace["_screen_forced_no_merge"] = forced_no_merge
     injected = source.replace(needle, "no_merge: set[str] = _screen_forced_no_merge()")
+    probe = None
+    if args.arm == "interleave":
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from interleave_experiment import SamplingProbe
+        manifest["experiment_sha256"] = sha(ROOT / "scripts" / "interleave_experiment.py")
+        probe = SamplingProbe(bake, order, settings.width, settings.height,
+            report=lambda fi, picks, pairs: event(args.out, "interleave_frame",
+                frame=fi, picks=picks, pairs=pairs))
+        sample_original = bake._sample_object
+        namespace["_sample_object"] = lambda *a, **kw: probe.sample(sample_original, *a, **kw)
+        bake._front_extent = probe.surface
+        def choose(extent, pct, frame_ortho):
+            picks = probe.choose(extent, pct, frame_ortho)
+            write_json(args.out / "interleave.json", dict(picks=picks, rows=probe.rows,
+                cpu_seconds=probe.cpu_seconds, calls=probe.calls,
+                candidates=sorted(n for n,p in probe.plans.items()
+                    if p.merge_fill and p.outline_n and p.outline_n >= 3),
+                face_counts={n: int(probe.plans[n].nfaces) for n in picks}))
+            event(args.out, "interleave_selected", picks=picks, cpu_seconds=probe.cpu_seconds)
+            if args.mode == "select":
+                raise CaptureComplete()
+            return picks
+        # The initial depth-share decision precedes the outline gap tests.
+        # Defer this experiment until those tests settle P's element identity;
+        # otherwise a rejected merge creates a false one-rank contradiction.
+        namespace["_deep_bodies"] = lambda extent, pct: []
+        namespace["_screen_interleave"] = choose
+        needle = "    finally:\n        scene.frame_set(original_frame)"
+        if injected.count(needle) != 1:
+            raise RuntimeError("Selector injection site changed")
+        extra = '''        deep = _screen_interleave(
+            {n: [rows.get(fi) for fi in range(len(frames))]
+             for n, rows in depth_extent.items()}, settings.split_span_pct, frame_ortho)
+        if deep:
+            no_merge.update(deep)
+            merge_fallback = sorted(set(merge_fallback) | set(deep))
+            for name in deep:
+                outline_slots.pop(name, None)
+                part_slots.pop(name, None)
+            judging = False
+            restart()
+            yield from sample_pass()
+'''
+        injected = injected.replace(needle, extra + needle)
     exec(compile(injected, str(bake.__file__) + "<screen-no-merge>", "exec"), namespace)
     manifest["injection_sha256"] = hashlib.sha256(injected.encode()).hexdigest()
 
@@ -201,10 +252,12 @@ def blender_run(args):
     def resolve_spy(items, is_ortho=False, tol=1e-4):
         counts["resolve_calls_" + phase[0]] += 1
         started = time.perf_counter()
+        cpu_start = time.process_time()
         result = old_resolve(items, is_ortho, tol)
         if args.serial_timing and phase[0] == "bake":
             row = {"call": counts["resolve_calls_bake"] - 1,
                    "items": len(items), "seconds": time.perf_counter() - started,
+                   "cpu_seconds": time.process_time() - cpu_start,
                    "stats": dict(order.LAST_STATS)}
             manifest["serial_resolve"].append(row)
             event(args.out, "resolve", **row)
@@ -223,7 +276,8 @@ def blender_run(args):
                                and it["key"].split("/")[0] == TARGET for it in items)
             if not items or not target_fills:
                 raise RuntimeError(f"Capture frame {fi} has no target fill")
-            if merged != (1 if args.arm == "triangle" else 0):
+            target_split = args.arm == "split" or (probe is not None and TARGET in probe.picks)
+            if merged != (0 if target_split else 1):
                 raise RuntimeError(f"Wrong target representation in frame {fi}: {merged} merged")
             if not any(it.get("tris") is not None for it in items):
                 raise RuntimeError(f"Frame {fi} has no surface triangles")
@@ -247,6 +301,7 @@ def blender_run(args):
 
     def bake_spy(*a, **kw):
         phase[0] = "bake"
+        cpu_start = time.process_time()
         previous_report = kw.get("report")
 
         def report(stage, done, total):
@@ -261,6 +316,7 @@ def blender_run(args):
         try:
             return old_bake_scene(*a, **kw)
         finally:
+            manifest["bake_cpu_seconds"] = time.process_time() - cpu_start
             phase[0] = "diagnosis"
 
     def nearest_spy(truth, px, py):
@@ -284,18 +340,32 @@ def blender_run(args):
     started = time.perf_counter()
     report = None
     try:
-        if args.mode == "capture":
+        if args.mode in ("capture", "select"):
             try:
                 api.bake_scene(bpy.context, settings)
             except CaptureComplete:
                 pass
+        elif args.mode == "bake":
+            vec = api.bake_scene(bpy.context, settings)
         else:
             report = audit.run(settings=settings, frames=args.frames, budget=args.budget)
+        if args.mode == "select":
+            if probe.calls != 1:
+                raise RuntimeError("Selection probe did not collect evidence")
+            return
         if counts["no_merge_hook"] != 1 or counts["imap_hook"] != 1:
             raise RuntimeError(f"Instrumentation did not fire exactly once: {dict(counts)}")
         if len(manifest["captures"]) != len(args.frames):
             raise RuntimeError("Capture is incomplete")
-        if args.mode == "audit":
+        if args.mode == "bake":
+            if not counts["resolve_calls_bake"]:
+                raise RuntimeError("No in-process ordering was observed")
+            summary = dict(elements=len(vec.elements),
+                bake_seconds=time.perf_counter()-started,
+                bake_cpu_seconds=manifest["bake_cpu_seconds"])
+            write_json(args.out / "bake.json", summary)
+            event(args.out, "bake_complete", **summary)
+        elif args.mode == "audit":
             if not counts["resolve_calls_bake"] or not counts["surface_calls_bake"]:
                 raise RuntimeError("No in-process surface ordering was observed")
             if not counts["ray_pixels"] or counts["ray_pixels"] != report["overlap_pixels_tested"]:
@@ -310,6 +380,7 @@ def blender_run(args):
                        "target_errors": len(target),
                        "target_wrong_pixels": sum(rec["pixels"] for rec in target),
                        "elements": report["elements"], "bake_seconds": report["bake_seconds"],
+                       "bake_cpu_seconds": manifest["bake_cpu_seconds"],
                        "total_seconds": report["total_seconds"], "rate_pct": report["rate_pct"]}
             write_json(args.out / "audit.json", report)
             write_json(args.out / "summary.json", summary)
@@ -321,6 +392,7 @@ def blender_run(args):
         bake.bake_iter, parallel.imap_resolve = old_iter, old_imap
         order.resolve, order._surface_read, api.bake_scene = old_resolve, old_read, old_bake_scene
         audit._Truth.nearest, audit._diagnose = old_nearest, old_diagnose
+        bake._front_extent = old_extent
         manifest["instrumentation"] = dict(counts)
         manifest["harness_seconds"] = time.perf_counter() - started
         write_json(args.out / "manifest.json", manifest)
