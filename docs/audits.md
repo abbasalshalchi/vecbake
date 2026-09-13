@@ -164,8 +164,48 @@ Committed in `20c2f71` with the triangle read.
 
 ## 5. Triangle read, with and without splitting `apollo_003`
 
-*Pending.* Decides whether `split_span_pct` stays: if splitting no longer earns its
-elements against the triangle read, it goes.
+Screening audit, 13 September, `20c2f71`, run one arm at a time with nothing else of
+ours on the machine. `split_span_pct = 0` in both; the split arm forces `apollo_003`
+out of merging through the harness (`screen_surface_batch.py audit --arm split`).
+
+| | Triangle read, nothing split | Triangle read, `apollo_003` split |
+|---|---|---|
+| Wrong pixels | 289 | **214** |
+| Rate | 3.21% | **2.38%** |
+| Errors | 68 | **41** |
+| Measured wrong | 31 | **15** |
+| Order violated | 30 | **20** |
+| Occluder not drawn there | 3 | 3 |
+| No constraint | 2 | 1 |
+| Coverage edge | 2 | 2 |
+| Errors involving `apollo_003` | 24 (170 px) | **7 (109 px)** |
+| Elements | 18,324 | 18,338 (+14) |
+| Bake (serial ordering) | 406 s | 423 s |
+| Whole audit | 928 s | 713 s |
+
+Wrong pixels between `apollo_003` and each part, by object:
+
+| Part | Nothing split | Split |
+|---|---|---|
+| `apollo_002` | 97 | 80 |
+| `apollo_013` | 39 | 19 |
+| `apollo_024` | 24 | 6 |
+| `apollo_018` (all pieces) | 10 | 4 |
+
+The nothing-split arm reproduces §1 exactly (289 px, 68 errors, 31 / 30), so the audit
+is deterministic and the ordering speed-up changed nothing it can see. The whole audit
+now takes 12–16 minutes, not 40: the ray cast of 9,000 pixels takes about two seconds,
+and the time was the serial bake and the diagnosis.
+
+**Reading.** Splitting still earns its place against the triangle read: a quarter of
+the wrong pixels and 40% of the errors gone, for 14 elements and ~4% more bake. What
+it fixes is no longer the depth read. A merged body has one rank per frame, and a part
+that sits in front of one face of it and behind another — `apollo_002` wraps the
+module — cannot be right with one rank whatever depth is read. That is granularity.
+
+**So `split_span_pct` is not removed — but its selector is not justified either.** The
+50% threshold has no measured knee (58.2 / 51.7 / 42.6% on this model). Which bodies
+to draw face by face needs a criterion that is not a tuned share. Open.
 
 ---
 

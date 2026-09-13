@@ -704,9 +704,10 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
-- **What is left of `apollo_003` over its fittings** after the surface read (289 wrong
-  pixels on the screening audit, 24 errors involving `apollo_003`), and whether
-  `split_span_pct` earns its place against it. See [audits.md](audits.md).
+- **What is left of `apollo_003` over its fittings** after the surface read: 289 wrong
+  pixels on the screening audit, 214 with `apollo_003` drawn face by face. Splitting
+  still pays; *which* bodies to split has no justified criterion yet (the 50% depth
+  share has no knee). See [audits.md](audits.md#5-triangle-read-with-and-without-splitting-apollo_003).
 - **Three parts lose one frame each** to a boundary walk that returns nothing
   (part_192, part_170, part_158 — August 23).
 - **The butterfly page scrolls sideways** at narrow widths: rotated `.tilt` players
