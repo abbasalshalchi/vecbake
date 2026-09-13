@@ -1,0 +1,168 @@
+# Measuring without being fooled
+
+Most of the wrong turns in this project were not bad ideas. They were good ideas
+graded by a number that did not measure what it appeared to. This page is the
+tools that grade a bake, and every trap that has produced a confident wrong
+answer.
+
+The rule underneath all of it: **a number is a claim until it has been checked
+against ground truth, or against a deliberately broken version of the fix.** If
+a change moves the metric and not the artefact, the metric is wrong.
+
+---
+
+## The tools
+
+| Tool | What it grades | Ground truth? | Run |
+|---|---|---|---|
+| `addon/vecbake/audit.py` | Paint order: ray-casts overlapping pixels against the real mesh and diagnoses each error | **Yes** | Panel: Audit → Check Occlusion. Headless: `audit.run(frames=[...], budget=N)` |
+| `scripts/check_geometry.py` | Position: every drawn element's points against the projection of its own mesh vertices, exhaustively, gated on opacity | **Yes** | `exec(open('.../check_geometry.py').read()); run('.../x.svg')` inside Blender |
+| `scripts/validate_bake.py` | The emitted order against the ordering pass's own sampled evidence; `lines_under_own_face`; `order_flips_after_reduction` | No — self-consistency | `check()` in `scripts/dev.py` |
+| `scripts/check_occlusion.py` | Thin shim over `audit.py` for headless runs | Yes | — |
+| `scripts/measure_subframe.py` | A merged outline against Blender's true silhouette at subframes | **Yes** | `T_TAG`, `T_NAMES` env vars |
+| `scripts/fit_orbit_depth.py` | Per-node camera distance `d² = A + B cos θ + C sin θ` for an orbit or an arc | Exact for a rigid orbit | `arc_degrees` for an arc |
+| Bake stats | `order_constraints`, `order_cycle_breaks`, `order_constraints_dropped`, `order_assertions_lost`, `merged_gap_*`, `shading_angle_guessed` | Diagnostics | In every bake's report |
+| `tools/play.html` | Loads the player from disk, so a player change can be tested without re-baking | — | `localhost:8765/tools/play.html?f=<clip>` |
+| `scripts/devserver.py` | Serves the repo, falling back to `lerpa-website/public`; `POST /save/<name>` writes canvas snapshots to `snapshots/` | — | Port 8765 |
+| `lerpa-website/public/_lab.html` | Rasterises one group's fills with the shipping renderer | — | `?src=` |
+
+Grade occlusion by the audit, position by `check_geometry`, outline shape by the
+subframe probe. Read `validate_bake` as "how far the order strays from its own
+evidence", not as correctness.
+
+### Audit sizes
+
+A full audit costs far more than the bake it grades — ray-casting dominates.
+
+| | Frames | Overlap pixels | Time on Apollo–Soyuz |
+|---|---|---|---|
+| Full | 0, 7, 15, 23, 30 | 30,000 | ~110 min (bake ~17 min) |
+| Screening | 0, 15, 30 | 9,000 | ~40 min |
+
+Compare a screening run only with a screening run. Screen first; confirm the winner
+at full size.
+
+---
+
+## Traps that produced wrong answers
+
+### Grading between keyframes, not at them
+An interpolated format is exact at every keyframe by construction, so every rule
+looks equally good there. part_042 measured 0.05 px at keyframes and 14.26 px
+between them. **Measure at `subframe = 0.5`.** The same mistake sized point counts
+wrong for months, and sent the hero's framing work round three times: anything that
+samples at frame positions and re-interpolates disagrees with what is drawn between.
+
+### A metric that moves while the artefact does not
+Nine changes to merged outlines were made against proxies — area dips, slot
+displacement, winding changes — that ranked parts differently from what a person
+saw. The subframe probe against Blender's own silhouette is what ended it
+(`e865e00`).
+
+### `occlusion_violations` and the ray cast can move in opposite directions
+When merged fills were ordered against their real surface, ray-cast wrong pixels
+halved (4.52% → 2.24%) while `occlusion_violations` nearly doubled (5,799 → 10,474),
+85% of the increase on pairs with a merged element. The validator grades by the mean
+depth over 24 samples; `resolve` decides at one point. They agreed only while depth
+was a plane.
+
+### Fewer constraints dropped is not better
+Agreement weighting dropped fewer constraints (281 → 257 on a synthetic crowd) and
+was worse on the real model: fewer, but chosen badly. Grade on the ray cast.
+
+### The audit has been wrong
+- It sampled reduced tracks at `fi/fps`, ignoring frame step: 1.7M phantom order
+  flips.
+- It graded on-face pairs by the same plane fit the baker overrides.
+- A between-keyframes scan sampled past `duration`: the whole scene ~47 px wrong at
+  once. **The tell was every part sharing one timestamp.**
+- Its per-pair rectangle survey was quadratic and never finished on a real scene.
+- Its diagnosis spied on an in-process call while ordering ran in workers.
+
+### A validator that passes without running
+`validate_bake.py` could not import on a real install and, had it imported, graded
+an empty list as PASS. Anything that works by spying on a function must **raise** if
+the spy never fired.
+
+### Tests that assert the mechanism instead of the fault
+- `test_edge_shading.py` used 30°, the same as the fallback, so it passed with the
+  bug live.
+- `test_encode_grid.py` built metadata by hand and so only tested the consumer.
+- A `freeze_hidden` test fed real-but-distant poses where the real fault was `None`.
+- Every shape in `test_outline.py` was convex, so self-crossing outlines passed.
+
+Before trusting a test, run it against the commit that had the bug.
+
+### Sampling walks past small faults
+A stray line is a few dozen pixels in a few hundred thousand: 7,000 random samples
+over a bake with four known errors found none. Restrict to where the fault can
+exist — overlaps for ordering — or be exhaustive, as `check_geometry` is.
+
+### Forgetting the opacity gate
+Without gating on opacity > 1/255, `check_geometry` reports 57,402 offenders on the
+Voyager hero, every one correctly invisible.
+
+### Never score pixels off a canvas in the page
+Chrome composites an in-document canvas, and it does not settle to the same raster
+twice: 2,952 differing pixels where the true residual was 9, with the player's
+internal state bit-identical. No redraw, `requestAnimationFrame` or delay fixed it.
+Measure at the document's own size with no transform change (`out/usr_weld.html`).
+
+### `lastRenderMs` is an order of magnitude optimistic
+Canvas2D submits asynchronously. Force a finish — read back one pixel
+(`getImageData` / `readPixels`) — before timing a frame.
+
+### A hidden tab does not render
+`requestAnimationFrame` does not run in a hidden tab, and a screenshot times out.
+The in-app browser pane can report `document.hidden: true` even when fronted. Check
+`document.visibilityState` before believing a frame rate, or a freeze.
+
+### Comparing two bakes of two different scenes
+An old-vs-new comparison on the Voyager was confounded because the `.blend` was
+re-saved between the bakes. Record the scene state with the numbers.
+
+### Machine noise
+Two runs producing byte-identical output timed 3.64 and 2.11 minutes. Trust element
+counts and pixel counts; quote bake times only against a back-to-back run.
+
+On 13 September the same Apollo bake timed 390 and 711 s, and a change was reported
+as making the bake 2.4× slower when CPU profiling put its cost at about one second.
+Time with `time.process_time()` on one worker, and never read an audit's bake time
+as bake cost: `audit.run` orders every frame serially. Runs in
+[audits.md](audits.md#3-what-the-triangle-read-costs).
+
+### Waiting on output that was never going to match
+A wait loop grepping for `Error:` exited immediately on Blender's harmless
+`ModuleNotFoundError: No module named 'imp'` startup line, reporting a 40-minute
+audit as finished. Wait on the specific result line, or on the process exiting.
+
+### A benchmark against a weakened baseline
+Cubic time interpolation promised 40% off strokes against top-down linear fitting;
+the reducer that ships uses RDP, and against that it was 10% off geometry. Benchmark
+against what actually ships.
+
+### Degrees into a radians property
+A crease-angle sweep passed 30.0 to an `ANGLE` property, stored in radians and capped
+at π: every row came out identical. Sanity-check a sweep's control row against a known
+bake.
+
+### Ground truth from a scene you control
+The strays that took longest were isolated by a scene of simple primitives on the
+same camera and settings, not by the 300-part model. When a real model is too big to
+reason about, build the smallest scene whose right answer you can state in advance —
+`boss` (a box on a plate) is what made the multi-ring winding test a test.
+
+---
+
+## Timing reference
+
+| Measurement | Value |
+|---|---|
+| Voyager bake before workers / after | 66.9 / 8.9 min |
+| Voyager 60-frame bake at 15.7 MB | 12.5 min |
+| Apollo–Soyuz 3-frame screening bake | ~750 s (serial ordering; load-dependent) |
+| Apollo–Soyuz 10-frame bake, one worker, CPU | 229.6 s → 112.2 s after `20c2f71` |
+| Apollo–Soyuz full audit (5 frames, 30k px) | 6,630 s total, 1,043 s bake |
+| Lerpa frame at 960 px, 6,307 elements | ~52 ms (JS 17, paths 6–12, raster 24–29) |
+| three.js, same model, 960 / 1080 | 64–72 / 55–61 fps |
+| Hairline cliff | ~5× slower above 1.0 device px stroke |

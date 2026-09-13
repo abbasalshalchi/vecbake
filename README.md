@@ -273,8 +273,12 @@ So depth uses a **per-sample error budget**: at every frame the budget is half
 the distance to the nearest other visible element in depth. Elements out on
 their own still compress hard; elements packed together keep their keys.
 
-Run `scripts/validate_bake.py` after changing any of this. It recomputes ground
-truth independently and should report zero violations, zero flips, zero cycles.
+Run `scripts/validate_bake.py` after changing any of this. `order_flips_after_reduction`
+and `lines_under_own_face` must be 0. Its `occlusion_violations` is *not* ground
+truth and is not zero on a real scene: it grades the final order against the
+ordering pass's own sampled evidence, and it has moved the opposite way to the
+ray cast before (see [docs/measurement.md](docs/measurement.md)). Grade occlusion
+with the audit below.
 
 ---
 
@@ -330,6 +334,12 @@ baker, so the report names the face whose depth range spans the thing crossing
 it. Splitting that face is what gives the ordering the resolution to be right,
 and that is the artist's call.
 
+Not every `measured wrong` is a crossing, though. A merged part's depth used to
+be read from its nearest surface *vertex*, and on a low-poly body the nearest
+vertex to the middle of a long face is a corner. It is now read off the
+front-facing triangle under the point, which on Apollo–Soyuz took `measured
+wrong` from 53 to 31 with nothing split — see [docs/audits.md](docs/audits.md).
+
 ### Checking where things are drawn, not just what is in front
 
 `check_occlusion.py` grades what is drawn *in front of* what. `scripts/check_geometry.py`
@@ -364,6 +374,18 @@ It runs the pipeline end to end — sample, reduce, encode, decode — so it als
 catches an encoder that quietly resamples a track it should not have. Voyager
 hero, 9,377 elements over all 60 frames: **379,650 point-sets, none skipped,
 none over tolerance**, worst deviation 1.10 px against a 1 px bake.
+
+## Project notes
+
+How the add-on got this way lives in [`docs/`](docs/README.md): a dated
+[timeline](docs/timeline.md), every [bug](docs/bugs.md) with its cause and guard,
+every [experiment](docs/experiments.md) including the ones that failed, the
+[invariants](docs/invariants.md) not to break, how to [measure](docs/measurement.md)
+without being fooled, environment [gotchas](docs/gotchas.md), and the product
+[decisions](docs/decisions.md). Read the experiment ledger before building an idea
+— most of the obvious ones have been tried.
+
+---
 
 ## Reference
 
