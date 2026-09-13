@@ -74,6 +74,19 @@ globally, so seed order does not survive for unconstrained pairs.
 from the probe, and the probe's thinning keeps the nearest and furthest vertices —
 `resolve` settles non-overlapping ranges without measuring (`6274add`).
 
+**A merged part's depth at a point is read off its surface, not its nearest vertex.**
+The bake hands each merged part its front-facing triangles, which are never drawn;
+`order._surface_read` interpolates the triangle under the point (inverse depth for
+perspective). The nearest vertex is only the fallback off the surface. Reading a vertex
+put `apollo_003`'s depth at a far corner and painted a thruster bolted to it underneath
+(`20c2f71`). → `test_surface_depth.py`
+
+**Speeding up the ordering pass must not change a rank.** Every batching in
+`_overlap_centre`, `_fill_fill_centres`, `_inside_rows` and `_line_spans` computes the
+same expressions on the same doubles in the same order; the proof is a replay of
+captured frames that fails on any difference (`scripts/screen_surface_batch.py replay`),
+not a test that passes on a toy scene. → `test_order_batch.py`
+
 **Emitted depth is a rank, strictly injective.** Edges inherit their face's seed depth,
 so seeds tie.
 

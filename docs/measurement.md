@@ -19,6 +19,7 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `scripts/check_geometry.py` | Position: every drawn element's points against the projection of its own mesh vertices, exhaustively, gated on opacity | **Yes** | `exec(open('.../check_geometry.py').read()); run('.../x.svg')` inside Blender |
 | `scripts/validate_bake.py` | The emitted order against the ordering pass's own sampled evidence; `lines_under_own_face`; `order_flips_after_reduction` | No — self-consistency | `check()` in `scripts/dev.py` |
 | `scripts/check_occlusion.py` | Thin shim over `audit.py` for headless runs | Yes | — |
+| `scripts/screen_surface_batch.py` | `capture`: pickle the ordering pass's input for chosen frames. `replay`: run two `order.py` files on captured frames and **fail if any rank or stat differs**, with timings. `audit`: the Apollo screening audit, `--arm triangle` (nothing split) or `--arm split` (`apollo_003` face by face), writing `summary.json` | Replay: exact equivalence. Audit: yes | `blender -b apollo-soyuz.blend --python scripts/screen_surface_batch.py -- audit --arm split --out out/…`; replay runs in the bundled Python, no Blender |
 | `scripts/measure_subframe.py` | A merged outline against Blender's true silhouette at subframes | **Yes** | `T_TAG`, `T_NAMES` env vars |
 | `scripts/fit_orbit_depth.py` | Per-node camera distance `d² = A + B cos θ + C sin θ` for an orbit or an arc | Exact for a rigid orbit | `arc_degrees` for an arc |
 | Bake stats | `order_constraints`, `order_cycle_breaks`, `order_constraints_dropped`, `order_assertions_lost`, `merged_gap_*`, `shading_angle_guessed` | Diagnostics | In every bake's report |
@@ -37,10 +38,14 @@ A full audit costs far more than the bake it grades — ray-casting dominates.
 | | Frames | Overlap pixels | Time on Apollo–Soyuz |
 |---|---|---|---|
 | Full | 0, 7, 15, 23, 30 | 30,000 | ~110 min (bake ~17 min) |
-| Screening | 0, 15, 30 | 9,000 | ~40 min |
+| Screening | 0, 15, 30 | 9,000 | ~40 min before `20c2f71`; 12–16 min after |
 
 Compare a screening run only with a screening run. Screen first; confirm the winner
 at full size.
+
+The ray cast is not the cost: 9,000 pixels take about two seconds. An audit's time is
+its bake, which orders every frame on one worker so the diagnosis can watch, and the
+diagnosis of each error. Run audits one at a time.
 
 ---
 

@@ -136,6 +136,12 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   diagnostics rule out the spending side; splitting `apollo_003` works; the solar panels
   are cleared as a non-bug. The cause is located as the nearest-vertex depth read, and a
   triangle read is built (uncommitted).
-- **13 Sep.** Its audit: 446 → 289 wrong pixels, at 2.4× the bake time.
+- **13 Sep.** Its audit: 446 → 289 wrong pixels, at an apparent 2.4× the bake time.
   [Progress report](progress-2026-09-13.md). The site re-themed to the vest identity.
-  These documents.
+  These documents. Later: the 2.4× turns out to be machine load (CPU profiling puts the
+  triangle read at ~1 s a bake); `apollo_018` confirmed fixed per frame; the ordering
+  pass made 3× faster with bit-identical ranks; committed and pushed (`20c2f71`,
+  `8c53130`). A screening audit, now 15 minutes rather than 40, shows splitting
+  `apollo_003` still pays after the fix (289 → 214) because one rank cannot describe a
+  part that wraps a body — granularity, not measurement. Automatic splitting by evidence
+  of interleaving is specified and handed off, not built. [Audits](audits.md).

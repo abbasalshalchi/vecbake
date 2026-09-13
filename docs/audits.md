@@ -209,6 +209,36 @@ to draw face by face needs a criterion that is not a tuned share. Open.
 
 ---
 
+## 6. Choosing which bodies to split
+
+Background, because "splitting" is easy to misread:
+
+- **Splitting changes drawing, not the mesh.** A merged object is one filled silhouette
+  (`name/m`) with one paint rank per frame. A split object is drawn as one fill per face
+  (`name/f<n>`), each with its own rank — how every object was drawn before merging.
+- **The triangle read applies only to merged objects.** Their front-facing triangles are
+  carried to the ordering pass and never drawn. Face fills don't need it: a plane fitted
+  to a flat face is already exact, which is why splitting used to fix the corner-depth
+  fault as a side effect (446 → 265 px before the triangle read existed).
+- **What is left is granularity.** The triangle read makes every constraint against a
+  merged body correct, but they still collapse into one rank. A part in front of the body
+  everywhere, or behind it everywhere, is then drawn right. A part that wraps the body —
+  in front of some faces, behind others — produces constraints no single rank satisfies;
+  they cycle, the breaker gives one up, and pixels come out wrong. Only more ranks fix
+  that. §5 measures it: 289 → 214 px.
+- **Cost:** 14 more elements for `apollo_003`, ~4% bake. Splitting everything would undo
+  what merging saves, so selection matters.
+
+Options considered on 13 September:
+
+| Option | For | Against | Status |
+|---|---|---|---|
+| `split_span_pct` (≥50% depth share and another object inside that range) | Automatic | A proxy with no knee: 58.2 / 51.7 / 42.6% on Apollo–Soyuz | Committed as experiment, default 50% |
+| Per-object toggle set by the artist | Predictable; no threshold; artists already own geometry decisions | Needs the artist to know which bodies interleave | Not chosen |
+| Split on evidence of interleaving, decided per clip | Tests the actual failure; no threshold | Must be built and audited; must not flip a body between frames | **Handed to another agent** |
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
