@@ -39,6 +39,15 @@ class BakeSettings:
     # measured as written rather than as it might ideally be placed -- see
     # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
+    # An object whose own depth range covers this much of the scene's is drawn
+    # face by face instead of as one merged silhouette. One merged fill carries
+    # one depth per frame, so a body that reaches from the front of the scene to
+    # the back cannot be ordered against the fittings bolted to it: whichever
+    # way each pair is settled, the pairs contradict and the cycle breaker
+    # spends a constraint that was right. Its faces each span a little depth and
+    # order cleanly. Zero switches the test off. See bake.py for the measurement
+    # this default comes from.
+    split_span_pct: float = 50.0
     weld_seams: bool = False       # treat coincident open edges as interior
     weld_tol: float = 1e-4         # how close endpoints must be, scene units
     # Only outlines already drawing worse than this get asked whether the area

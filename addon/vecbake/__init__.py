@@ -155,6 +155,17 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "pentagon to a triangle in one frame, and no outline survives that "
                     "-- its faces do. Zero merges whatever rings",
     )
+    split_span_pct: FloatProperty(
+        name="Split Deep Bodies", default=50.0, min=0.0, soft_max=100.0, max=100.0,
+        subtype="PERCENTAGE",
+        description="Draw an object face by face, rather than as one merged silhouette, "
+                    "when its own depth range covers this much of the scene's. A merged "
+                    "fill carries one depth per frame, so a body reaching from the front "
+                    "of the scene to the back cannot be ordered against the fittings "
+                    "bolted to it -- the pairs contradict, and breaking the cycle spends "
+                    "a constraint that was right. Its faces each span little depth and "
+                    "order cleanly. Zero switches the test off",
+    )
     edge_mode: EnumProperty(
         name="Edges",
         items=[
@@ -418,6 +429,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.strokes, s.fills = self.strokes, self.fills
         s.merge_fills = self.merge_fills
         s.merge_slack_px = self.merge_slack_px
+        s.split_span_pct = self.split_span_pct
         s.weld_seams = self.weld_seams
         s.weld_tol = self.weld_tol
         s.edge_mode = self.edge_mode
@@ -821,6 +833,7 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "merge_fills", toggle=True)
         if props.merge_fills:
             grid.prop(props, "merge_slack_px")
+            grid.prop(props, "split_span_pct")
         grid.prop(props, "weld_seams")
         if props.weld_seams:
             grid.prop(props, "weld_tol")

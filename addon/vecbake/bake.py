@@ -587,6 +587,8 @@ class ObjectPlan:
 
         self.loop_start, self.loop_total = _loop_totals(me)
         self.face_of_loop = None       # built on demand, see _surface_probe
+        self.tri_face = None           # and these, see _surface_tris
+        self.tri_verts = None
         self.loop_verts = np.empty(len(me.loops), dtype=np.int32)
         me.loops.foreach_get("vertex_index", self.loop_verts)
 
@@ -877,6 +879,15 @@ def bake_iter(context, settings: BakeSettings):
     # Objects whose merged outline turned out not to survive the camera move.
     # Filled by the first pass, honoured by the second -- see below.
     no_merge: set[str] = set()
+
+    # {name: {frame index: (dmin, dmax, x0, x1, y0, y1) or None}} -- how much
+    # depth each object's own geometry occupies, for the deep-body test after
+    # the first sampling pass. Keyed by frame rather than appended: the pass
+    # runs more than once, and an object with nothing finite in a frame must
+    # leave a gap there instead of shifting every later frame onto the wrong
+    # one.
+    depth_extent: dict[str, dict[int, tuple | None]] | None = (
+        {} if settings.split_span_pct > 0.0 else None)
 
     carry_state = {"prev": {}, "mid": {}, "drew": {}}
 
@@ -1228,6 +1239,7 @@ def bake_iter(context, settings: BakeSettings):
 
             items = [] if collect_items else None
             cache = {}
+            extent = {} if depth_extent is not None else None
             for obj in objects:
                 eval_obj = obj.evaluated_get(depsgraph)
                 me = eval_obj.to_mesh()
@@ -1250,11 +1262,16 @@ def bake_iter(context, settings: BakeSettings):
                     _sample_object(
                         plan, me, eval_obj, settings, slots, fi,
                         view, mvp, width, height, cam_pos, cam_fwd, is_ortho, light,
-                        items, cache,
+                        items, cache, extent,
                     )
                 finally:
                     eval_obj.to_mesh_clear()
 
+            # Per frame, like everything sampled here; the deep-body test wants
+            # the whole clip, so keep them as we go.
+            if extent is not None:
+                for nm, row in extent.items():
+                    depth_extent.setdefault(nm, {})[fi] = row
             frame_items.append(items)
             frame_ortho.append(is_ortho)
             vertex_cache.append(cache)
@@ -1307,6 +1324,21 @@ def bake_iter(context, settings: BakeSettings):
         # recorded, per object, the largest point count any single frame's
         # outline earned at the dissolve tolerance. That is the count, and now
         # it is known the geometry can be written.
+        #
+        # Experimental depth-share split: draw face by face a body deep enough
+        # to hold another object inside its depth range. There is no measured
+        # knee behind the 50% default -- front-surface shares on Apollo-Soyuz
+        # run 58.2 / 51.7 / 42.6% -- and splitting apollo_003 by hand helped
+        # the nearest-vertex read (446 -> 265 wrong pixels) before the surface
+        # read fixed the corner depths that caused it. Whether this earns its
+        # place against that read is in docs/experiments.md.
+        deep = []
+        if depth_extent:
+            deep = _deep_bodies(
+                {n: [rows.get(fi) for fi in range(len(frames))]
+                 for n, rows in depth_extent.items()},
+                settings.split_span_pct)
+        no_merge.update(deep)
         wanted = {name: p.outline_need for name, p in plans.items()
                   if p.fills and p.merge_fill and name not in no_merge}
         if wanted:
@@ -1317,7 +1349,8 @@ def bake_iter(context, settings: BakeSettings):
             # frame ever gave a ring for at all: two separate loops, a genus
             # above zero, or a closed solid with Backface Cull off, where every
             # edge has two drawn faces and there is no silhouette to find.
-            merge_fallback = sorted(n for n, need in wanted.items() if need < 3)
+            merge_fallback = sorted(
+                set(deep) | {n for n, need in wanted.items() if need < 3})
             no_merge.update(merge_fallback)
             outline_slots.update({n: need for n, need in wanted.items() if need >= 3})
             part_slots.update({n: list(plans[n].piece_needs)
@@ -2018,12 +2051,72 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
             probe = _surface_probe(plan, face_facing, xy, depth)
             if probe is not None:
                 item["probe"] = probe
+                tris = _surface_tris(plan, face_facing, xy, depth)
+                if tris is not None:
+                    item["tris"] = tris
         collect.append(item)
+
+
+def _deep_bodies(extent, pct):
+    """Objects deep enough to span the scene, with something inside them.
+
+    `extent` is `{name: [(dmin, dmax, x0, x1, y0, y1) or None, per frame]}`,
+    every list the same length; None is a frame the object had nothing finite
+    in, and it counts for nothing either way rather than as a shallow frame.
+
+    Depth is measured per frame, because the scene's depth range is a per-frame
+    fact -- a camera orbiting a rigid model sees it deepen and flatten -- and a
+    body that is deep only in the frames where everything is deep has not earned
+    the split. The fractions are averaged rather than maxed for the same reason:
+    one edge-on frame should not commit the whole clip.
+
+    Depth alone is not the whole test, and a scene with one object shows why:
+    its range *is* the scene's, so every such object would be split, and split
+    for nothing -- there is no second element for it to be ordered against. The
+    fault this exists to fix is a pair that cannot be settled, so the body has
+    to have something to be confused with: another object overlapping it on
+    screen whose own depth range sits inside its own. Not a count -- one is
+    enough, and the count is the wrong measure anyway (the probe has a boom
+    straddled by 59 objects that spans 8.9% of the scene and orders perfectly
+    well by one scalar).
+    """
+    names = sorted(extent)
+    if not names:
+        return []
+    nf = min((len(extent[n]) for n in names), default=0)
+    if nf <= 0:
+        return []
+    share = {n: 0.0 for n in names}
+    present = {n: 0 for n in names}
+    holds = {n: False for n in names}
+    for fi in range(nf):
+        rows = {n: extent[n][fi] for n in names if extent[n][fi] is not None}
+        if len(rows) < 2:
+            continue
+        lo = min(r[0] for r in rows.values())
+        hi = max(r[1] for r in rows.values())
+        scene = hi - lo
+        if scene > 0.0:
+            for n, r in rows.items():
+                share[n] += (r[1] - r[0]) / scene
+                present[n] += 1
+        for n, (d0, d1, x0, x1, y0, y1) in rows.items():
+            if holds[n]:
+                continue
+            for m, (e0, e1, u0, u1, v0, v1) in rows.items():
+                if m == n or u1 < x0 or u0 > x1 or v1 < y0 or v0 > y1:
+                    continue
+                if e0 > d0 and e1 < d1:
+                    holds[n] = True
+                    break
+    bar = pct / 100.0
+    return sorted(n for n in names
+                  if holds[n] and present[n] and share[n] / present[n] >= bar)
 
 
 def _sample_object(plan, me, eval_obj, settings, slots, fi,
                    view, mvp, width, height, cam_pos, cam_fwd, is_ortho, light,
-                   collect=None, cache=None):
+                   collect=None, cache=None, extent=None):
     nv = len(me.vertices)
     seen = project_object(plan, me, eval_obj, view, mvp, width, height,
                           cam_pos, cam_fwd, is_ortho)
@@ -2074,6 +2167,8 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
     #
     # Neither says anything about where the object's outline is. See merge.py.
     face_facing = face_ok & face_front
+    if extent is not None:
+        extent[plan.name] = _front_extent(plan, face_facing, xy, depth)
 
     # ---- edges ----------------------------------------------------------
     ne = plan.nedges
@@ -2397,12 +2492,15 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                 # behind it. A quadratic halves that on the dish and makes
                 # part_005 worse, so there is no polynomial worth picking.
                 #
-                # Hand over the surface instead: the depth at a query point is
-                # the nearest sample's, so nothing is fitted and nothing is
-                # approximated.
+                # Hand over the surface instead: its triangles, so the depth at
+                # a query point is read off the face that point lies on, and the
+                # samples for the depth range and for points off the surface.
                 probe = _surface_probe(plan, face_facing, xy, depth)
                 if probe is not None:
                     item["probe"] = probe
+                    tris = _surface_tris(plan, face_facing, xy, depth)
+                    if tris is not None:
+                        item["tris"] = tris
                 collect.append(item)
     elif plan.fills:
         lv = plan.loop_verts
@@ -2478,6 +2576,62 @@ def _surface_probe(plan, facing, xy, depth):
     vertex is not a slightly worse comparison -- it is a pair decided without
     ever being measured.
     """
+    fv = _front_verts(plan, facing)
+    if fv is None or len(fv) < 3:
+        return None
+    if len(fv) > PROBE_CAP:
+        d = depth[fv]
+        ends = fv[[int(d.argmin()), int(d.argmax())]]
+        thin = fv[np.linspace(0, len(fv) - 1, PROBE_CAP).astype(np.int64)]
+        fv = np.unique(np.concatenate([thin, ends]))
+    return xy[fv, 0].copy(), xy[fv, 1].copy(), depth[fv].copy()
+
+
+def _surface_tris(plan, facing, xy, depth):
+    """A merged part's front surface as screen triangles carrying real depths.
+
+    Returns `(tx, ty, td)`, each shaped (T, 3), or None.
+
+    The ordering pass settles a pair by reading both elements' depth at the
+    centre of what they share. For a merged part that read used to be the
+    nearest surface *vertex*, and on a low-poly body the nearest vertex is
+    nowhere near the point: the middle of a long side face is half the face
+    away from its closest corner, so a service module was read at the depth of
+    one of its ends and sorted over the fittings bolted to its middle. The
+    triangle the point lies on answers exactly, and agrees with its neighbour
+    along the edge they share, so the read is continuous where the surface is.
+
+    Fan-triangulated, which is exact for the planar faces a mesh mostly has.
+    Nothing is thinned: a triangle dropped is a hole the read falls through.
+    """
+    nf = int(plan.nfaces)
+    if not nf or not plan.nverts or not facing.any():
+        return None
+    if plan.tri_verts is None:
+        # Topology, fixed for the clip, so built once per plan.
+        totals = plan.loop_total.astype(np.int64)
+        starts = plan.loop_start.astype(np.int64)
+        ntri = np.maximum(totals - 2, 0)
+        count = int(ntri.sum())
+        face = np.repeat(np.arange(nf), ntri)
+        first = np.repeat(starts, ntri)
+        k = np.arange(count) - np.repeat(np.cumsum(ntri) - ntri, ntri) + 1
+        lv = plan.loop_verts
+        plan.tri_face = face
+        plan.tri_verts = (np.stack([lv[first], lv[first + k], lv[first + k + 1]], axis=1)
+                          if count else np.empty((0, 3), dtype=np.int64))
+    tv = plan.tri_verts[facing[plan.tri_face]]
+    if not len(tv):
+        return None
+    tx, ty, td = xy[tv, 0], xy[tv, 1], depth[tv]
+    ok = np.isfinite(tx).all(axis=1) & np.isfinite(ty).all(axis=1) & np.isfinite(td).all(axis=1)
+    if not ok.any():
+        return None
+    return tx[ok].copy(), ty[ok].copy(), td[ok].copy()
+
+
+def _front_verts(plan, facing):
+    """Vertex indices of the faces in `facing`, or None when there are none."""
     nf = int(plan.nfaces)
     if not nf or not plan.nverts or not facing.any():
         return None
@@ -2489,15 +2643,30 @@ def _surface_probe(plan, facing, xy, depth):
     if face_of_loop is None:
         face_of_loop = plan.face_of_loop = np.repeat(np.arange(nf),
                                                      plan.loop_total)
-    fv = np.unique(plan.loop_verts[facing[face_of_loop]])
-    if len(fv) < 3:
+    return np.unique(plan.loop_verts[facing[face_of_loop]])
+
+
+def _front_extent(plan, facing, xy, depth):
+    """(dmin, dmax, x0, x1, y0, y1) of an object's near side, or None.
+
+    The same vertices `_surface_probe` samples, because the question this
+    answers -- can one depth per frame order this body -- is about the range
+    `resolve` will actually see for it, and `resolve` reads a merged fill's
+    range off the probe. Measured over every vertex instead, the far side of a
+    closed body counts, and on Apollo-Soyuz the test picked apollo_002 and
+    apollo_024 along with apollo_003.
+    """
+    fv = _front_verts(plan, facing)
+    if fv is None:
         return None
-    if len(fv) > PROBE_CAP:
-        d = depth[fv]
-        ends = fv[[int(d.argmin()), int(d.argmax())]]
-        thin = fv[np.linspace(0, len(fv) - 1, PROBE_CAP).astype(np.int64)]
-        fv = np.unique(np.concatenate([thin, ends]))
-    return xy[fv, 0].copy(), xy[fv, 1].copy(), depth[fv].copy()
+    d, q = depth[fv], xy[fv]
+    ok = np.isfinite(d) & np.isfinite(q).all(axis=1)
+    if not ok.any():
+        return None
+    d, q = d[ok], q[ok]
+    return (float(d.min()), float(d.max()),
+            float(q[:, 0].min()), float(q[:, 0].max()),
+            float(q[:, 1].min()), float(q[:, 1].max()))
 
 
 def _depth_budgets(elements, slots, nframes, settings, depth_range):

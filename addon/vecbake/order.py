@@ -65,6 +65,74 @@ def _fit_field(pts, depths, is_ortho):
     return sol
 
 
+def _surface_prep(tris):
+    """Per-triangle constants for `_surface_read`, computed once per item."""
+    tx, ty, td = tris
+    ax, ay = tx[:, 0], ty[:, 0]
+    e1x, e1y = tx[:, 1] - ax, ty[:, 1] - ay
+    e2x, e2y = tx[:, 2] - ax, ty[:, 2] - ay
+    area = e1x * e2y - e1y * e2x
+    keep = np.abs(area) > 1e-12            # an edge-on face covers no pixel
+    inv = np.zeros_like(area)
+    inv[keep] = 1.0 / area[keep]
+    return {
+        "x0": tx.min(axis=1)[keep], "x1": tx.max(axis=1)[keep],
+        "y0": ty.min(axis=1)[keep], "y1": ty.max(axis=1)[keep],
+        "ax": ax[keep], "ay": ay[keep],
+        "e1x": e1x[keep], "e1y": e1y[keep], "e2x": e2x[keep], "e2y": e2y[keep],
+        "inv": inv[keep], "d": td[keep],
+    }
+
+
+def _surface_read(item, qx, qy, is_ortho):
+    """Depth of a merged part's front surface at each query point; NaN off it.
+
+    Read off the triangle the point lies on, interpolated the way the camera
+    interpolates -- linearly in depth for an orthographic camera, in inverse
+    depth for a perspective one. Where front faces overlap on screen the nearest
+    wins, because that is the one painted.
+    """
+    surf = item.get("surface")
+    if surf is None:
+        surf = item["surface"] = _surface_prep(item["tris"])
+    out = np.full(len(qx), np.nan)
+    if not len(surf["inv"]):
+        return out
+    # Bound the temporary query-by-triangle mask, not the geometry or samples.
+    # One array operation per point was still the scalar path even when the
+    # caller supplied a batch. Keep only bounding-box candidates for the more
+    # expensive barycentric read, then reduce all hits to the nearest surface.
+    chunk = max(1, 1_048_576 // len(surf["inv"]))
+    for start in range(0, len(qx), chunk):
+        x = qx[start:start + chunk, None]
+        y = qy[start:start + chunk, None]
+        rows, cand = np.nonzero((surf["x0"] <= x) & (x <= surf["x1"])
+                                & (surf["y0"] <= y) & (y <= surf["y1"]))
+        if not len(cand):
+            continue
+        vx = x[rows, 0] - surf["ax"][cand]
+        vy = y[rows, 0] - surf["ay"][cand]
+        inv = surf["inv"][cand]
+        w1 = (vx * surf["e2y"][cand] - vy * surf["e2x"][cand]) * inv
+        w2 = (surf["e1x"][cand] * vy - surf["e1y"][cand] * vx) * inv
+        w0 = 1.0 - w1 - w2
+        eps = -1e-9
+        inside = (w0 >= eps) & (w1 >= eps) & (w2 >= eps)
+        if not inside.any():
+            continue
+        d = surf["d"][cand[inside]]
+        w = np.stack([w0[inside], w1[inside], w2[inside]], axis=1)
+        if is_ortho:
+            vals = (w * d).sum(axis=1)
+        else:
+            vals = 1.0 / np.maximum((w / np.maximum(d, 1e-9)).sum(axis=1), 1e-12)
+        nearest = np.full(len(x), np.inf)
+        np.minimum.at(nearest, rows[inside], vals)
+        nearest[nearest == np.inf] = np.nan
+        out[start:start + chunk] = nearest
+    return out
+
+
 def _depths_at(item, qx, qy, is_ortho):
     """Depth of this element at each of many screen points, vectorised.
 
@@ -112,16 +180,43 @@ def _depths_at(item, qx, qy, is_ortho):
         # times the bake for five reversals nobody can see. Anything cheaper has
         # to be continuous too: k nearest samples still steps when the k-th
         # changes, so it buys nothing.
+        #
+        # None of that was the real fault, which is that a sample is a vertex.
+        # On a low-poly body the vertices are the corners of long faces, so the
+        # nearest one to the middle of a face is half the face away, and the
+        # depth read there belongs to a corner, which on a part reaching away
+        # from the camera can be most of its depth off. So read the surface
+        # itself -- the
+        # triangle the point lies on, which is exact, and continuous across the
+        # edge two faces share. The nearest sample stays for points off the
+        # surface, which a centre between two separate patches can be.
         px, py, pd = probe
-        d2 = ((qx[:, None] - px[None, :]) ** 2
-              + (qy[:, None] - py[None, :]) ** 2)
-        return pd[d2.argmin(axis=1)]
+        out = (_surface_read(item, qx, qy, is_ortho) if item.get("tris") is not None
+               else np.full(len(qx), np.nan))
+        miss = ~np.isfinite(out)
+        if miss.any():
+            mx, my = qx[miss], qy[miss]
+            fallback = np.empty(len(mx))
+            chunk = max(1, 1_048_576 // len(px))
+            for start in range(0, len(mx), chunk):
+                d2 = ((mx[start:start + chunk, None] - px[None, :]) ** 2
+                      + (my[start:start + chunk, None] - py[None, :]) ** 2)
+                fallback[start:start + chunk] = pd[d2.argmin(axis=1)]
+            out[miss] = fallback
+        return out
     if item["kind"] == FILL_KIND and item["field"] is not None:
         f = item["field"]
         v = f[0] * qx + f[1] * qy + f[2]
         return v if is_ortho else 1.0 / np.maximum(v, 1e-9)
 
     pts, d = item["pts"], item["depths"]
+    # Batched long-chain queries need the same memory bound as surface reads.
+    # Using the point count also covers the extra segment of a closed chain.
+    chunk = max(1, 1_048_576 // len(pts))
+    if len(qx) > chunk:
+        return np.concatenate([
+            _depths_at(item, qx[start:start + chunk], qy[start:start + chunk], is_ortho)
+            for start in range(0, len(qx), chunk)])
     if item.get("closed") and len(pts) > 2:
         pts = np.vstack([pts, pts[:1]])
         d = np.concatenate([d, d[:1]])
@@ -224,6 +319,31 @@ def _inside(poly, qx, qy):
     out = np.zeros(qx.size, dtype=bool)
     out[within] = hits.astype(bool)
     return out
+
+
+def _inside_rows(poly, xs, ys):
+    """`_inside` for rows of points that share a y: xs (R, C), ys (R,) -> (R, C).
+
+    Where an edge crosses a row depends only on the row's y, so it is computed
+    once per row rather than once per point -- the same formula on the same
+    numbers, so every point gets exactly the verdict `_inside` would give it.
+    """
+    edges = poly.get("_edges")
+    if edges is None:
+        edges = poly["_edges"] = _poly_edges(poly["pts"])
+    x1, y1, x2, y2, bx0, bx1, by0, by1 = edges
+    py = ys[:, None]
+    straddles = (y1[None, :] > py) != (y2[None, :] > py)
+    dy = (y2 - y1)[None, :]
+    xint = x1[None, :] + (x2 - x1)[None, :] * (py - y1[None, :]) / np.where(
+        np.abs(dy) > 1e-12, dy, 1e-12
+    )
+    # A non-straddling edge can never count, so park its crossing where no
+    # point is to its left; the strict comparison below then never counts it.
+    xint = np.where(straddles, xint, -np.inf)
+    hits = (xs[:, :, None] < xint[:, None, :]).sum(axis=2) & 1
+    within = ((xs >= bx0) & (xs <= bx1)) & ((ys >= by0) & (ys <= by1))[:, None]
+    return hits.astype(bool) & within
 
 
 def _scc(nodes, after):
@@ -383,15 +503,22 @@ def _overlap_centre(a, b, is_ortho, cells=24):
     # Exact, not sampled: `_inside_spans` gives the stretches of each segment
     # that lie within the polygon, so the shared length and its centre come
     # out of arithmetic rather than out of how densely the line was walked.
+    return _line_centre(line, _line_spans(fill, [line])[0])
+
+
+def _line_centre(line, spans_of):
+    """Midpoint of the length of `line` that `spans_of` puts inside a fill."""
     total = 0.0
     sx = sy = 0.0
-    for p, q in _segments(line):
+    for k, (p, q) in enumerate(_segments(line)):
+        if k not in spans_of:
+            continue
         ax, ay = float(p[0]), float(p[1])
         bx, by = float(q[0]), float(q[1])
         seg = math.hypot(bx - ax, by - ay)
         if seg <= 0.0:
             continue
-        for t0, t1 in _inside_spans(p, q, fill["pts"]):
+        for t0, t1 in spans_of[k]:
             if t1 <= t0:
                 continue
             span = (t1 - t0) * seg
@@ -402,6 +529,65 @@ def _overlap_centre(a, b, is_ortho, cells=24):
     if total <= 0.0:
         return None
     return sx / total, sy / total
+
+
+def _fill_fill_centres(items, bbox, pairs, cells=24):
+    """`_overlap_centre` for many fill pairs at once; the same answers, bit for bit.
+
+    Per pair, the grid and the two inside tests were a handful of numpy calls on
+    576 points, and on Apollo-Soyuz that ran 1.2 million times -- 84% of the
+    ordering pass and most of the bake was call overhead, not arithmetic. So the
+    grid points of every pair a fill takes part in go through one inside test
+    for that fill. Each point's test is the same arithmetic on the same numbers
+    whichever batch it lands in, and each centre is still the mean of the same
+    points in the same order, so nothing downstream can tell the difference.
+    """
+    m = len(pairs)
+    out = [None] * m
+    if not m:
+        return out
+    ia = np.fromiter((p[0] for p in pairs), dtype=np.intp, count=m)
+    ib = np.fromiter((p[1] for p in pairs), dtype=np.intp, count=m)
+    x0 = np.maximum(bbox[ia, 0], bbox[ib, 0])
+    x1 = np.minimum(bbox[ia, 1], bbox[ib, 1])
+    y0 = np.maximum(bbox[ia, 2], bbox[ib, 2])
+    y1 = np.minimum(bbox[ia, 3], bbox[ib, 3])
+    live = np.nonzero((x1 > x0) & (y1 > y0))[0]
+    if not len(live):
+        return out
+    k = np.arange(1, cells + 1)
+    # Written exactly as the per-pair version computes them: a step, times the
+    # cell numbers, plus the origin.
+    xs = x0[live, None] + ((x1[live] - x0[live]) / (cells + 1))[:, None] * k[None, :]
+    ys = y0[live, None] + ((y1[live] - y0[live]) / (cells + 1))[:, None] * k[None, :]
+    count = cells * cells
+    # meshgrid(xs, ys).ravel() runs x across each row of y.
+    both = np.ones((len(live), count), dtype=bool)
+    for side in (ia[live], ib[live]):
+        order = np.argsort(side, kind="stable")
+        owners = side[order]
+        cuts = np.flatnonzero(np.diff(owners)) + 1
+        for group in np.split(order, cuts):
+            item = items[int(side[group[0]])]
+            if not both[group].any():
+                continue
+            # Bound the points-by-edges temporary, as the surface read does.
+            step = max(1, 8_000_000 // (count * max(1, len(item["pts"]))))
+            for s in range(0, len(group), step):
+                rows = group[s:s + step]
+                rows = rows[both[rows].any(axis=1)]
+                if not len(rows):
+                    continue
+                gx = np.broadcast_to(xs[rows][:, None, :],
+                                     (len(rows), cells, cells)).reshape(-1, cells)
+                both[rows] &= _inside_rows(item, gx, ys[rows].ravel()).reshape(
+                    len(rows), count)
+    for r in np.flatnonzero(both.any(axis=1)):
+        qx = np.tile(xs[r], cells)
+        qy = np.repeat(ys[r], cells)
+        hit = both[r]
+        out[int(live[r])] = (float(qx[hit].mean()), float(qy[hit].mean()))
+    return out
 
 
 def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24):
@@ -545,6 +731,64 @@ def _shared_samples(a, b, grid=4, spacing=4.0, max_per_segment=32, max_total=24)
     if not cx:
         return None
     return np.concatenate(cx), np.concatenate(cy)
+
+
+def _line_spans(fill, lines):
+    """`_inside_spans` for every segment of every line against one fill, at once.
+
+    One {segment index: [(t0, t1), ...]} per line, holding only segments with a
+    span inside. The per-segment version walked the polygon's edges in Python
+    and made one inside test per candidate span; per pair it was still dozens
+    of small calls, and a fill meets hundreds of lines. Every quantity here is
+    the same expression on the same doubles, the cuts are sorted the same way
+    and each midpoint gets the same inside test, so the spans are identical.
+    """
+    out = [{} for _ in lines]
+    owner, a, b = [], [], []
+    for n, line in enumerate(lines):
+        for p, q in _segments(line):
+            owner.append(n)
+            a.append(p)
+            b.append(q)
+    if not owner:
+        return out
+    owner = np.asarray(owner)
+    start = np.searchsorted(owner, np.arange(len(lines)))
+    a = np.array(a, dtype=np.float64)
+    b = np.array(b, dtype=np.float64)
+    poly = np.asarray(fill["pts"], dtype=np.float64)
+    pxi, pyi = poly[:, 0], poly[:, 1]
+    pxj, pyj = np.roll(pxi, 1), np.roll(pyi, 1)   # edge i runs from vertex i-1
+    ex, ey = (pxi - pxj)[None, :], (pyi - pyj)[None, :]
+    # Bound the segments-by-edges temporaries.
+    step = max(1, 1_048_576 // len(poly))
+    for s0 in range(0, len(a), step):
+        ax, ay = a[s0:s0 + step, 0:1], a[s0:s0 + step, 1:2]
+        dx, dy = b[s0:s0 + step, 0:1] - ax, b[s0:s0 + step, 1:2] - ay
+        live = (dx * dx + dy * dy)[:, 0] >= 1e-18
+        with np.errstate(divide="ignore", invalid="ignore"):
+            den = dx * ey - dy * ex
+            wx, wy = pxj[None, :] - ax, pyj[None, :] - ay
+            t = (wx * ey - wy * ex) / den
+            u = (wx * dy - wy * dx) / den
+        cut = (np.abs(den) > 1e-12) & (u >= 0.0) & (u <= 1.0) & (t > 0.0) & (t < 1.0)
+        cuts = np.concatenate([np.zeros((len(ax), 1)), np.ones((len(ax), 1)),
+                               np.where(cut, t, np.nan)], axis=1)
+        cuts.sort(axis=1)                              # NaN sorts last
+        lo, hi = cuts[:, :-1], cuts[:, 1:]
+        with np.errstate(invalid="ignore"):
+            keep = ~(hi - lo < 1e-9) & np.isfinite(hi) & live[:, None]
+        rows, cols = np.nonzero(keep)
+        if not len(rows):
+            continue
+        m = 0.5 * (lo[rows, cols] + hi[rows, cols])
+        inside = _inside(fill, ax[rows, 0] + dx[rows, 0] * m,
+                         ay[rows, 0] + dy[rows, 0] * m)
+        for r, c in zip(rows[inside].tolist(), cols[inside].tolist()):
+            n = int(owner[s0 + r])
+            out[n].setdefault(s0 + r - int(start[n]), []).append(
+                (float(lo[r, c]), float(hi[r, c])))
+    return out
 
 
 def _inside_spans(a, b, poly):
@@ -710,6 +954,16 @@ def resolve(items, is_ortho=False, tol=1e-4):
     # The nine-stick scene built to provoke this found one visible reversal, at
     # 5.3 px2. If it is ever worth doing, do it for pairs that both cross *and*
     # differ in colour, not for the whole class.
+    # Collect the same overlap centres first. Reading one point per pair made
+    # numpy dispatch dominate the front-triangle read; each item's queries can
+    # instead share one depth lookup. Keep disjoint pairs in this sequence too,
+    # so batching changes neither graph insertion order nor cycle breaking.
+    # The overlap centres of fill pairs are measured together, afterwards, for
+    # the same reason (see _fill_fill_centres); `found` keeps every candidate
+    # in the sequence it was met so the graph is still built in that order.
+    found = []
+    fill_pairs = []
+    lines = []
     for i in np.nonzero(kinds == FILL_KIND)[0]:
         i = int(i)
         overlap = (
@@ -732,36 +986,104 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # so leaving them at the default strength of zero made the cycle
             # breaker treat them as worthless and discard them first.
             if dmax[j] < dmin[i]:
-                add_edge(i, j, float(dmin[i] - dmax[j]))
+                found.append((i, j, float(dmin[i] - dmax[j]), None))
                 continue
             if dmax[i] < dmin[j]:
-                add_edge(j, i, float(dmin[j] - dmax[i]))
+                found.append((j, i, float(dmin[j] - dmax[i]), None))
                 continue
-            shared = _overlap_centre(items[i], items[j], is_ortho)
-            if shared is None:
-                continue
-            qx = np.array([shared[0]])
-            qy = np.array([shared[1]])
-            delta = float(_depths_at(items[i], qx, qy, is_ortho)[0]
-                          - _depths_at(items[j], qx, qy, is_ortho)[0])
-            if abs(delta) <= tol:
-                # Coplanar or touching: depth cannot decide, and leaving it to
-                # the seed order makes the pair flicker as the seeds jitter
-                # frame to frame (mast legs standing on the ground). Break it
-                # deterministically -- lines belong on top of surfaces.
-                # Weakest genuine class: strictly below tol, so below every
-                # constraint that sampling actually decided. If a cycle has to
-                # give something up, these go first -- by construction depth had
-                # no opinion about them anyway.
-                if kinds[i] == FILL_KIND and kinds[j] != FILL_KIND:
-                    add_edge(i, j, tol)
-                elif kinds[j] == FILL_KIND and kinds[i] != FILL_KIND:
-                    add_edge(j, i, tol)
-                continue
-            if delta > 0:
-                add_edge(i, j, abs(delta))    # i is further away where they overlap
+            if kinds[j] == FILL_KIND:
+                found.append((i, j, None, len(fill_pairs)))
+                fill_pairs.append((i, j))
             else:
-                add_edge(j, i, abs(delta))
+                lines.append((len(found), j))
+                found.append(None)
+        # Every line this fill meets, clipped against it together.
+        if lines:
+            spans = _line_spans(items[i], [items[j] for _, j in lines])
+            for (slot, j), spans_of in zip(lines, spans):
+                found[slot] = (i, j, None, _line_centre(items[j], spans_of))
+            lines.clear()
+
+    fill_centres = _fill_fill_centres(items, bbox, fill_pairs)
+    pairs = []
+    centres = []
+    requests = [[] for _ in items]
+    for i, j, gap, shared in found:
+        if gap is not None:
+            pairs.append((i, j, gap, None))
+            continue
+        if kinds[j] == FILL_KIND:
+            shared = fill_centres[shared]
+        if shared is None:
+            continue
+        q = len(centres)
+        centres.append(shared)
+        requests[i].append(2 * q)
+        requests[j].append(2 * q + 1)
+        pairs.append((i, j, None, q))
+
+    depths = np.empty(2 * len(centres))
+    if centres:
+        xy = np.asarray(centres, dtype=np.float64)
+        for it, slots in zip(items, requests):
+            if slots:
+                slots = np.asarray(slots, dtype=np.intp)
+                q = slots // 2
+                depths[slots] = _depths_at(it, xy[q, 0], xy[q, 1], is_ortho)
+    deltas = depths[0::2] - depths[1::2]
+    for i, j, gap, q in pairs:
+        if q is None:
+            add_edge(i, j, gap)
+            continue
+        delta = float(deltas[q])
+        if abs(delta) <= tol:
+            # Coplanar or touching: depth cannot decide, and leaving it to
+            # the seed order makes the pair flicker as the seeds jitter
+            # frame to frame (mast legs standing on the ground). Break it
+            # deterministically -- lines belong on top of surfaces.
+            # Weakest genuine class: strictly below tol, so below every
+            # constraint that sampling actually decided. If a cycle has to
+            # give something up, these go first -- by construction depth had
+            # no opinion about them anyway.
+            if kinds[i] == FILL_KIND and kinds[j] != FILL_KIND:
+                add_edge(i, j, tol)
+            elif kinds[j] == FILL_KIND and kinds[i] != FILL_KIND:
+                add_edge(j, i, tol)
+            continue
+        # Weighting this by *agreement* instead of by gap was tried and
+        # measured, 2026-09-12, and is worse. The reasoning was sound: a
+        # thruster bolted to a service module is in front of it by a hair
+        # and by that hair at every sample, so ranked by gap it is the
+        # weakest thing in the graph and the first a cycle breaker spends,
+        # while a pair that genuinely crosses can be far apart at the
+        # centre and disagree a millimetre away. Sampling the shared region
+        # and scoring `agree * span + abs(delta)` fixes exactly that on the
+        # bench -- it resolves the stray line test_order_cycle.py pins as
+        # unfixable, keeps the assertion, and costs nothing once the
+        # samples are reused from `_overlap_centre` rather than taken
+        # again.
+        #
+        # On the probe it is a clear regression: 176 errors -> 202, 1467
+        # wrong pixels -> 1805, 4.89% -> 6.02%, and `order violated` --
+        # the category the change exists to reduce -- 75 -> 102.
+        #
+        # The mechanism is weight compression. Almost every constraint has
+        # high agreement, so scoring agreement first packs the whole graph
+        # into a narrow band just under `span` and the gap, which used to
+        # order them finely across the full range, is reduced to a
+        # tiebreak inside it. The breaker drops the weakest tenth by
+        # sort order; once the weights are nearly tied that tenth is close
+        # to arbitrary, and it discards good constraints it previously
+        # ranked safely above the bad ones. Dropping *fewer* constraints
+        # (281 -> 257 on a synthetic crowd) looked like an improvement and
+        # was the opposite: fewer but worse-chosen.
+        #
+        # So the gap stays. Anything that replaces it has to keep the
+        # weights spread out, not just get their order right at the top.
+        if delta > 0:
+            add_edge(i, j, abs(delta))    # i is further away where they overlap
+        else:
+            add_edge(j, i, abs(delta))
 
     # An edge lies *on* the faces it borders, so a face can never legitimately
     # be painted over it. Sampling cannot discover this: the two are coincident,
