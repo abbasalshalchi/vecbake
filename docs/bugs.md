@@ -743,7 +743,15 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   the Voyager sat 253 px off after fifty frames (50 `check_geometry` offenders). It now
   parks on a vertex of its piece projected in the absent frame. Regression run in
   [audits.md §9](audits.md#9-merge-fold-test-and-absent-slots-regression-run).
-- **Half the `apollo_018` thrusters are not merged.** 16 identical meshes, identity
+- **Sliver rings on a merged thruster** (`apollo_018.013`, frames 9–15). **Fixed
+  2026-09-15**: one-piece frames of a multi-subpath element were written down the
+  single-ring path across every slot. See [audits.md §11](audits.md#11-one-piece-frames-of-a-multi-ring-fill-and-the-dock-joint).
+  That fix also merged four of the seven refused thrusters below.
+- **Grey spike at the dock joint** — not a bug: `dock_008`, real geometry drawn face by
+  face, matching the ray cast to a pixel (same section).
+- **Half the `apollo_018` thrusters are not merged.** Now three of sixteen (`.005`,
+  `.008`, `.015`) after the one-piece-frame fix. The rest of this entry is the first
+  reading, kept for the record. 16 identical meshes, identity
   transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
   merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.
   Probably their outline changes character over the arc at their mounting angles. Their

@@ -444,6 +444,50 @@ fills for appearing too. Measure per object what dominates the ring-by-ring cost
 
 ---
 
+## 11. One-piece frames of a multi-ring fill, and the dock joint
+
+15 September.
+
+**Sliver rings on `apollo_018.013`.** Merged as three subpaths (49 / 7 / 9 points), it
+drew two small closed slivers ~27 px from its bell in frames 9–15, where only one bell
+shows. Traced by hooking the bake's own `_sample_outline_pieces`: it was called only in
+frames with two or more pieces. A one-piece frame took the single-ring path, which wrote
+one outline across all 65 slots, and the player closed each slot range as a ring of its
+own. The slivers lie on real edges, so `check_geometry` and the segment check both
+passed them. Fix: once an element carries several subpaths, every frame is written as
+subpaths; the measuring pass, which has no subpath sizes yet, is unchanged.
+
+Found on the way: a subpath slot sized to zero points crashed `_sample_outline_pieces`
+(`pts[0]` on an empty ring) on a 17-frame range; the absent-slot anchor now falls back
+to the piece's first vertex. Full-length bakes had not reached it.
+
+Regression run, `92e2d00` against both fixes, each file's own settings:
+
+| | Apollo `92e2d00` | Apollo fixed | Voyager `92e2d00` | Voyager fixed |
+|---|---|---|---|---|
+| Merged fills | 52 | **57** | 269 | 269 |
+| Newly merged | | `apollo_001`, `apollo_018.001 .003 .007 .010` | | `part_081.001` |
+| Newly refused | | — | | `part_026.001` |
+| Elements | 18,361 | **16,905** | 8,586 | 8,660 |
+| `check_geometry` offenders | 0 | 0 | 0 | 0 |
+| Segments off between keyframes | 27 | 28 | 267 | **256** |
+
+`apollo_018.013` ring by ring against `walk_pieces`, frames 0–30 every third: every
+drawn ring within 0.9 px of a true piece; frames 9, 12, 15 now draw its two empty slots
+as points. Kept.
+
+So four of the seven refused thrusters (§10) were refused for the slivers themselves:
+their carry cost was measured on outlines that really were wrong between keyframes.
+`.005`, `.008`, `.015` are still refused.
+
+**Grey spike at the dock joint — not a bug.** At 0.83 s, over x 1165–1230, y 585–660,
+the ray cast and the bake's fills agree to within a pixel: 13 px where only the bake
+fills `dock_008` and 10 px where only the truth has it, all in one 5 × 31 px strip — an
+edge a pixel apart, not a shape. The spike is `dock_008`, a thin part at the joint,
+drawn face by face; "Mark merged" colours merged parts, so it reads grey among them.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

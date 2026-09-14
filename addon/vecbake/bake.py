@@ -2091,9 +2091,14 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
         plan.outline_prevs[k] = (ring_ids, pts, ring, poly)
         out[at:at + n] = pts
         # The mesh vertex this ring's first point sits nearest: where an absent
-        # frame of this slot will park, projected in that frame.
-        near = np.hypot(*(xy[verts] - pts[0]).T)
-        present.append(int(verts[int(np.argmin(near))]))
+        # frame of this slot will park, projected in that frame. A slot sized
+        # to no points at all (a piece the measuring pass never saw earn any)
+        # has no first point; park on the piece's first vertex instead.
+        if len(pts):
+            near = np.hypot(*(xy[verts] - pts[0]).T)
+            present.append(int(verts[int(np.argmin(near))]))
+        else:
+            present.append(int(verts[0]))
         at += n
         drawn_any = True
     plan.piece_verts = sets
@@ -2465,9 +2470,18 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
             pieces = merge.walk_pieces(plan, merge.silhouette_edges(plan, face_facing),
                                        xy, face_facing)
         walk = None
-        if pieces is not None and len(pieces) == 1:
+        # Once the element carries several subpaths, every frame is written as
+        # subpaths -- a frame with a single piece included. Sent down the
+        # single-ring path instead, that one ring was written across all the
+        # slots, and the player then closed each slot's share of it as a ring
+        # of its own: apollo_018.013 (49 / 7 / 9 points) drew two short arcs of
+        # its outline as slivers 27 px from the bell they belong to in frames
+        # 8-16, on real edges, so no geometry check saw them. The measuring
+        # pass has no subpath sizes yet and keeps the single-ring path.
+        multi = bool(plan.outline_parts and len(plan.outline_parts) > 1)
+        if pieces is not None and len(pieces) == 1 and not multi:
             walk = (pieces[0][0], pieces[0][1])
-        if pieces is not None and len(pieces) > 1:
+        if pieces is not None and (len(pieces) > 1 or multi):
             _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
                                    face_visible, face_depth, face_shade,
                                    face_alpha_max=plan.face_alpha,
