@@ -442,6 +442,22 @@ part just fixed, without a measured visual gain.
 (then this test is right and should come back), or the comparison has to charge face
 fills for appearing too. Measure per object what dominates the ring-by-ring cost first.
 
+**Tried again on top of `4b4bf09`** (the one-piece-frame fix, §11), on the reasoning that
+the slivers made multi-ring outlines genuinely wrong and so earned their refusals. They
+did not explain this test's refusals: the results are the same as the first attempt.
+
+| | Apollo `4b4bf09` | Apollo + ring-by-ring | Voyager `4b4bf09` | Voyager + ring-by-ring |
+|---|---|---|---|---|
+| Merged fills | 57 | **44** | 269 | **261** |
+| Elements | 16,905 | 20,820 | 8,660 | 8,887 |
+| `check_geometry` offenders | 0 | 0 | 0 | 0 |
+| Segments off between keyframes | 28 | 28 | 256 | 235 |
+
+Newly refused on Apollo: `apollo_001`, `apollo_018`, `.001`, `.002`, `.003`, `.007`,
+`.010`, `.011`, `.012`, `.013`, `dock_001`, `dock_006`, `soyuz_009`. Reverted again. The
+next step is unchanged: measure, per refused object, which ring and which frame the
+ring-by-ring cost comes from, before judging whether the test or the outlines are wrong.
+
 ---
 
 ## 11. One-piece frames of a multi-ring fill, and the dock joint
