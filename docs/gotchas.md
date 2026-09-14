@@ -16,6 +16,13 @@ copy too, which makes it easy to measure old code while believing it is new. Aft
 installing, delete that folder's `__pycache__`, and compare file contents rather
 than timestamps.
 
+Copy the whole folder, not just the `.py` files. On 13–14 September every reinstall
+copied Python only, so the installed `preview/player.js` stayed a version without
+multi-ring fills. Every preview drew a merged fill's rings as one joined path, and a
+wedge across the Apollo docking module was chased as a merge bug for hours. Check the
+whole tree:
+`for f in $(cd addon/vecbake && find . -type f -not -path '*/__pycache__/*'); do cmp -s addon/vecbake/$f "$INSTALLED/$f" || echo $f; done`.
+
 ### A running Blender keeps its modules
 Copying files does not reload already-imported modules. `bpy.ops.script.reload()`
 does not touch `bl_ext.*`, and a module object keeps its old `__doc__` even when its
@@ -96,7 +103,8 @@ is backed up** — the logo exports from Inkscape live there
 every `.preview.html`; `lerpa-website/public/lerpa/` is served by the site. Neither
 copy tracks the source. After a player change: copy it to both, run
 `scripts/sync_player.py`, and remember an existing preview only picks it up by
-re-baking.
+re-baking. That makes four: the preview inlines the *installed* add-on's copy, not the
+repo's.
 
 ### PowerShell 5.1 has no `&&`
 `cd x && git commit` is a parser error in Windows PowerShell 5.1. Use `;` and

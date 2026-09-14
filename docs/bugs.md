@@ -714,14 +714,18 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
      that has it. Guard `scripts/test_piece_slots.py` (fails 2 on the old code). On the
      re-bake the third ring waits at x≈1181 instead of x≈1008 in every frame; the dense
      scan finds no ring jumping.
-  2. **Open:** with (1) fixed the wedge is still there, drawn by `dock_001` alone. It is
-     an unfilled sliver: ring 1 (56 points) runs along real mesh edges out to the far rim
-     and back along a nearly parallel one, so the nonzero rule cancels between them.
-     Every point and segment lies on a projected edge, which is why neither geometry
-     check sees it. This is the self-crossing outline class in
-     `vecbake-fold-boundary` — interior fold edges walked as boundary — whose one
-     attempted fix (offering folded edges as candidates) cut self-crossings 113 → 38
-     on the Voyager but raised vanished parts 25 → 136 and was reverted.
+  2. **Fixed, 2026-09-14 — and not a merge bug.** The long wedge that remained was the
+     *preview's* player. The installed add-on's `preview/player.js` predated multi-ring
+     fills (`42fa586`): every reinstall this session copied only the `.py` files. The
+     preview inlines whatever player is installed, so it drew `dock_001/m`'s three rings
+     as one 87-point path, and the jumps between ring ends cut across the part.
+     Confirmed by recording the canvas calls (one fill subpath of 87 points), then by
+     installing the repo's player and re-inlining it into both preview pages: the wedge
+     is gone. The "self-crossing outline" reading that briefly replaced (1) was wrong —
+     the rings as sampled are simple and wound alike.
+     With the correct player the pre-fix bake still shows a dark bar sweeping near the
+     flange around 0.70 s, and the fixed bake does not, so (1) was a real artefact too.
+     Guard: reinstall the whole add-on folder, not the `.py` files; see gotchas.md.
 - **Half the `apollo_018` thrusters are not merged.** 16 identical meshes, identity
   transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
   merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.
