@@ -1455,7 +1455,11 @@ def bake_iter(context, settings: BakeSettings):
         if plan.outline_parts and len(plan.outline_parts) > 1 and plan.piece_present:
             slot = slots.get(f"{plan.name}/m")
             if slot is not None:
-                _settle_absent_pieces(slot["geo"], plan.outline_parts, plan.piece_present)
+                _settle_absent_pieces(
+                    slot["geo"], plan.outline_parts, plan.piece_present,
+                    lambda fi, name=plan.name: (
+                        vertex_cache[fi][name][0]
+                        if fi < len(vertex_cache) and name in vertex_cache[fi] else None))
 
     # Which spans of a merged outline are the cut, and so must not be stroked.
     # Settled once for the clip rather than per frame, like `smooth`: the point
@@ -1921,19 +1925,26 @@ def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
     return ring, poly, seen.xy
 
 
-def _settle_absent_pieces(geo, parts, present):
-    """Put each absent subpath where its own piece is, in the nearest frame that has it.
+def _settle_absent_pieces(geo, parts, present, positions):
+    """Park each absent subpath on its own piece, where that piece is *this* frame.
 
     A subpath slot with no piece in a frame is collapsed to one point, and
     between keyframes the player interpolates from that point to the ring the
     next frame draws. Collapsed onto ring 1's first point -- the far end of the
     part -- that interpolation swept a long thin wedge right across dock_001.
-    Collapsed onto a point of the ring it is about to become (or has just
-    stopped being), it grows out of, or shrinks into, its own place.
 
-    `geo` is the slot's per-frame flat point lists, `present` frame -> per-slot
-    flags. Nearest by frame distance; a tie takes the earlier frame, so a piece
-    that vanishes shrinks where it was. Frames no slot ever fills are left alone.
+    The point is a mesh vertex of the piece the slot holds in the nearest frame
+    that has one, projected in the absent frame itself. Parking on that frame's
+    *screen position* instead was the first version, and it is wrong wherever
+    the part moves: on the Voyager, part_012.004's slot was absent for fifty
+    frames and its parked point sat up to 253 px off the part by the end, which
+    is a sweep of its own the moment the piece appears. A vertex travels with
+    the part, so the ring grows out of, or shrinks into, its own place.
+
+    `geo` is the slot's per-frame flat point lists; `present` frame -> per-slot
+    anchor vertex, or None where the slot is empty; `positions(fi)` that frame's
+    projected vertex positions. Nearest by frame distance; a tie takes the
+    earlier frame, so a piece that vanishes shrinks where it was.
     """
     frames = sorted(fi for fi in present if geo[fi] is not None)
     if not frames or len(parts) < 2:
@@ -1941,17 +1952,19 @@ def _settle_absent_pieces(geo, parts, present):
     starts = np.concatenate([[0], np.cumsum(parts)[:-1]]).astype(int)
     moved = 0
     for k, (s, n) in enumerate(zip(starts, parts)):
-        have = [fi for fi in frames if present[fi][k]]
+        have = [fi for fi in frames if present[fi][k] is not None]
         if not have or len(have) == len(frames):
             continue
         have_arr = np.asarray(have)
         for fi in frames:
-            if present[fi][k]:
+            if present[fi][k] is not None:
                 continue
             src = int(have_arr[np.argmin(np.abs(have_arr - fi) * 2 + (have_arr > fi))])
-            pts = geo[fi]
-            x, y = geo[src][s * 2], geo[src][s * 2 + 1]
-            pts[s * 2:(s + n) * 2] = [x, y] * n
+            xy = positions(fi)
+            if xy is None:
+                continue
+            x, y = (float(c) for c in xy[present[src][k]])
+            geo[fi][s * 2:(s + n) * 2] = [x, y] * n
             moved += 1
     return moved
 
@@ -2055,8 +2068,8 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
     present = []
     for k, n in enumerate(parts):
         i = slots[k] if k < len(slots) else None
-        present.append(i is not None)
         if i is None:
+            present.append(None)
             # No piece for this slot this frame. Collapse it onto a point: a
             # subpath of coincident points has no area to fill and, with butt
             # caps, no length to stroke. The alternative -- letting the subpath
@@ -2064,9 +2077,9 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
             # an element's shape is fixed for the whole clip.
             #
             # *Where* is settled once the clip is sampled, in
-            # `_settle_absent_pieces`: next to where this piece actually is in
-            # the nearest frame that has it. Any point chosen here is only a
-            # placeholder.
+            # `_settle_absent_pieces`: on a vertex of the piece this slot holds
+            # in the nearest frame that has it, projected in *this* frame. Any
+            # point chosen here is only a placeholder.
             out[at:at + n] = out[0] if at else xy[pieces[0][1][0]]
             at += n
             continue
@@ -2077,6 +2090,10 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
         pts = outline_mod.evaluate(pos, poly)
         plan.outline_prevs[k] = (ring_ids, pts, ring, poly)
         out[at:at + n] = pts
+        # The mesh vertex this ring's first point sits nearest: where an absent
+        # frame of this slot will park, projected in that frame.
+        near = np.hypot(*(xy[verts] - pts[0]).T)
+        present.append(int(verts[int(np.argmin(near))]))
         at += n
         drawn_any = True
     plan.piece_verts = sets

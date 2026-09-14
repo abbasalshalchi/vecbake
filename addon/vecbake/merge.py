@@ -289,7 +289,7 @@ def _covers(plan, xy, drawn, boxes, pt):
     return False
 
 
-def _coverage_side(plan, ring, xy, drawn, boxes, eps=0.75, probes=9):
+def _coverage_side(plan, ring, xy, drawn, boxes, eps=0.75):
     """Which way this loop must run, or None if it should not be drawn at all.
 
     A silhouette loop is not always a boundary of what the object covers. Where
@@ -304,14 +304,23 @@ def _coverage_side(plan, ring, xy, drawn, boxes, eps=0.75, probes=9):
     knowing the other exists, and gives two overlapping islands the same one.
     Covered on both sides, or neither, and it is dropped.
 
+    Every segment is tested, and each votes by its length. This used to take
+    nine evenly spaced probes, and a loop can be a boundary along very little of
+    itself: the neck of the Apollo-Soyuz docking module is a 42-segment loop
+    whose only one-sided segments are its two long silhouette edges, at 1 and
+    22. Probes at 0, 4, 8 ... never landed on either, the neck was dropped as a
+    fold, and the part drew with a band missing straight through it -- 1,043
+    pixels of a surface facing the camera. One genuine boundary segment is
+    enough to keep a loop; how much of it is boundary only decides which way
+    it runs.
+
     Returns True to keep the traversal, False to reverse it, None to drop.
     """
     n = len(ring)
     if n < 3:
         return None
-    left = right = 0
-    step = max(1, n // probes)
-    for i in range(0, n, step):
+    left = right = 0.0
+    for i in range(n):
         a = xy[ring[i]]
         b = xy[ring[(i + 1) % n]]
         dx, dy = b[0] - a[0], b[1] - a[1]
@@ -323,10 +332,10 @@ def _coverage_side(plan, ring, xy, drawn, boxes, eps=0.75, probes=9):
         cl = _covers(plan, xy, drawn, boxes, (mx + nx * eps, my + ny * eps))
         cr = _covers(plan, xy, drawn, boxes, (mx - nx * eps, my - ny * eps))
         if cl and not cr:
-            left += 1
+            left += ln
         elif cr and not cl:
-            right += 1
-    if left == 0 and right == 0:
+            right += ln
+    if left == 0.0 and right == 0.0:
         return None                          # a fold: covered either side, or neither
     return left >= right
 
@@ -364,14 +373,18 @@ def walk_pieces(plan, edges, xy, drawn, max_pieces=MAX_PIECES):
 
     groups = _touching(loops)
     areas = [sum(abs(_area(xy[np.asarray(loops[i])])) for i in g) for g in groups]
-    total = sum(areas)
     order = sorted(range(len(groups)), key=lambda g: -areas[g])
-    big = [g for g in order if total <= 0.0 or areas[g] / total >= SPECK]
-    if not big or len(big) > max_pieces:
-        return None
 
+    # No size cut here. `SPECK` exists for `walk_loop`, where every extra piece
+    # costs a seam drawn across the shape to reach it; a subpath costs nothing
+    # of the kind. And a small loop is not a negligible one: the Apollo-Soyuz
+    # docking module's neck is 0.85% of the part's loop area at some angles,
+    # and cutting it at 1% left a 120-pixel hole through a surface facing the
+    # camera. What decides whether a loop is drawn is whether it bounds anything,
+    # which the fold test below answers exactly; the piece cap counts only what
+    # survives it.
     rings = []
-    for g in big:
+    for g in order:
         ring = _splice([loops[i] for i in groups[g]])
         if len(ring) >= 3:
             rings.append(ring)
@@ -401,6 +414,8 @@ def walk_pieces(plan, edges, xy, drawn, max_pieces=MAX_PIECES):
         # Turn it into an absolute here, against the ring's own signed area.
         a = _area(xy[verts])
         out.append((ids, verts, (a > 0.0) if keep else (a < 0.0)))
+    if len(out) > max_pieces:
+        return None
     return out or None
 
 

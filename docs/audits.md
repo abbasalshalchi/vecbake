@@ -362,6 +362,41 @@ read drew them underneath.
 
 ---
 
+## 9. Merge fold test and absent slots: regression run
+
+14 September. Old = `5d79d72` (slot fix, nine-probe fold test, `SPECK` cut); new = the
+working tree (every-segment fold test, no size cut in `walk_pieces`, absent slots
+parked on a vertex). Each file baked with its own saved settings, worker pool;
+`check_geometry.py` exhaustive at the sampled frames; `check_outline_segments.py
+--subframe 0.5`.
+
+Controlled scene first: `test_fold_boundary.py`, dock_001's profile at five angles —
+old code leaves 65 px uncovered at one; new covers all five, no spill. On the real
+`dock_001`, frames 1–31, the walk's fill against the union of front faces: old up to
+1,043 px uncovered; new 0 px uncovered and 0 spill in every frame checked.
+
+| | Apollo old | Apollo new | Voyager old | Voyager new |
+|---|---|---|---|---|
+| Merged fills | 52 | 52 | 271 | **269** |
+| Merge refusals | 39 | 39 | 51 | 53 |
+| … uncarried | 17 | 16 (`soyuz_016` merges) | 26 | 28 (`part_054.001`, `part_057.001`) |
+| Elements | 18,358 | 18,361 | 8,502 | 8,586 |
+| `check_geometry` offenders | 29 (worst 35.0 px, `apollo_018.011/m`) | **0** (worst 1.04) | 0 (worst 1.10) | 0 (worst 1.10) |
+| Segments off between keyframes | 53 | **27** | 267 | 267 |
+
+A first new run, with absent slots parked on the nearest frame's screen point, gave
+Voyager 50 offenders, all `part_012.004/m`, worst 252.8 px — the parked point left
+behind by a moving part. Parking on a vertex fixed it; the table is the second run.
+
+Verdict: kept. The one cost is two Voyager parts that now keep a small real piece,
+fail the carry test and draw face by face (+84 elements); nothing draws worse. The
+Apollo 35 px offender that predated this work was the same parked-point fault.
+
+Wall-clock times (Apollo 830 → 299 s, Voyager 2,112 → 1,160 s) ran on a loaded
+machine at different times and are not evidence either way.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

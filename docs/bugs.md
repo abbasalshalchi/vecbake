@@ -726,6 +726,23 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
      With the correct player the pre-fix bake still shows a dark bar sweeping near the
      flange around 0.70 s, and the fixed bake does not, so (1) was a real artefact too.
      Guard: reinstall the whole add-on folder, not the `.py` files; see gotchas.md.
+- **A band missing through the docking module** (`dock_001`, the gap left after the
+  wedge; seen 2026-09-14 at 0.83 s). **Fixed.** Ray-cast truth has `dock_001` solid from
+  x 1150 to 1198 at frame 20.9; the merged fill stopped at x 1183 and restarted at 1194.
+  The part is a body, a narrow neck and a flange. The neck's silhouette is its own
+  42-segment loop whose only one-sided segments are its two long silhouette edges.
+  `merge._coverage_side` sampled nine segments, missed both, and dropped the neck as a
+  fold (1,043 px at frame 21); where the neck is under 1% of the loop area the `SPECK`
+  cut dropped it first (113–122 px at frames 11 and 26). Now every segment is tested,
+  voting by length, and `walk_pieces` has no size cut — the fold test alone decides, and
+  the piece cap counts what survives. Guard `scripts/test_fold_boundary.py` (dock_001's
+  own profile, five angles; fails on the old code). Diagnosed wrongly twice on the way —
+  as a fold-boundary candidate problem, and before that as a hidden inner ring.
+  Keeping more pieces exposed a flaw in the slot fix: an absent slot was parked on the
+  nearest frame's *screen* point, which a moving part leaves behind — `part_012.004` on
+  the Voyager sat 253 px off after fifty frames (50 `check_geometry` offenders). It now
+  parks on a vertex of its piece projected in the absent frame. Regression run in
+  [audits.md §9](audits.md#9-merge-fold-test-and-absent-slots-regression-run).
 - **Half the `apollo_018` thrusters are not merged.** 16 identical meshes, identity
   transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
   merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.

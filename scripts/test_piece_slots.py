@@ -51,45 +51,49 @@ slots, held = bake._match_pieces(held, [piece(BODY), piece(LEFT)], 3)
 check("second disappearance keeps both others put", slots == [0, 1, None], str(slots))
 
 # --- where an absent slot waits -------------------------------------------
+# Three subpaths: body (3 points), slot 1 and slot 2 (2 points each). The mesh
+# has vertices 0..9; slot 1's piece is anchored on vertex 5, slot 2's on 8.
 parts = [3, 2, 2]
 
 
-def frame(body, a, b):
-    return [c for p in (body + a + b) for c in p]
+def positions_moving(fi):
+    """Every vertex slides 100 px right per frame: the part moves."""
+    xy = np.zeros((10, 2))
+    xy[:, 0] = np.arange(10) * 10 + fi * 100
+    xy[:, 1] = 7
+    return xy
 
 
-B = [(0, 0), (10, 0), (10, 10)]
-A0 = [(50, 50), (51, 50)]
-far = [(0, 0), (0, 0)]            # placeholder the sampler writes today
-geo = {
-    0: frame(B, A0, [(90, 90), (91, 90)]),
-    1: frame(B, far, [(90, 90), (91, 90)]),      # slot 1 absent
-    2: frame(B, far, [(90, 90), (91, 90)]),      # slot 1 absent
-    3: frame(B, [(60, 60), (61, 60)], far),      # slot 1 back; slot 2 absent
-}
-present = {0: [True, True, True], 1: [True, False, True],
-           2: [True, False, True], 3: [True, True, False]}
-geo_list = [geo[i] for i in range(4)]
-moved = bake._settle_absent_pieces(geo_list, parts, present)
+def flat(fi):
+    return [0.0] * (sum(parts) * 2)
+
+
+geo = [flat(fi) for fi in range(4)]
+present = {0: [0, 5, 8], 1: [0, None, 8], 2: [0, None, 8], 3: [0, 5, None]}
+moved = bake._settle_absent_pieces(geo, parts, present, positions_moving)
 check("absent slots are placed", moved == 3, str(moved))
-check("absent frame 1 waits where slot 1 was (frame 0, nearer)",
-      geo_list[1][6:10] == [50, 50, 50, 50], str(geo_list[1][6:10]))
-check("absent frame 2 waits where slot 1 comes back (frame 3, nearer)",
-      geo_list[2][6:10] == [60, 60, 60, 60], str(geo_list[2][6:10]))
-check("absent slot 2 at frame 3 waits where it was at frame 2",
-      geo_list[3][10:14] == [90, 90, 90, 90], str(geo_list[3][10:14]))
-check("present rings untouched", geo_list[0] == frame(B, A0, [(90, 90), (91, 90)]))
+check("frame 1: slot 1 waits on its own vertex (5), where it is in frame 1",
+      geo[1][6:10] == [150.0, 7.0, 150.0, 7.0], str(geo[1][6:10]))
+check("frame 2: slot 1 waits on vertex 5 where it is in frame 2, not where it was",
+      geo[2][6:10] == [250.0, 7.0, 250.0, 7.0], str(geo[2][6:10]))
+check("frame 3: slot 2 waits on vertex 8 as projected in frame 3",
+      geo[3][10:14] == [380.0, 7.0, 380.0, 7.0], str(geo[3][10:14]))
+check("present slots untouched", geo[0] == flat(0) and geo[3][6:10] == [0.0] * 4)
 
-# The old placeholder would have swept the ring across the part: frame 1 -> 3.
-old_sweep = np.hypot(60 - 0, 60 - 0)
-new_sweep = np.hypot(60 - geo_list[2][6], 60 - geo_list[2][7])
-check("the ring no longer travels across the part between keyframes",
-      new_sweep < 1e-9 < old_sweep, f"old {old_sweep:.1f}px, new {new_sweep:.1f}px")
+# The first version parked on the nearest frame's screen point and so fell
+# behind a moving part: fifty frames of that was 253 px on the Voyager.
+lag = abs(geo[2][6] - (5 * 10 + 2 * 100))
+check("the parked point moves with the part", lag < 1e-9, f"{lag:.1f}px behind")
 
-tie = [frame(B, A0, far), frame(B, far, far), frame(B, [(70, 70), (71, 70)], far)]
-bake._settle_absent_pieces(tie, [3, 2, 2], {0: [1, 1, 0], 1: [1, 0, 0], 2: [1, 1, 0]})
-check("a tie takes the earlier frame: a vanishing piece shrinks where it was",
-      tie[1][6:8] == [50, 50], str(tie[1][6:8]))
+tie = [flat(0), flat(1), flat(2)]
+bake._settle_absent_pieces(tie, [3, 2, 2], {0: [0, 5, None], 1: [0, None, None], 2: [0, 6, None]},
+                           positions_moving)
+check("a tie takes the earlier frame's piece: a vanishing piece shrinks where it was",
+      tie[1][6:8] == [150.0, 7.0], str(tie[1][6:8]))
+
+check("a frame with no positions is left alone",
+      bake._settle_absent_pieces([flat(0), flat(1)], parts,
+                                 {0: [0, 5, 8], 1: [0, None, 8]}, lambda fi: None) == 0)
 
 print(f"\n{len(fails)} failure(s)")
 raise SystemExit(1 if fails else 0)
