@@ -563,7 +563,8 @@ class ObjectPlan:
         # the total is; the rest is per-subpath state, one entry each.
         self.outline_parts = None    # [points per subpath], None for one ring
         self.outline_prevs = None    # one carry state per subpath
-        self.piece_verts = None      # last frame's vertices, to match pieces
+        self.piece_verts = None      # each slot's vertices when last seen, to match pieces
+        self.piece_present = {}      # frame -> which subpath slots held a piece
         self.piece_needs = None      # measuring: points each subpath earns
         # How far the best possible interpolation of this outline lands from
         # the real silhouette between keyframes, and what drawing the faces
@@ -1448,6 +1449,14 @@ def bake_iter(context, settings: BakeSettings):
     finally:
         scene.frame_set(original_frame)
 
+    # An absent subpath's placeholder point is only right once every frame is
+    # known: it belongs next to the piece in the nearest frame that has one.
+    for plan in plans.values():
+        if plan.outline_parts and len(plan.outline_parts) > 1 and plan.piece_present:
+            slot = slots.get(f"{plan.name}/m")
+            if slot is not None:
+                _settle_absent_pieces(slot["geo"], plan.outline_parts, plan.piece_present)
+
     # Which spans of a merged outline are the cut, and so must not be stroked.
     # Settled once for the clip rather than per frame, like `smooth`: the point
     # count and the slot order are both fixed by now -- neither chaining, the
@@ -1912,6 +1921,41 @@ def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
     return ring, poly, seen.xy
 
 
+def _settle_absent_pieces(geo, parts, present):
+    """Put each absent subpath where its own piece is, in the nearest frame that has it.
+
+    A subpath slot with no piece in a frame is collapsed to one point, and
+    between keyframes the player interpolates from that point to the ring the
+    next frame draws. Collapsed onto ring 1's first point -- the far end of the
+    part -- that interpolation swept a long thin wedge right across dock_001.
+    Collapsed onto a point of the ring it is about to become (or has just
+    stopped being), it grows out of, or shrinks into, its own place.
+
+    `geo` is the slot's per-frame flat point lists, `present` frame -> per-slot
+    flags. Nearest by frame distance; a tie takes the earlier frame, so a piece
+    that vanishes shrinks where it was. Frames no slot ever fills are left alone.
+    """
+    frames = sorted(fi for fi in present if geo[fi] is not None)
+    if not frames or len(parts) < 2:
+        return 0
+    starts = np.concatenate([[0], np.cumsum(parts)[:-1]]).astype(int)
+    moved = 0
+    for k, (s, n) in enumerate(zip(starts, parts)):
+        have = [fi for fi in frames if present[fi][k]]
+        if not have or len(have) == len(frames):
+            continue
+        have_arr = np.asarray(have)
+        for fi in frames:
+            if present[fi][k]:
+                continue
+            src = int(have_arr[np.argmin(np.abs(have_arr - fi) * 2 + (have_arr > fi))])
+            pts = geo[fi]
+            x, y = geo[src][s * 2], geo[src][s * 2 + 1]
+            pts[s * 2:(s + n) * 2] = [x, y] * n
+            moved += 1
+    return moved
+
+
 def _match_pieces(prev, pieces, cap):
     """Which subpath slot each of this frame's pieces belongs to.
 
@@ -1925,8 +1969,14 @@ def _match_pieces(prev, pieces, cap):
     identifies it. That is the rule `carry` already uses to keep a point on the
     vertex it was on; this is the same idea one level up.
 
-    Returns `slots` -- the piece index in each slot, or None -- and the vertex
-    set of each piece, to match against next frame.
+    `prev` is what each slot held *when it last held anything*, not only last
+    frame. A piece that goes behind the body for a few frames and comes back has
+    to come back to its own slot; matched against last frame alone its slot is
+    empty, the piece takes whichever slot is free, and two pieces trade places --
+    on dock_001 a ring crossed the whole part between two keyframes to get there.
+
+    Returns `slots` -- the piece index in each slot, or None -- and, per slot,
+    the vertex set it holds now or last held, to match against next frame.
     """
     sets = [set(int(v) for v in verts) for _, verts, _ in pieces]
     slots = [None] * len(prev)
@@ -1934,7 +1984,7 @@ def _match_pieces(prev, pieces, cap):
         cand = sorted(
             (-len(sets[i] & prev[k]), i, k)
             for i in range(len(sets)) for k in range(len(prev))
-            if sets[i] & prev[k])
+            if prev[k] and sets[i] & prev[k])
         got_piece, got_slot = set(), set()
         for _, i, k in cand:
             if i in got_piece or k in got_slot:
@@ -1955,7 +2005,9 @@ def _match_pieces(prev, pieces, cap):
             if len(slots) < cap:
                 slots.append(i)
             # else: no room, and this piece goes undrawn this frame
-    return slots, sets
+    held = [sets[i] if i is not None else (prev[k] if k < len(prev) else None)
+            for k, i in enumerate(slots)]
+    return slots, held
 
 
 def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
@@ -2000,14 +2052,21 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
     out = np.zeros((sum(parts), 2), dtype=np.float64)
     at = 0
     drawn_any = False
+    present = []
     for k, n in enumerate(parts):
         i = slots[k] if k < len(slots) else None
+        present.append(i is not None)
         if i is None:
             # No piece for this slot this frame. Collapse it onto a point: a
             # subpath of coincident points has no area to fill and, with butt
             # caps, no length to stroke. The alternative -- letting the subpath
             # count change between frames -- cannot be expressed at all, since
             # an element's shape is fixed for the whole clip.
+            #
+            # *Where* is settled once the clip is sampled, in
+            # `_settle_absent_pieces`: next to where this piece actually is in
+            # the nearest frame that has it. Any point chosen here is only a
+            # placeholder.
             out[at:at + n] = out[0] if at else xy[pieces[0][1][0]]
             at += n
             continue
@@ -2021,6 +2080,7 @@ def _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
         at += n
         drawn_any = True
     plan.piece_verts = sets
+    plan.piece_present[fi] = present
 
     visible = drawn_any
     if visible and cull:

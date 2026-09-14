@@ -704,15 +704,24 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
-- **A hidden inner ring stroked across a merged part** (seen 2026-09-13 in the
-  confirmed preview, [audits.md §8](audits.md#8-preview-bake-with-the-confirmed-adjustments)).
-  A long thin triangle runs from the Apollo probe tip across the docking module. It is
-  `dock_001/m`, a merged fill of three rings (`sp` 56 / 19 / 12); the triangle is one of
-  the small rings, inside the main one. Its points and its segments lie on real
-  projected edges (`check_geometry.py` 0 offenders; `check_outline_segments.py` worst
-  2.5 px), so it is a true silhouette loop — of geometry behind the part's own front
-  surface. Face by face that loop is hidden by nearer faces; merged, every ring's outline
-  is stroked. Not yet diagnosed further: whether the ring should exist at all.
+- **A dark wedge across the docking module** (`dock_001/m`, seen 2026-09-13 in the
+  confirmed preview). The first diagnosis above — a hidden inner ring — was wrong. Two
+  causes, found in turn:
+  1. **Fixed, 2026-09-14:** subpath slots swapped and an absent slot collapsed onto
+     ring 1's far end, so between keyframes a ring swept from one end of the part to the
+     other. `_match_pieces` now matches against what each slot last held, and
+     `_settle_absent_pieces` parks an absent slot on its own piece in the nearest frame
+     that has it. Guard `scripts/test_piece_slots.py` (fails 2 on the old code). On the
+     re-bake the third ring waits at x≈1181 instead of x≈1008 in every frame; the dense
+     scan finds no ring jumping.
+  2. **Open:** with (1) fixed the wedge is still there, drawn by `dock_001` alone. It is
+     an unfilled sliver: ring 1 (56 points) runs along real mesh edges out to the far rim
+     and back along a nearly parallel one, so the nonzero rule cancels between them.
+     Every point and segment lies on a projected edge, which is why neither geometry
+     check sees it. This is the self-crossing outline class in
+     `vecbake-fold-boundary` — interior fold edges walked as boundary — whose one
+     attempted fix (offering folded edges as candidates) cut self-crossings 113 → 38
+     on the Voyager but raised vanished parts 25 → 136 and was reverted.
 - **Half the `apollo_018` thrusters are not merged.** 16 identical meshes, identity
   transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
   merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.

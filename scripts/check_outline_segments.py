@@ -11,7 +11,11 @@ edges. A segment that follows the silhouette stays within tolerance all along;
 one that cuts across does not. Rings close (`sp` gives each ring's length);
 chains close only when flagged.
 
-    blender -b scene.blend --python scripts/check_outline_segments.py -- <bake.preview.html|.svg>
+    blender -b scene.blend --python scripts/check_outline_segments.py -- [--subframe 0.5] <bake.preview.html|.svg>
+
+Checked at the sampled frames by default. `--subframe 0.5` grades halfway between
+them instead -- where a ring whose slots jump between keyframes sweeps across the
+part and every keyframe still passes.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ def _rings(e, n):
     return [(0, n, bool(e.get("cl") or e.get("closed")))]
 
 
-def run(path, verbose=True, limit=15):
+def run(path, verbose=True, limit=15, subframe=0.0):
     doc = load(path)
     w, h, dur = doc["w"], doc["h"], doc["dur"]
     samples, fps, groups = doc["samples"], doc["fps"], doc["groups"]
@@ -63,7 +67,9 @@ def run(path, verbose=True, limit=15):
     step = (dur * fps / (samples - 1)) if samples > 1 else 1.0
     if abs(step - round(step)) < 1e-4:
         step = float(round(step))
-    frames = [scene.frame_start + i * step for i in range(samples)]
+    frames = [scene.frame_start + i * step + subframe for i in range(samples)]
+    if subframe:
+        frames = frames[:-1]   # a midpoint past the last keyframe is past the clip
 
     bad, checked = [], 0
     for f in frames:
@@ -100,7 +106,7 @@ def run(path, verbose=True, limit=15):
                     checked += len(d)
                     k = int(d.argmax())
                     if d[k] > allow:
-                        bad.append({"d": float(d[k]), "id": it["id"], "frame": int(f),
+                        bad.append({"d": float(d[k]), "id": it["id"], "frame": round(float(f), 2),
                                     "segment": int(s0 + k),
                                     "from": [round(float(v), 1) for v in a_[k]],
                                     "to": [round(float(v), 1) for v in b_[k]],
@@ -113,7 +119,7 @@ def run(path, verbose=True, limit=15):
         for r in bad:
             worst.setdefault(r["id"], r)
         for r in list(worst.values())[:limit]:
-            print(f"    {r['d']:8.2f} px  {r['id']:18s} frame {r['frame']:3d}  "
+            print(f"    {r['d']:8.2f} px  {r['id']:18s} frame {r['frame']:6.2f}  "
                   f"segment {r['segment']} {r['from']} -> {r['to']} ({r['length']} px)")
         counts = {}
         for r in bad:
@@ -124,4 +130,6 @@ def run(path, verbose=True, limit=15):
 
 
 if __name__ == "__main__":
-    run(sys.argv[-1])
+    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
+    sub = float(argv[argv.index("--subframe") + 1]) if "--subframe" in argv else 0.0
+    run(argv[-1], subframe=sub)
