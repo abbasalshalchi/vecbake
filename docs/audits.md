@@ -397,6 +397,53 @@ machine at different times and are not evidence either way.
 
 ---
 
+## 10. Carry test judged ring by ring — reverted
+
+14–15 September. Why seven of sixteen identical `apollo_018` thrusters are refused
+(`merged_uncarried`, 11–15 px against 0.05 px face by face).
+
+**Measured cause.** `judge_carry` compares the drawn outline's midpoint with
+`silhouette_of`, which uses `walk_loop` — one ring, bridged, or None past two pieces.
+A multi-ring outline is read as one closed loop, ring ends joined. So:
+
+| Thrusters | Frames (of 31 mid-frames) where `walk_loop` gives a ring | Result |
+|---|---|---|
+| refused: `.001 .003 .005 .007 .008 .010 .015` | 12–15 | judged, against a bridged ring, with the jumps between rings counted |
+| merged: `apollo_018 .002 .004 .006 .009 .012 .014` | 0–1 | effectively never judged |
+| merged: `.011`, `.013` | 8, 13 | judged in some frames |
+
+On a perfect three-ring outline the old measure scores 30 px
+(`test_carry_pieces.py`, saved with the patch).
+
+**Tried.** Judge multi-ring outlines ring by ring against `walk_pieces`: each drawn
+ring against the nearest true piece and each true piece against the nearest drawn ring;
+a collapsed slot is not a ring. Patch: `out/regress-merge/carry-ring-by-ring.patch`.
+
+| | Apollo `92e2d00` | Apollo ring-by-ring | Voyager `92e2d00` | Voyager ring-by-ring |
+|---|---|---|---|---|
+| Merged fills | 52 | **44** | 269 | **261** |
+| Elements | 18,361 | **20,820** | 8,586 | 8,887 |
+| `check_geometry` offenders | 0 | 0 | 0 | 0 |
+| Segments off between keyframes | 27 | 28 | 267 | 235 |
+
+Newly refused on Apollo: `apollo_018`, `.002`, `.011`, `.012`, `.013`, `dock_001`,
+`dock_006`, `soyuz_009`; on Voyager: `part_005.001`, `part_012.004`, `part_012.008`,
+`part_025.003`, `part_026.001`, `part_027.001`, `part_044.001`, `part_078.001`. None of
+the seven refused thrusters merged.
+
+**Reading.** The old test was not refusing good outlines by mistake so much as not
+judging most multi-ring outlines at all. Judged, they fail. What makes them fail is not
+yet measured; the likely candidate (reasoned) is a piece appearing or vanishing between
+keyframes, whose ring grows from a parked point, compared against a face-by-face cost
+that takes no account of faces appearing. Reverted: it removes merges, including the
+part just fixed, without a measured visual gain.
+
+**Open, and a decision.** Either the representation of appearing pieces has to carry
+(then this test is right and should come back), or the comparison has to charge face
+fills for appearing too. Measure per object what dominates the ring-by-ring cost first.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
