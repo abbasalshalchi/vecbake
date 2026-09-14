@@ -102,7 +102,13 @@ def run(path, verbose=True, limit=15, subframe=0.0):
                     a_ = ring if closed else ring[:-1]
                     b_ = np.roll(ring, -1, axis=0) if closed else ring[1:]
                     q = (a_[:, None, :] + (b_ - a_)[:, None, :] * FRACTIONS[None, :, None])
-                    d = _seg_dist(q.reshape(-1, 2), ea, eb).reshape(len(a_), -1).max(axis=1)
+                    d = _seg_dist(q.reshape(-1, 2), ea, eb).reshape(len(a_), -1)
+                    # Only what lands on the canvas can be seen. A Voyager chain
+                    # segment runs 4,900 px across a 1,920 px frame, and its
+                    # quarter points were being graded far outside it.
+                    on = ((q[..., 0] >= 0) & (q[..., 0] <= w)
+                          & (q[..., 1] >= 0) & (q[..., 1] <= h))
+                    d = np.where(on, d, 0.0).max(axis=1)
                     checked += len(d)
                     k = int(d.argmax())
                     if d[k] > allow:

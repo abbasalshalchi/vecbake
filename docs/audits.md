@@ -504,6 +504,55 @@ drawn face by face; "Mark merged" colours merged parts, so it reads grey among t
 
 ---
 
+## 12. What is left between keyframes
+
+15 September, on `4b4bf09`.
+
+### Where the ring-by-ring carry cost comes from
+
+Every merged multi-ring part on Apollo, at every mid-frame: the drawn outline against
+`walk_pieces` at that subframe (`ringcost.py` in the session scratchpad). Two kinds of
+cost, cleanly separated by the piece counts at the two keyframes and between them:
+
+| Kind | Examples (worst, mid-frame, pieces before/mid/after, drawn ring) |
+|---|---|
+| **A piece appears or vanishes across the gap** — the biggest costs | `apollo_001` 78.3 px, 7.5, 1/1/2, 2.6 × 28.8 px · `dock_001` 39.4 px, 0.5, 2/3/3, 13 × 40 px · `apollo_018.001` 27.0 px, 7.5, 2/1/1, 4 × 5 px · `.007` 24.1 px, 1/1/2 · `.010` 23.6 px, 2/1/1 · `soyuz_009` 15.7 px, 1/1/2, < 1 px |
+| **The main ring drifts, every piece present** | `apollo_018.012` 8.0 px · `.006` 5.2 px · `.014` 4.4 px · `soyuz_011` 4.2 px |
+
+An appearing piece is a ring growing out of its parked vertex, so halfway it is a
+half-grown ring where the truth has nothing. Linear interpolation cannot make it right
+at the midpoint. The face-by-face cost it is compared with (`face_cost`) measures vertex
+motion only and never charges a face for appearing, though a fading face has the same
+half-frame problem — so on appearance events the ring-by-ring test is not comparing like
+with like. That, not the slivers, is why it refuses so much (§10).
+
+### The segment count
+
+`check_outline_segments.py --subframe 0.5` graded quarter points that lie off the
+canvas: Voyager's worst offenders were `part_001.001` chains, 20 px off on segments
+4,700–4,900 px long. Now only on-canvas samples count.
+
+| | Apollo | Voyager (before → on-canvas only) |
+|---|---|---|
+| Offending (element, mid-frame) | 28 | 256 → **198** |
+| > 5 px | 0 | 27 + 15 → **2** |
+| 3–5 px | 1 | 27 → 21 |
+| 2–3 px | 8 | 58 → 54 |
+| 1.25–2 px | 19 | 129 → 121 |
+
+The two over 5 px: `part_081.001/m` 15.8 px on a **zero-length** segment (an empty slot
+collapsed to a point, which draws nothing) and `part_226.001/m` 5.1 px. The rest is
+merged-outline shape drift of at most ~4.5 px (most often `part_024.001`, 58 mid-frames
+at ~4 px; Apollo's worst is `soyuz_013` at 3.05 px) — against 1.6 px strokes, not a stray.
+
+### Verdict
+
+The visible artefact left in merged outlines is the half-grown ring at a piece appearing
+or vanishing between keyframes. Everything else measured is ≤ 5 px drift. Which way to
+take the appearance question is a decision, recorded in bugs.md's Open list.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

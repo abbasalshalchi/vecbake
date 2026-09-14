@@ -743,6 +743,12 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   the Voyager sat 253 px off after fifty frames (50 `check_geometry` offenders). It now
   parks on a vertex of its piece projected in the absent frame. Regression run in
   [audits.md §9](audits.md#9-merge-fold-test-and-absent-slots-regression-run).
+- **A half-grown ring where a piece appears between keyframes** (merged multi-ring
+  fills; measured 2026-09-15). Up to 13 × 40 px for half a frame on `dock_001`, a few px
+  on the thrusters. The carry test does not see it (it compares with `walk_loop`'s single
+  ring); judged ring by ring it refuses 8–13 parts a model, because `face_cost` never
+  charges a face for appearing. Decision pending — see
+  [audits.md §12](audits.md#12-what-is-left-between-keyframes).
 - **Sliver rings on a merged thruster** (`apollo_018.013`, frames 9–15). **Fixed
   2026-09-15**: one-piece frames of a multi-subpath element were written down the
   single-ring path across every slot. See [audits.md §11](audits.md#11-one-piece-frames-of-a-multi-ring-fill-and-the-dock-joint).
