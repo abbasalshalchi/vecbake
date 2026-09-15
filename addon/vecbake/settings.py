@@ -39,6 +39,12 @@ class BakeSettings:
     # measured as written rather than as it might ideally be placed -- see
     # bake.judge_carry. Zero switches the test off and merges whatever rings.
     merge_slack_px: float = 6.0
+    # How much false outline a merged fill of several subpaths may draw between
+    # keyframes -- line where the part has none, that nothing nearer covers --
+    # summed over the clip in pixels, before it is drawn face by face instead.
+    # A chosen limit, not a derived one: see docs/audits.md section 13 for the
+    # measurements the default sits between. Zero switches the test off.
+    merge_false_px: float = 160.0
     # An object whose own depth range covers this much of the scene's is drawn
     # face by face instead of as one merged silhouette. One merged fill carries
     # one depth per frame, so a body that reaches from the front of the scene to

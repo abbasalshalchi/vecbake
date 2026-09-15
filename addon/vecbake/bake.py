@@ -575,6 +575,9 @@ class ObjectPlan:
         # already drawing badly -- see try_refine.
         self.use_refine = False
         self.face_cost = 0.0
+        # Pixels of outline a multi-subpath merged fill draws between keyframes
+        # where the part has none and nothing nearer covers it, over the clip.
+        self.false_seen = 0.0
         self.edge_mode = str(obj.get("vecbake_edge_mode", settings.edge_mode))
 
         # kept for chaining: junction pairing needs edge directions
@@ -890,7 +893,8 @@ def bake_iter(context, settings: BakeSettings):
     depth_extent: dict[str, dict[int, tuple | None]] | None = (
         {} if settings.split_span_pct > 0.0 else None)
 
-    carry_state = {"prev": {}, "mid": {}, "drew": {}}
+    carry_state = {"prev": {}, "mid": {}, "drew": {}, "pieces": {}}
+    drawn_names = {o.name for o in objects}
 
     def judge_carry(frame, fi, depsgraph, view, mvp, cam_pos, cam_fwd, is_ortho):
         """Does each merged outline actually survive the gap to the next frame?
@@ -915,7 +919,7 @@ def bake_iter(context, settings: BakeSettings):
         costs across the gap, and what drawing the object's faces would cost
         instead.
         """
-        def look(dg, v, m, cp, cf, ortho):
+        def look(dg, v, m, cp, cf, ortho, pieces=None):
             out = {}
             for obj in objects:
                 plan = plans.get(obj.name)
@@ -930,6 +934,10 @@ def bake_iter(context, settings: BakeSettings):
                                                    width, height,
                                                    cp, cf, ortho)
                     out[obj.name] = (ring, poly, xy.copy())
+                    if (pieces is not None and plan.outline_parts
+                            and len(plan.outline_parts) > 1):
+                        pieces[obj.name] = silhouette_pieces_of(
+                            plan, me, ev, v, m, width, height, cp, cf, ortho)
                 finally:
                     ev.to_mesh_clear()
             return out
@@ -972,9 +980,42 @@ def bake_iter(context, settings: BakeSettings):
                 drawn = 0.5 * (before_xy + xy)
                 plan.face_cost = max(plan.face_cost, float(
                     np.linalg.norm(drawn - middle_xy, axis=1).max()))
+
+        # A multi-subpath outline has no single ring to score against, so the
+        # gap test above never sees it. What it gets wrong between keyframes is
+        # line where the part has no outline -- a ring half grown, points
+        # sliding across a corner -- and what matters of that is the part a
+        # viewer can see. Summed over the clip and compared with
+        # `merge_false_px`; see docs/audits.md section 13 for the measurement.
+        false_now = {}
+        if settings.merge_false_px > 0.0 and fi > 0:
+            allow = settings.tol_px * 1.25
+            for name, truth in carry_state["pieces"].items():
+                plan = plans[name]
+                if name not in drew or name not in prev_drew:
+                    continue
+                a, b = prev_drew[name], drew[name]
+                if a.shape != b.shape:
+                    continue
+                rings = np.split(0.5 * (a + b), np.cumsum(plan.outline_parts)[:-1])
+                pts, dep = _false_outline(rings, truth, allow, width, height)
+                if len(pts):
+                    false_now[name] = (pts, dep)
+        if false_now:
+            scene.frame_set(frames[fi - 1], subframe=0.5)
+            dg = context.evaluated_depsgraph_get()
+            _v, m_mid = camera_matrices(scene, cam, dg, width, height)
+            for name, (pts, dep) in false_now.items():
+                seen = _unhidden(scene, dg, m_mid, width, height, pts, dep,
+                                 name, drawn_names)
+                plans[name].false_seen += seen * 0.5
+            if fi + 1 >= len(frames):
+                scene.frame_set(frame)
+
         carry_state["prev"] = here
         carry_state["drew"] = drew
         carry_state["mid"] = {}
+        carry_state["pieces"] = {}
         if fi + 1 >= len(frames):
             return
 
@@ -984,7 +1025,9 @@ def bake_iter(context, settings: BakeSettings):
         ce = cam.evaluated_get(dg)
         cp = np.array(ce.matrix_world.translation, dtype=np.float64)
         cf = np.array((ce.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized())
-        carry_state["mid"] = look(dg, v2, m2, cp, cf, ce.data.type == "ORTHO")
+        carry_state["mid"] = look(dg, v2, m2, cp, cf, ce.data.type == "ORTHO",
+                                  carry_state["pieces"]
+                                  if settings.merge_false_px > 0.0 else None)
 
     def _cam_at(dg):
         v, m = camera_matrices(scene, cam, dg, width, height)
@@ -1288,6 +1331,8 @@ def bake_iter(context, settings: BakeSettings):
     # looks exactly like a guard with nothing to complain about, so the counts
     # are reported rather than inferred from the merge total.
     gap_scores: dict[str, tuple[float, float]] = {}
+    # Visible false outline per multi-subpath merged fill, pixels over the clip.
+    false_scores: dict[str, float] = {}
     # Objects whose outline is drawn with the area refinement. Held out here
     # because the pass that decides it is not the pass that writes it, and
     # plans are rebuilt from scratch between the two.
@@ -1436,10 +1481,14 @@ def bake_iter(context, settings: BakeSettings):
                 if gated and ring_cache:
                     try_refine(gated)
 
+            false_scores = {n: round(p.false_seen, 1) for n, p in plans.items()
+                            if n in wanted and p.false_seen > 0.0}
             uncarried = sorted(
                 n for n, p in plans.items()
                 if n in wanted and n not in merge_fallback
-                and p.carry_cost > p.face_cost + settings.merge_slack_px)
+                and (p.carry_cost > p.face_cost + settings.merge_slack_px
+                     or (settings.merge_false_px > 0.0
+                         and p.false_seen > settings.merge_false_px)))
             if uncarried or refine_set:
                 merge_fallback = sorted(set(merge_fallback) | set(uncarried))
                 no_merge.update(uncarried)
@@ -1685,6 +1734,11 @@ def bake_iter(context, settings: BakeSettings):
             "merged_gap_worst": dict(sorted(gap_scores.items(),
                                             key=lambda kv: -kv[1][0])[:10]),
             "merged_uncarried": uncarried,
+            # Visible false outline of each multi-subpath merged fill, pixels
+            # summed over the clip's half frames, worst first. Over
+            # `merge_false_px` it was drawn face by face.
+            "merged_false_line": dict(sorted(false_scores.items(),
+                                             key=lambda kv: -kv[1])),
             # Outlines drawn with the area refinement, and what it was worth.
             "merged_refined": sorted(refine_set),
             # Outlines the clip wanted smaller than any one frame did, as
@@ -1923,6 +1977,108 @@ def silhouette_of(plan, me, eval_obj, view, mvp, width, height,
     ids, verts = walk
     ring, poly = outline_mod.wound(ids, seen.xy, seen.xy[verts])
     return ring, poly, seen.xy
+
+
+def silhouette_pieces_of(plan, me, eval_obj, view, mvp, width, height,
+                         cam_pos, cam_fwd, is_ortho):
+    """Every piece of the silhouette this instant, as `(xy ring, depth ring)`.
+
+    The rings a multi-subpath merged outline is drawn from, with the camera
+    depth of each ring vertex so a point near the outline can be given the depth
+    the outline has there.
+    """
+    seen = project_object(plan, me, eval_obj, view, mvp, width, height,
+                          cam_pos, cam_fwd, is_ortho)
+    facing = seen.face_ok & seen.face_front
+    if not facing.any():
+        return []
+    pieces = merge.walk_pieces(plan, merge.silhouette_edges(plan, facing),
+                               seen.xy, facing) or []
+    return [(seen.xy[v].copy(), seen.depth[v].copy()) for _ids, v, _ccw in pieces]
+
+
+def _false_outline(drawn, truth, allow, width, height, step=0.5):
+    """Samples of a drawn outline farther than `allow` from the true one.
+
+    `drawn` is a list of closed rings as the player will draw them; `truth`
+    the silhouette's pieces from `silhouette_pieces_of`. Samples are `step`
+    pixels apart along each ring and only those on the canvas count. Returns
+    the false samples (N, 2) and, for each, the depth of the true outline vertex
+    nearest to it -- the depth that line is drawn at there.
+    """
+    if not truth:
+        return np.zeros((0, 2)), np.zeros(0)
+    tv = np.vstack([r for r, _d in truth])
+    td = np.concatenate([d for _r, d in truth])
+    ta = tv
+    tb = np.vstack([np.roll(r, -1, axis=0) for r, _d in truth])
+    out = []
+    for ring in drawn:
+        if len(ring) < 2 or np.ptp(ring, axis=0).max() <= 0.0:
+            continue
+        a, b = ring, np.roll(ring, -1, axis=0)
+        ln = np.hypot(*(b - a).T)
+        k = np.maximum(1, np.ceil(ln / step).astype(np.int64))
+        idx = np.repeat(np.arange(len(a)), k)
+        t = (np.arange(int(k.sum())) - np.repeat(np.cumsum(k) - k, k) + 0.5) / np.repeat(k, k)
+        s = a[idx] + (b - a)[idx] * t[:, None]
+        on = (s[:, 0] >= 0) & (s[:, 0] <= width) & (s[:, 1] >= 0) & (s[:, 1] <= height)
+        if on.any():
+            out.append(s[on])
+    if not out:
+        return np.zeros((0, 2)), np.zeros(0)
+    s = np.vstack(out)
+    seg = tb - ta
+    den = np.einsum("ij,ij->i", seg, seg)
+    den = np.where(den > 0, den, 1e-12)
+    far = np.empty(len(s), dtype=bool)
+    for lo in range(0, len(s), 512):
+        p = s[lo:lo + 512]
+        rel = p[:, None, :] - ta[None, :, :]
+        t = np.clip(np.einsum("kij,ij->ki", rel, seg) / den[None, :], 0.0, 1.0)
+        foot = ta[None, :, :] + t[:, :, None] * seg[None, :, :]
+        far[lo:lo + 512] = np.linalg.norm(p[:, None, :] - foot, axis=2).min(axis=1) > allow
+    s = s[far]
+    if not len(s):
+        return s, np.zeros(0)
+    near = np.argmin(((s[:, None, :] - tv[None, :, :]) ** 2).sum(axis=2), axis=1)
+    return s, td[near]
+
+
+def _unhidden(scene, depsgraph, mvp, width, height, pts, depth, own, drawn_names):
+    """How many of `pts` no other drawn object covers from nearer the camera.
+
+    Ground truth is `scene.ray_cast` through each pixel: a sample is hidden
+    when the first surface the ray meets belongs to another object the bake
+    draws and is nearer than the depth the line is drawn at. The object's own
+    surface does not hide its own outline.
+    """
+    inv = np.linalg.inv(mvp)
+    view_rows = None
+    seen = 0
+    for (px, py), d in zip(pts, depth):
+        nx = px / width * 2.0 - 1.0
+        ny = 1.0 - py / height * 2.0
+        near = inv @ np.array([nx, ny, -1.0, 1.0])
+        far = inv @ np.array([nx, ny, 1.0, 1.0])
+        near = near[:3] / near[3]
+        far = far[:3] / far[3]
+        ray = far - near
+        L = float(np.linalg.norm(ray))
+        if L <= 0.0:
+            seen += 1
+            continue
+        ok, loc, _n, _f, obj, _m = scene.ray_cast(depsgraph, Vector(near), Vector(ray / L))
+        if not ok or obj is None or obj.name == own or obj.name not in drawn_names:
+            seen += 1
+            continue
+        if view_rows is None:
+            cam = scene.camera.evaluated_get(depsgraph)
+            view_rows = np.array(cam.matrix_world.inverted(), dtype=np.float64)
+        hit_depth = -float((view_rows[:3, :3] @ np.array(loc) + view_rows[:3, 3])[2])
+        if hit_depth >= d:
+            seen += 1
+    return seen
 
 
 def _settle_absent_pieces(geo, parts, present, positions):

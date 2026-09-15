@@ -148,3 +148,8 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   That evening it is built in `scripts/` by another agent: right on a controlled scene
   where the 50% rule fails twice, but on Apollo it splits 39 bodies and scores 342
   wrong pixels against 214 — one cycle break is 261 of them. Rejected as built, open.
+- **15 September, evening.** The docking module's between-keyframe artefact gets a
+  chosen limit, at the user's call: Merge False Outline, a bake setting (default 160 px
+  of visible false outline over the clip, ray-cast). `dock_001` and three Voyager parts
+  fall back to faces; geometry offenders stay 0 and segment pairs drop (28 → 26,
+  198 → 173). The slot sliding underneath is not fixed. [Audits §14](audits.md#14-merge-false-outline-limit).

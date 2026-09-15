@@ -747,8 +747,13 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   fills; measured 2026-09-15). Up to 13 × 40 px for half a frame on `dock_001`, a few px
   on the thrusters. The carry test does not see it (it compares with `walk_loop`'s single
   ring); judged ring by ring it refuses 8–13 parts a model, because `face_cost` never
-  charges a face for appearing. Decision pending — see
-  [audits.md §12](audits.md#12-what-is-left-between-keyframes).
+  charges a face for appearing. **Limited 2026-09-15** by Merge False Outline
+  (`merge_false_px`, default 160 px): a multi-ring merged fill that draws more visible
+  false outline than that over the clip is drawn face by face. `dock_001` falls back
+  (214 → 3 px visible); on the Voyager `part_005.001`, `043.001`, `078.001` too. The
+  limit is chosen, not derived (user's decision). Most of `dock_001`'s false line was
+  slot sliding (18 → 19), which remains open on any part under the limit. See
+  [audits.md §14](audits.md#14-merge-false-outline-limit).
 - **Sliver rings on a merged thruster** (`apollo_018.013`, frames 9–15). **Fixed
   2026-09-15**: one-piece frames of a multi-subpath element were written down the
   single-ring path across every slot. See [audits.md §11](audits.md#11-one-piece-frames-of-a-multi-ring-fill-and-the-dock-joint).

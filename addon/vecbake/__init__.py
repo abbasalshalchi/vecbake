@@ -155,6 +155,15 @@ class VECBAKE_PG_settings(PropertyGroup):
                     "pentagon to a triangle in one frame, and no outline survives that "
                     "-- its faces do. Zero merges whatever rings",
     )
+    merge_false_px: FloatProperty(
+        name="Merge False Outline", default=160.0, min=0.0, soft_max=1000.0, max=100000.0,
+        subtype="PIXEL",
+        description="How much outline a merged silhouette made of several pieces may "
+                    "draw where the object has none, between keyframes and in view, "
+                    "summed over the clip, before it is drawn face by face instead. A "
+                    "piece appearing or points sliding across a corner draw line "
+                    "through empty space. Zero switches the test off",
+    )
     split_span_pct: FloatProperty(
         name="Split Deep Bodies", default=50.0, min=0.0, soft_max=100.0, max=100.0,
         subtype="PERCENTAGE",
@@ -429,6 +438,7 @@ class VECBAKE_PG_settings(PropertyGroup):
         s.strokes, s.fills = self.strokes, self.fills
         s.merge_fills = self.merge_fills
         s.merge_slack_px = self.merge_slack_px
+        s.merge_false_px = self.merge_false_px
         s.split_span_pct = self.split_span_pct
         s.weld_seams = self.weld_seams
         s.weld_tol = self.weld_tol
@@ -833,6 +843,7 @@ class VECBAKE_PT_panel(Panel):
         grid.prop(props, "merge_fills", toggle=True)
         if props.merge_fills:
             grid.prop(props, "merge_slack_px")
+            grid.prop(props, "merge_false_px")
             grid.prop(props, "split_span_pct")
         grid.prop(props, "weld_seams")
         if props.weld_seams:

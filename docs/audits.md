@@ -646,6 +646,80 @@ half-grown ring the user noticed is the smaller part of it.
 
 ---
 
+## 14. Merge False Outline limit
+
+15 September. The user chose option 2 of §13 (relayed by the coordinating session): a
+limit on visible false outline, as a bake setting in the Geometry panel next to Merge
+Slack, not a per-object property. This is a **chosen threshold**, explicitly approved as
+the one exception to the no-tuned-epsilon rule; nothing measured derives the number.
+
+**What the bake measures.** In the pass that already judges carrying (`judge_carry`), for
+every merged fill with more than one subpath: the drawn outline halfway between two
+keyframes (mean of the two frames' written slots, split by subpath) is sampled every
+0.5 px on the canvas; a sample farther than `tol_px` × 1.25 from the true silhouette's
+pieces at the subframe (`walk_pieces`) is false. Each false sample takes the depth of the
+nearest true-outline vertex and is ray-cast at the subframe (`scene.ray_cast`): hidden if
+the first hit is another drawn object nearer than that depth. The part's own surface and
+objects the bake does not draw never hide it. Visible length is summed over the clip
+(`plan.false_seen`) and reported in the stats as `merged_false_line`. Over
+`merge_false_px` the part joins `merged_uncarried` and is drawn face by face in the pass
+that already exists for those. Zero switches it off. Single-ring fills are unaffected
+(the gap test covers them). Lab guard: `scripts/test_false_outline.py` (10 checks —
+half-grown ring, collapsed ring, off-canvas, corner cut, nearer/farther/own/undrawn
+occluder).
+
+**The bake's scores against the offline measure.** Ray-cast truth rather than the
+player's paint order, so they differ where paint order and 3D disagree:
+
+| Part | In bake (ray cast) | Offline §13 (paint order) |
+|---|---|---|
+| `dock_001` | 211.0 | 214.0 |
+| `apollo_018.001` | 117.0 | 119.0 |
+| `apollo_018.003` | 78.5 | 66.5 |
+| `apollo_001` | 73.5 | 0 |
+| `apollo_018.013` | 66.0 | 24.0 |
+| `soyuz_011` | 56.0 | 56.5 |
+| `soyuz_010`, `048`, `001`, `apollo_018.015` | 624, 268, 261.5, 116.5 | already refused by Merge Slack |
+
+Voyager, parts still merged at 4b4bf09: `part_043.001` 472.0, `part_005.001` 391.5,
+`part_078.001` 204.0, `part_027.001` 77.5, `part_044.001` 27.0, the rest ≤ 24.5
+(`part_022.001` 1,234.5, `003.001` 219.5, `080.001` 153 were already refused).
+
+**How the default was chosen.** Across both models the parts that stay merged top out
+at 117 px (`apollo_018.001`) below the gap and resume at 204 px (`part_078.001`) and
+211 px (`dock_001`) above it. 160 is the middle of that gap (arithmetic 160.5, geometric
+154), so it holds `dock_001` out with ~50 px margin on either side of the measured parts.
+It is a clip total, so a longer clip accumulates more; the number describes these two
+clips (30 and 59 frames), nothing more general.
+
+**Regression, old (4b4bf09 code, unchanged at HEAD) against new at 160.**
+
+| | Apollo old | Apollo new | Voyager old | Voyager new |
+|---|---|---|---|---|
+| Merged fills | 57 | 56 | 269 | 266 |
+| Newly refused | — | `dock_001` | — | `part_005.001`, `043.001`, `078.001` |
+| Elements (strokes / fills) | 16,905 (7,328 / 9,577) | 17,462 (7,310 / 10,152) | 8,660 (6,429 / 2,231) | 8,579 (6,356 / 2,223) |
+| `check_geometry` offenders | 0 | 0 | 0 | 0 |
+| On-canvas segment pairs (`--subframe 0.5`) | 28 | 26 | 198 | 173 |
+
+With the limit set to 1e9 (measuring only, nothing refused) both models bake to the
+old element counts, 0 offenders and 28 / 198 segment pairs: the measurement alone
+changes nothing. Visible false line on the new Apollo preview (`false_visible.py`):
+`dock_001` 3.0 px face by face (was 214), every other part identical to §13.
+
+**Cost.** Profiled with process time on a 15-frame Voyager range: `judge_carry` 13.2 s →
+17.4 s cumulative (piece walks 2.6 s, sampling 1.4 s, ray casts 1.1 s, plus one extra
+`frame_set` per frame with false line). On Apollo's full clip the piece walks were
+16.8 s and sampling 7.6 s. Whole-bake CPU times in this session are load-dominated —
+the unchanged old code took 225 s on Apollo on 14 September and 399 s today — so no
+whole-bake speed figure is claimed.
+
+What is not addressed: the slot sliding that makes most of `dock_001`'s false line
+(§13) still happens on any part under the limit, and a part over it pays face-by-face
+element counts instead (`dock_001`: +575 fills).
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
