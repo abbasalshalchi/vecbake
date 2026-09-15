@@ -553,6 +553,39 @@ take the appearance question is a decision, recorded in bugs.md's Open list.
 
 ---
 
+## 13. An area-based carry decision — measured, not built
+
+15 September. The idea: judge merged against face-by-face with one yardstick, wrongly
+covered pixels between keyframes, charging a face that appears or vanishes at the
+opacity the player fades it with; merge if merged ≤ faces + outline length × `tol_px`.
+The expectation was that `dock_001`, the one part where the half-grown ring is visible
+(user, 2026-09-15), would fall back to faces and the thrusters would stay merged.
+
+Measured on the current preview, every merged multi-ring part, every mid-frame
+(`area_carry.py`, session scratchpad): truth = its front faces at the subframe; merged =
+the preview's interpolated outline; faces = each face at its interpolated position,
+alpha 0.5 where it faces the camera at one keyframe only.
+
+| Part | Merged wrong px (clip) | Faces wrong px | Allowance | Decision |
+|---|---|---|---|---|
+| `dock_001` | 1,724 | 157 | 26,642 | merge |
+| `apollo_001` | 2,614 | 1,094 | 13,315 | merge |
+| `apollo_018` … `.014` (13 thrusters) | 346–595 | 40–106 | 3,330–4,308 | merge |
+| `soyuz_029` / `030` | 11,181 / 10,978 | 3,050 / 3,274 | 54,292 / 58,189 | merge |
+| `soyuz_006`, `007`, `009`, `011`, `dock_006` | 115–932 | 9–291 | 822–10,452 | merge |
+
+Merged is 5–15× the faces' error on every part, and `dock_001` (11×) is not an outlier.
+With the allowance everything merges; without it everything falls back. Area does not
+separate the part where the artefact is seen, because what is seen on `dock_001` is an
+outline *stroke* — an extra oval line drawn inside the part for half a frame — and the
+area it gets wrong is small. Not built.
+
+What would have to be measured instead: stroke drawn where no edge is, between
+keyframes (as `check_outline_segments.py --subframe 0.5` does for points on edges, but
+counting length on the canvas that lies on no projected edge).
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
