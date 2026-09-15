@@ -606,6 +606,44 @@ piece appearing). `apollo_001` at 17.5: the false line is **behind the service m
 and cannot be seen. So the measure finds the visible fault but also counts line that
 nearer parts cover; a decision would have to count only false line that is on top.
 
+### Visible false line, merged against face by face
+
+`false_visible.py` (session scratchpad): a false sample counts only where no fill painted
+after it in that bake covers it. Merged = the current preview; face by face = the
+`apollo-carry2` bake, where the ring-by-ring test refused these parts, so they are drawn
+as faces with their edge strokes (judged against every projected edge of the part).
+
+| Part | Merged: visible (raw) | Worst mid-frame | Faces: visible (raw) |
+|---|---|---|---|
+| `dock_001` | **214.0** (216.5) | 18.5: 88.5 px | 3.0 (3.0) |
+| `apollo_018.001` | 119.0 (136.0) | 5.5: 56.5 px | 0 (0) |
+| `apollo_018.003` | 66.5 (96.0) | 5.5: 28.0 px | 0 (0) |
+| `soyuz_011` | 56.5 (56.5) | 8.5: 25.0 px | merged in both bakes |
+| `apollo_018.012` | 29.0 (29.0) | 27.5: 29.0 px | 0 (5.5) |
+| `apollo_018`, `.002`, `.013` | 22.5–26.0 | ≤ 22.5 px | 0 |
+| `apollo_018.007` | 6.0 (73.0) | 4.5: 6.0 px | 0 |
+| `apollo_001`, `apollo_018.010`, `.011` | **0** (235.0, 92.0, 48.5) | — | 0 |
+| `dock_006`, `soyuz_009` | 0 | — | 0 |
+
+Visibility removes `apollo_001` entirely (all 235 px behind the service module) and most
+of `.007`, `.010`, `.011`. `dock_001` is the clear worst, at 1.8× the next part — which
+the user did not report. Face by face draws essentially no visible false line on any of
+them. So a like-for-like comparison has faces at ~0 everywhere, and the decision reduces
+to how much visible false line a merged outline may draw: a threshold between 119 and
+214 px would split `dock_001` from `apollo_018.001`, and nothing measured here justifies
+one number over another.
+
+### The `dock_001` bend at 18.5
+
+From keyframe 18 to 19 the main ring's slots 20–24 move 72–105 px while the ring's median
+slot moves 4.2 px: points on the cone's slope ((1021, 523) … (1059, 496)) are re-assigned
+to the body's top edge ((1088, 498) … (1164, 501)). Halfway, they cut across the corner
+where cone meets body. Smaller slides of the same kind: 16 → 17, 36 px; 20 → 21, 30 px.
+This is the slot re-assignment class of §2–3 of experiments.md (arc-length matching kept;
+screen-distance matching, edge-anchored carrying, area placement and substeps rejected),
+on a new shape. Not attempted here. It is most of `dock_001`'s visible false line; the
+half-grown ring the user noticed is the smaller part of it.
+
 ---
 
 ## Timing on a loaded machine
