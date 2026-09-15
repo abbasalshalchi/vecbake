@@ -584,6 +584,28 @@ What would have to be measured instead: stroke drawn where no edge is, between
 keyframes (as `check_outline_segments.py --subframe 0.5` does for points on edges, but
 counting length on the canvas that lies on no projected edge).
 
+### False outline length — measured
+
+Same parts, same mid-frames (`false_stroke.py`, session scratchpad): the preview's
+interpolated rings sampled every 0.5 px on the canvas; a sample farther than
+`tol_px` × 1.25 from the part's true outline at the subframe is false line.
+
+| Part | False line over clip | Worst mid-frame | … on appearing/vanishing rings |
+|---|---|---|---|
+| `dock_001` | **216.5 px** | 18.5: 90.5 px | 0 |
+| `apollo_001` | **204.0 px** | 17.5: 90.0 px | 0 |
+| `apollo_018.001` | 136.0 px | 5.5: 56.5 px | 8.0 |
+| other thrusters | 5–96 px | 3.5–29 px | 0–6.5 |
+| `soyuz_011` | 56.5 px | 8.5: 25 px | 0 |
+| `soyuz_006`, `007`, `009`, `029`, `030`, `dock_006` | 0 | — | — |
+
+This separates far better than area, and the two worst frames were cropped from the
+player. `dock_001` at 18.5: the body's top edge bends out of shape between the cone and
+the body — **visible**, and not the appearing oval (the main ring's slots sliding, not a
+piece appearing). `apollo_001` at 17.5: the false line is **behind the service module**
+and cannot be seen. So the measure finds the visible fault but also counts line that
+nearer parts cover; a decision would have to count only false line that is on top.
+
 ---
 
 ## Timing on a loaded machine
