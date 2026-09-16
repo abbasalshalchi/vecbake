@@ -704,25 +704,23 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
-- **Dashed seam rings around the docking module** (found 2026-09-16 comparing the
-  confirmed-settings preview at a99a6ff against the previous one, 0.77 s and 0.83 s;
-  8× close-ups in `out/preview-a99a6ff/dashed_rings.png`). Three rings, identified by
-  the stroke elements under them:
-  1. `dock_001/c12_*`, where the Apollo cone meets the module: broken in two or three
-     places before, finely dotted now. **Worse.**
-  2. `soyuz_005/c72_2`, at the Soyuz end: solid before, dashed now. **New.** It is a
-     Soyuz part's line, with `dock_001`'s faces around it.
-  3. `soyuz_001/c142_0`, beside it: dashed in both previews. **Pre-existing.**
-  Also visible in the close-up of ring 2: the top and bottom outline of the neck
-  between the module and the Soyuz is faint now, solid before. Rings 1 and 2 changed
-  with Merge False Outline (9373c59), which draws `dock_001` face by face; the
-  scene-settings bakes before and after the ordering change (`apollo-false160`,
-  `apollo-cheapest`) show them the same, so the cycle breaker is not the cause. It does
-  thin the right half of the module's box top edge by about a pixel. Not yet
-  diagnosed; a line dashed along its length is consistent with the faces next to it
-  being ordered over it one by one. A first column scan called ring 3 new too: it
-  listed only the first 40 matching columns, and on the old image those were all
-  crossing lines. The close-ups settled it.
+- **Dashed seam rings around the docking module** (found 2026-09-16; marked in
+  `out/preview-a99a6ff/dashed_rings.png`). **Fixed 2026-09-16.** Ring 1
+  `dock_001/c12_0` (cone joint), ring 2 `dock_001/c310_0` (Soyuz end; the solid line
+  beside it is `soyuz_005/c72_2`, which was first blamed) and ring 3 `soyuz_001/c142_0`
+  (always dashed). Not paint order in the usual sense and not a cross-part seam: nothing
+  was painted over rings 1 and 2. Each gap was a face of the line's own part that meets
+  it at one vertex, painted after it, whose hairline seam stroke nicked it. They were
+  painted after it because chains reached the ordering pass as their *thinned* drawing
+  points, whose straight-line depth sags behind a curved ring, so the ring measured
+  0.007–0.05 behind its own faces. Now a chain is ordered along its vertex path, and a
+  face that only touches a line of its part puts the line on top. Rings at frame 20: 13,
+  11 and 9 pieces → 1, 0, 0. Nicked line over the Apollo clip 74,641 px (vertex path
+  alone) → 12,636 px. The neck outline between the module and the Soyuz is solid again.
+  Guard: `scripts/test_chain_depth.py`. See
+  [audits.md §16](audits.md#16-dashed-rings-lines-measured-by-their-drawing-points).
+  Still open: the left line at ring 1, `dock_001/c14_0`, is broken where `apollo_024`
+  sits 0.04 in front of it at the joint between the two parts, as in every preview.
 - **`apollo_018.003` blinks under the service module for one frame** (reported by the
   user on the preview, 2026-09-15). **Fixed 2026-09-16.** Its merged fill's rank went
   2051 → 4667 → 163 over frames 14–16. In frame 15 its depth range missed

@@ -160,3 +160,9 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   pixels: Apollo 1,623 → 1,012, Voyager 3,018 → 2,105, for about a third more CPU in the
   ordering pass. Two simpler rules measured worse and are written down with it.
   [Audits §15](audits.md#15-drawing-order-the-blinking-thruster-and-the-see-through-parts).
+- **16 September, evening.** The dashed rings round the docking module were not faces
+  ordered over a seam but a line measured by the wrong points: chains reached the ordering
+  pass thinned, their depth sagged behind the ring, and every face meeting the ring at a
+  vertex was painted over it by a hair. Ordered along their vertices, with touching faces
+  kept under the line, the rings are solid; nicked line on Apollo falls to a sixth.
+  [Audits §16](audits.md#16-dashed-rings-lines-measured-by-their-drawing-points).

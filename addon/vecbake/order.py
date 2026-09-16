@@ -531,6 +531,16 @@ def _line_centre(line, spans_of):
     return sx / total, sy / total
 
 
+def _touches(items, fill, line, part_of, vertex_sets):
+    """Does a fill share a projected vertex with a line of the same part?"""
+    if part_of[fill] != part_of[line]:
+        return False
+    verts = vertex_sets.get(line)
+    if verts is None:
+        verts = vertex_sets[line] = {(float(x), float(y)) for x, y in items[line]["pts"]}
+    return any((float(x), float(y)) in verts for x, y in items[fill]["pts"])
+
+
 def _line_length(line, spans_of):
     """Length of `line` that `spans_of` puts inside a fill, in pixels."""
     total = 0.0
@@ -1033,6 +1043,9 @@ def resolve(items, is_ortho=False, tol=1e-4):
     centres = []
     shares = []
     requests = [[] for _ in items]
+    part_of = [it["key"].split("/", 1)[0] for it in items]
+    vertex_sets = {}
+    touching = {}
     for slot, (i, j, gap, shared) in enumerate(found):
         if gap is not None:
             pairs.append((i, j, gap, None))
@@ -1043,6 +1056,21 @@ def resolve(items, is_ortho=False, tol=1e-4):
         else:
             share = line_share.get(slot, 0.0)
         if shared is None:
+            # A face of the line's own part that meets it at a vertex and covers
+            # none of its length. Nothing was measured, so seed depth used to
+            # decide, and a face leaning toward the camera went on top -- where
+            # the hairline the player strokes round every fill nicks the line at
+            # that vertex. On the rings of dock_001 and soyuz_001 that was the
+            # dashes left once chains were measured along their vertices. They
+            # touch, so lines go on top, as for any pair depth cannot separate;
+            # weakest class, so anything measured still outranks it. Coordinates
+            # compare exactly: both came from the same projected vertex.
+            if kinds[j] != FILL_KIND and _touches(items, i, j, part_of, vertex_sets):
+                pairs.append((i, j, tol, None))
+                # Breaking it lets the face nick the line at that vertex: about
+                # a line-width square, not the nothing their shared length says.
+                w = float(items[j].get("width", 1.0))
+                touching[(i, j)] = touching[(j, i)] = w * w
             continue
         q = len(centres)
         centres.append(shared)
@@ -1061,7 +1089,7 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 depths[slots] = _depths_at(it, xy[q, 0], xy[q, 1], is_ortho)
     deltas = depths[0::2] - depths[1::2]
     # What breaking each edge would paint wrong: the screen the two share.
-    cost = {}
+    cost = dict(touching)
     for i, j, gap, q in pairs:
         if q is None:
             add_edge(i, j, gap)

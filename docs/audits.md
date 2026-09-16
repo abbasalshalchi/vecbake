@@ -832,6 +832,112 @@ still open.
 
 ---
 
+## 16. Dashed rings: lines measured by their drawing points
+
+16 September. After Merge False Outline drew `dock_001` face by face, the rings round the
+docking module came out dashed (marked in `out/preview-a99a6ff/dashed_rings.png`): ring 1
+`dock_001/c12_0` at the cone joint, ring 2 `dock_001/c310_0` at the Soyuz end (the line
+first taken for `soyuz_005/c72_2` is solid; the dashed one lies 1.5 px beside it), and
+ring 3 `soyuz_001/c142_0`, dashed before as well. The user's hypothesis, relayed: a seam
+line ordered face by face against the faces around it.
+
+**What the drawing order shows.** Replayed at frame 20 (0.83 s) and read out of the
+preview at 0.79, 0.83 and 0.833 s: *no fill is painted over rings 1 and 2*, half a pixel
+of ring 3. Ray cast: every sample of all three should show. So not paint order in the
+ordinary sense.
+
+**What does it.** Recoloured in the player (`dbg_sheet.png`: `dock_001` lines green,
+faces blue): the dashed lines are the part's own lines, and they turn solid with the
+player's seam fix off. That fix strokes every fill with its own colour to close the
+hairline between abutting faces, half a device pixel past its edge. Each dash gap is a
+face of the same part, painted after the line, whose boundary passes within 0.0–0.13 px
+of it but which the line does not lie on — it meets the line at one vertex. One gap per
+vertex, so the dashes are evenly spaced.
+
+Those faces were painted after the line because the ordering measured the line **behind**
+them by 0.007–0.05 (`tol` is ~0.003): real constraints, in the wrong direction. The faces
+are triangles and read exactly. The lines are chains, and chains were handed to the
+ordering pass with their *thinned* points (`dissolve_px`): between two kept points the
+depth is a straight line, and a ring bowing toward the camera sags behind its chord —
+ring 1's chain kept 7 of 21 vertices and read 35.29 where its face read the shared
+vertex's 35.26. Rings 2 and 3: 11 and 9 kept points, same result.
+
+**Fix, in two parts.**
+
+1. *A chain is ordered along its vertex path, not its drawing points* (`chain.py`,
+   `measure_path`). Drawn geometry is unchanged. Stroke points in the ordering pass
+   5,906 → 7,671 on frame 20; ordering CPU 6.5 → 6.7 s.
+2. *A face of the line's own part that meets it at a vertex and covers none of its length
+   puts the line on top*, at the weakest weight (`tol`), as for any pair depth cannot
+   separate (`order._touches`). Coordinates compare exactly: both come from the same
+   projected vertex, so there is no tolerance. Breaking it costs a line-width square in
+   the cycle breaker, not the nothing its shared length says: that is what the face then
+   paints over the line.
+
+Lab: `scripts/test_chain_depth.py` — an arc bowing toward the camera with triangles
+touching it at single vertices (thinned: 8 of 11 over it; vertex path + touching rule:
+0), a face sharing a vertex that really lies across the line in front (still covers it),
+another part's vertices (never treated as touching).
+
+**Rings at frame 20** (share of the line under a later fill or its seam stroke, pieces):
+
+| | Ring 1 | Ring 2 | Ring 3 |
+|---|---|---|---|
+| a99a6ff | 39%, 13 | 16%, 11 | 11%, 9 |
+| Vertex path only | 6%, 2 | 2%, 1 | 3%, 3 |
+| + touching rule, free to break | 3%, 1 | 0 | 3%, 3 |
+| **+ touching rule, priced** | **3%, 1** | **0** | **0** |
+
+The one piece left on ring 1 is `dock_001/f93`, measured 0.08 in front a pixel away from
+any shared vertex — a real depth difference.
+
+**Nicks over the whole clip** (`nicks.py`, session scratchpad): length of every line
+covered by a later-painted face of its own part that only touches it, all 31 Apollo
+frames, same captures, each variant's ordering.
+
+| Variant | Apollo nick length | Line-frames nicked | Voyager nick length | Line-frames |
+|---|---|---|---|---|
+| a99a6ff (thinned chains) | ≥ 64,941 ¹ | ≥ 22,353 ¹ | — | — |
+| Vertex path only | 74,641 | 23,371 | 67,103 | 40,934 |
+| + touching rule, free to break | 29,071 | 8,808 | 33,037 | 17,019 |
+| **+ touching rule, priced (kept)** | **12,637** | **2,249** | **25,065** | **9,130** |
+
+¹ A lower bound, not comparable: on thinned chains only faces meeting a *kept* point are
+recognised as touching, so most of the faces that nicked the rings are not counted.
+
+**Ray-cast audit** (same settings and budget as §15):
+
+| Variant | Apollo | Voyager | Total |
+|---|---|---|---|
+| a99a6ff | 1,012 | 2,105 | 3,117 |
+| Vertex path only | 1,006 | 2,101 | 3,107 |
+| + touching rule, free to break | 1,012 | 2,055 | 3,067 |
+| **+ touching rule, priced (kept)** | **1,041** | **2,055** | **3,096** |
+
+The audit cannot see a nick — a face of the same part is not an occlusion error — so it is
+the side-effect check here. Pricing the touch costs Apollo 29 sampled px (about 1,400 real
+px at 2.1% sampling) and removes 16,400 px of nicked line on the same clip; on Voyager it costs no audit pixels and
+removes 8,000 px more than the free version. It is kept.
+Largest new Apollo errors: `apollo_003/f0` over `apollo_024` 3 → 12, `dock_001/c14_0` over
+`apollo_024` 2 → 9. A hypothesis that the vertex path loses shared length the drawn line
+has was checked and is wrong: `dock_001/c14_0` meets `apollo_024` for 45.3 px thinned
+and 45.8 px along its vertices.
+
+**Regression, a99a6ff against this:** element counts, `check_geometry` offenders and
+between-keyframe segments identical on both models (Apollo 17,462 / 0 / 26; Voyager 8,579
+/ 0 / 173) — ordering does not touch geometry. The confirmed-settings preview
+(`out/preview-rings/`, `rings_before_after.png`) shows rings 2 and 3 solid at 0.77, 0.83
+and 1.00 s, the neck outline back, and the module body's own rings, dashed before at
+1.00 s, solid too.
+
+**Not fixed.** Ring 1 is two lines. The right one (`c12_0`) is solid. The left one,
+`dock_001/c14_0`, is broken in two or three places, as in every preview since before face
+by face: `apollo_024`'s faces are painted over it, and the ray cast puts `apollo_024`
+0.04 in front of the line there — inside the audit's 0.05 margin, a joint between two
+parts that neither order describes. That is the cross-part seam case, still open.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

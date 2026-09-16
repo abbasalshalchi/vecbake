@@ -557,6 +557,16 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                 # replace the member items the ordering pass will see
                 # a chain lies on every face any of its members lay on
                 on_faces = tuple({f for e in run_members for f in plan.edge_face_keys(e)})
+                # Ordered by every vertex it runs through, not by the points it
+                # is drawn with. Thinning drops most of a curved ring's vertices,
+                # and between two kept points the depth is read off a straight
+                # line -- a ring bowing toward the camera sags behind its own
+                # chord. The ring's faces that meet it at a dropped vertex read
+                # their true depth there, so the ring measured 0.007-0.05 behind
+                # them, each was painted over it, and the hairline the player lays
+                # round every fill nicked it once per vertex: the dashed rings of
+                # dock_001 and soyuz_001. See scripts/test_chain_depth.py.
+                measure_path = run_path[:-1] if closed else run_path
                 welded = [e for e in run_members if plan.edge_welded[e]]
                 for fi in visible_frames:
                     xy, depths = vertex_cache[fi][plan.name]
@@ -579,7 +589,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                         under -= both
                     chain_items.setdefault(fi, []).append({
                         "key": key, "kind": 0, "seed": seed,
-                        "pts": xy[final_path], "depths": depths[final_path],
+                        "pts": xy[measure_path], "depths": depths[measure_path],
                         "on_faces": on_faces + tuple(sorted(over)),
                         **({"under_faces": tuple(sorted(under))} if under else {}),
                         # The player closes the path, so it draws one more
