@@ -704,6 +704,17 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **Dashed seam rings on the docking module** (`dock_001`, found 2026-09-16 comparing
+  the confirmed-settings preview at a99a6ff against the previous one). Since
+  Merge False Outline (9373c59) draws `dock_001` face by face, the ring where the cone
+  meets the module and the rings at the Soyuz end come out as broken dashes instead of
+  solid lines, at 0.77 s and 0.83 s. Present identically in the scene-settings bakes
+  before and after the ordering change (`apollo-false160` against `apollo-cheapest`), so
+  it comes with the face-by-face fallback, not with the cycle breaker. The ordering
+  change does thin the right half of the module's box top edge by about a pixel. Not
+  yet diagnosed: likely edge strokes on a seam between near-coplanar faces, partly under
+  their own fills or dropped as not shown. Frames: `snapshots/{old,new,f160,cheap}_*.png`,
+  crops in `out/preview-a99a6ff/`.
 - **`apollo_018.003` blinks under the service module for one frame** (reported by the
   user on the preview, 2026-09-15). **Fixed 2026-09-16.** Its merged fill's rank went
   2051 → 4667 → 163 over frames 14–16. In frame 15 its depth range missed
