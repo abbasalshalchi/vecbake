@@ -153,3 +153,10 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   of visible false outline over the clip, ray-cast). `dock_001` and three Voyager parts
   fall back to faces; geometry offenders stay 0 and segment pairs drop (28 → 26,
   198 → 173). The slot sliding underneath is not fixed. [Audits §14](audits.md#14-merge-false-outline-limit).
+- **16 September.** The blinking thruster and the see-through parts turn out to be one
+  bug: a cycle breaker that gave up whichever constraint had the smallest depth gap,
+  with no idea what breaking it would paint. It now gives up the pair that covers the
+  least screen — area for two fills, length × width for a line in a fill. Ray-cast wrong
+  pixels: Apollo 1,623 → 1,012, Voyager 3,018 → 2,105, for about a third more CPU in the
+  ordering pass. Two simpler rules measured worse and are written down with it.
+  [Audits §15](audits.md#15-drawing-order-the-blinking-thruster-and-the-see-through-parts).

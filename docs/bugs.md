@@ -704,6 +704,21 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **`apollo_018.003` blinks under the service module for one frame** (reported by the
+  user on the preview, 2026-09-15). **Fixed 2026-09-16.** Its merged fill's rank went
+  2051 → 4667 → 163 over frames 14–16. In frame 15 its depth range missed
+  `apollo_003/f15`'s by 0.0046, so the pair was settled as certain but weighted by that
+  gap — the weakest edge in a cycle that also ran through `apollo_014`'s edge — and the
+  breaker spent it. The breaker now spends the pair that paints the least wrong instead.
+  See [audits.md §15](audits.md#15-drawing-order-the-blinking-thruster-and-the-see-through-parts).
+- **Parts look see-through** (reported the same day). **Mostly fixed 2026-09-16**, same
+  change: a hull face painted over a part in front of it wherever a cycle ran fill →
+  its own edge (asserted) → other fill → back, and the fill pair had the smaller gap.
+  `apollo_003/f5` over the mount `apollo_013` 209 → 0 sampled px, `apollo_002/f10` over
+  `apollo_003` 183 → 2, `apollo_002/f22` over `apollo_001` 129 → 3. Ray-cast wrong
+  pixels: Apollo 1,623 → 1,012, Voyager 3,018 → 2,105. What is left is `measured wrong`
+  (Apollo 619 px, Voyager 803), which is the deep-body splitting problem below, not the
+  breaker.
 - **A dark wedge across the docking module** (`dock_001/m`, seen 2026-09-13 in the
   confirmed preview). The first diagnosis above — a hidden inner ring — was wrong. Two
   causes, found in turn:

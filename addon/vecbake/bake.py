@@ -2799,6 +2799,9 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
                     # order is topology, not something to be measured -- see
                     # order.resolve().
                     "on_faces": plan.edge_face_keys(eidx),
+                    # How much screen a wrong order over this line costs; see
+                    # order.resolve's cycle breaker.
+                    "width": float(settings.stroke_width),
                 }
                 if plan.edge_welded[eidx]:
                     over, under = plan.edge_weld_keys(eidx, bool(weld_cover[eidx]))

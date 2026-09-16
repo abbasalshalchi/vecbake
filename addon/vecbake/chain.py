@@ -587,6 +587,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
                         # the ordering pass never sees that segment and never
                         # constrains anything it crosses -- see order.py.
                         "closed": closed,
+                        "width": float(settings.stroke_width),
                     })
 
     if not added:

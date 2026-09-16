@@ -720,6 +720,118 @@ element counts instead (`dock_001`: +575 fills).
 
 ---
 
+## 15. Drawing order: the blinking thruster and the see-through parts
+
+15–16 September. Both reported by the user on the preview: `apollo_018.003` disappears
+for a moment mid-animation, and some parts look see-through.
+
+**Audit setup.** `audit.run(budget=3000, diagnose=True)` on the Apollo blend with its own
+saved settings (merge fills on, Merge False Outline 160, `order_workers` forced to 1 by
+the audit), all 31 frames, 93,000 sampled overlap pixels. Deterministic: the same code
+gives the same count. Replays use the ordering inputs captured from the same bake
+(`capall/frame_NNN.pkl`, session scratchpad) and `order.resolve` run standalone.
+
+**The blink.** The preview's depth rank of `apollo_018.003/m` goes 2051 → 4667 → 163
+over frames 14–16 while its own edge stays near 2580: one frame under
+`apollo_003/f15`. The replay reproduces it exactly. In frame 15 the two depth ranges
+miss by 0.0046, so the pair is settled as disjoint and weighted by that gap — the
+weakest edge in this cycle, which the breaker spends at break 2:
+
+    apollo_018.003/m  behind apollo_014/m     0.116  measured
+    apollo_014/m      behind apollo_014/e35   5.37   asserted (fill under its own edge)
+    apollo_014/e35    behind apollo_003/f15   0.025  measured, line against fill
+    apollo_003/f15    behind apollo_018.003/m 0.0046 disjoint ranges  <- spent
+
+**The see-through parts.** Baseline audit of 9373c59: 1,623 wrong px, 1,071 of them
+`order violated` — the right constraint existed and the breaker spent it. The largest:
+`apollo_003/f5` over the mount `apollo_013` (209 px, every frame), `apollo_003/f1` over
+`apollo_002` (195, frames 4–5), `apollo_002/f10` over `apollo_003` (183, frames 0–7),
+`apollo_002/f22` over `apollo_001` (129). Tracing the cycle that closed each spent edge
+(`classify.py`, errors ≥ 3 px) gives the same shape almost every time:
+
+    fill A  behind its own edge e    asserted
+    edge e  behind fill B            measured where the line is
+    fill B  behind fill A            measured where the fills overlap   <- spent
+
+e.g. frame 29: `apollo_003/f5` < `apollo_013/m` spent at 0.126 against
+`apollo_018.015/e327` < `apollo_003/f5` at 0.161. Both measurements are true in different
+places (the geometry crosses); the weights compare depth gaps, which say nothing about
+cost. Spending the fill pair paints a surface over a part; spending the line pair draws a
+line over a surface that hides it.
+
+**Fix: spend the cheapest pair on screen.** In the breaker's sort, each candidate edge is
+ranked by what breaking it would paint wrong — the screen the two elements share: the
+overlap area for two fills, the length of line inside the fill times the stroke width for
+a line against a fill — and only then by weight. Assertions are still drawn from last.
+The shared area falls out of `_fill_fill_centres` (the grid cells both cover, scaled to
+the box they span) and the shared length out of `_line_spans`, so both come from work the
+pass already does. Pairs settled by disjoint depth ranges are never sampled, so theirs is
+measured lazily at the first cycle break, for the edges inside a strongly connected
+component only (`_share_certain`) — components only split from there, so that answers
+every later break. Strokes now carry their `width` into the ordering pass
+(`bake.py`, `chain.py`). Lab: `scripts/test_order_spend_cost.py`.
+
+| Ordering | Apollo | Fill | Stroke | Violated | Voyager | Fill | Stroke | Violated |
+|---|---|---|---|---|---|---|---|---|
+| 9373c59 (baseline) | 1,623 | 1,378 | 245 | 1,071 | 3,018 | 2,106 | 912 | 1,460 |
+| Disjoint pairs above every measured edge | 1,978 | 1,780 | 198 | 1,412 | — | | | |
+| Disjoint pairs weighed by measured separation | 1,589 | 1,348 | 241 | 1,007 | 2,730 | 1,857 | 873 | 1,073 |
+| Lines spent before fills | 1,022 | 714 | 308 | 253 | 3,132 | 1,440 | 1,692 | 1,603 |
+| Lines first + measured separation | 1,023 | 715 | 308 | 253 | 3,118 | 1,439 | 1,679 | 1,601 |
+| **Cheapest on screen** | **1,012** | **739** | **273** | **284** | **2,105** | **1,101** | **1,004** | **648** |
+
+Wrong pixels of 93,000 sampled on Apollo (31 frames) and 180,000 on Voyager (60 frames).
+The chosen rule is the only one that improves both: −38% and −30%.
+
+Apollo, largest changes against the baseline: `apollo_003/f5` over `apollo_013` 209 → 0,
+`apollo_002/f10` over `apollo_003` 183 → 2, `apollo_002/f22` over `apollo_001` 129 → 3,
+`apollo_003/f1` over `apollo_002` 195 → 76, `apollo_002/f22` over `apollo_000` 61 → 0,
+`apollo_003/f5` over `apollo_018.013` 62 → 0, the blink 9 → 0. Worse: `apollo_013/m` over
+`apollo_003` 0 → 85 and `apollo_018.013/m` over `apollo_003` 0 → 27 (`measured wrong`:
+with the mount now on top, the pixels where the hull really is nearer become the error),
+`apollo_000/m` over `apollo_002` 67 → 88. Voyager: `part_033.001/m` over `part_024.001`
+153 → 0, `part_021.001/m` over `part_064.001` 121 → 0, `part_024.001/m` over four
+neighbours 80/66/63/57 → 0; worse, `part_064.001/m` over `part_021.001` 103 → 136 and
+`part_025.003/m` over `part_018.001` 50 → 71.
+
+**Cost.** About a third more CPU in the ordering pass: on Apollo frame 15, 5.0 s → 6.5 s,
+and frame 29, 5.0 s → 6.7 s (process time, repeated, standalone replay of the captured
+frame). Cheap edges break fewer cycles per pass, so the breaker runs more often and
+discards more: frame 15 goes from 31 breaks and 6,961 constraints dropped to 53 and
+18,525; frame 29 from 28 and 8,968 to 70 and 29,140. The user accepted this cost on the
+strength of the wrong-pixel counts (2026-09-16).
+
+In the full bake `apollo_018.003/m` is above `apollo_003/f15` in every frame: no blink.
+
+**Rejected on the way.**
+
+- *Disjoint pairs weighted at span + gap*, like assertions (a fact that holds everywhere
+  outranks a sample). Fixes the blink; Apollo 1,623 → 1,978, `dock_001` faces under
+  `dock_002` +275 px. Kept out of the breaker's tenth, certain edges made it spend correct
+  measured ones instead, and a spent disjoint pair usually costs nothing because seed
+  order restores it.
+- *Disjoint pairs weighed by their measured separation* rather than their range gap (the
+  gap is the least the two could be apart, not how far apart they are where they overlap).
+  Weighed lazily inside the components, bit-identical ranks to measuring all of them, at
+  ~15–21k extra pair reads a frame against ~82k sampled. Apollo 1,623 → 1,589, Voyager
+  3,018 → 2,730 — an improvement, but smaller than the rule kept, and it adds nothing on
+  top of it (1,022 → 1,023). Not kept.
+- *Lines spent before fills*, on the reasoning that a line is cheaper than a surface.
+  Apollo 1,623 → 1,022, Voyager 3,018 → **3,132**. A chained outline is not cheap:
+  `part_043.001/c3_0` drawn over `part_003.001` in all 60 frames cost 335 px where the
+  fill pair the old rule spent overlapped by a sliver. This is what turned the rule from
+  a kind into a price, and `test_order_spend_cost.py` pins the case.
+
+**What remains.** Apollo 619 px and Voyager 803 px of `measured wrong`: faces spanning 3–5
+units of depth that cross parts in front of and behind them — `apollo_003/f1`,
+`apollo_002/f22`, `part_024.001/m` — where one depth per element cannot be right whatever
+the breaker does. Frame 6's `apollo_002/f10` < `apollo_003/f1` is spent in a fill-only
+cycle (`apollo_003/f1` < `apollo_000/m` 0.43 < `apollo_002/f10` 1.54 < `apollo_003/f1`
+0.071), which no spending rule can fix. That is the deep-body splitting problem of §5–7,
+still open.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

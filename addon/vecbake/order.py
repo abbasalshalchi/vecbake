@@ -531,7 +531,18 @@ def _line_centre(line, spans_of):
     return sx / total, sy / total
 
 
-def _fill_fill_centres(items, bbox, pairs, cells=24):
+def _line_length(line, spans_of):
+    """Length of `line` that `spans_of` puts inside a fill, in pixels."""
+    total = 0.0
+    for k, (p, q) in enumerate(_segments(line)):
+        if k not in spans_of:
+            continue
+        seg = math.hypot(float(q[0]) - float(p[0]), float(q[1]) - float(p[1]))
+        total += sum(max(0.0, t1 - t0) for t0, t1 in spans_of[k]) * seg
+    return total
+
+
+def _fill_fill_centres(items, bbox, pairs, cells=24, areas=None):
     """`_overlap_centre` for many fill pairs at once; the same answers, bit for bit.
 
     Per pair, the grid and the two inside tests were a handful of numpy calls on
@@ -586,7 +597,13 @@ def _fill_fill_centres(items, bbox, pairs, cells=24):
         qx = np.tile(xs[r], cells)
         qy = np.repeat(ys[r], cells)
         hit = both[r]
-        out[int(live[r])] = (float(qx[hit].mean()), float(qy[hit].mean()))
+        p = int(live[r])
+        out[p] = (float(qx[hit].mean()), float(qy[hit].mean()))
+        if areas is not None:
+            # The shared area on screen: the fraction of the grid both cover,
+            # of the box the grid spans.
+            areas[p] = (float(hit.sum()) / count
+                        * float(x1[p] - x0[p]) * float(y1[p] - y0[p]))
     return out
 
 
@@ -964,6 +981,8 @@ def resolve(items, is_ortho=False, tol=1e-4):
     found = []
     fill_pairs = []
     lines = []
+    certain = []        # (fill, other, behind, front) settled by disjoint ranges
+    line_share = {}     # slot in `found` -> pixels the line covers inside the fill
     for i in np.nonzero(kinds == FILL_KIND)[0]:
         i = int(i)
         overlap = (
@@ -987,9 +1006,11 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # breaker treat them as worthless and discard them first.
             if dmax[j] < dmin[i]:
                 found.append((i, j, float(dmin[i] - dmax[j]), None))
+                certain.append((i, j, i, j))
                 continue
             if dmax[i] < dmin[j]:
                 found.append((j, i, float(dmin[j] - dmax[i]), None))
+                certain.append((i, j, j, i))
                 continue
             if kinds[j] == FILL_KIND:
                 found.append((i, j, None, len(fill_pairs)))
@@ -1002,22 +1023,30 @@ def resolve(items, is_ortho=False, tol=1e-4):
             spans = _line_spans(items[i], [items[j] for _, j in lines])
             for (slot, j), spans_of in zip(lines, spans):
                 found[slot] = (i, j, None, _line_centre(items[j], spans_of))
+                line_share[slot] = (_line_length(items[j], spans_of)
+                                    * float(items[j].get("width", 1.0)))
             lines.clear()
 
-    fill_centres = _fill_fill_centres(items, bbox, fill_pairs)
+    fill_areas = [0.0] * len(fill_pairs)
+    fill_centres = _fill_fill_centres(items, bbox, fill_pairs, areas=fill_areas)
     pairs = []
     centres = []
+    shares = []
     requests = [[] for _ in items]
-    for i, j, gap, shared in found:
+    for slot, (i, j, gap, shared) in enumerate(found):
         if gap is not None:
             pairs.append((i, j, gap, None))
             continue
         if kinds[j] == FILL_KIND:
+            share = fill_areas[shared]
             shared = fill_centres[shared]
+        else:
+            share = line_share.get(slot, 0.0)
         if shared is None:
             continue
         q = len(centres)
         centres.append(shared)
+        shares.append(share)
         requests[i].append(2 * q)
         requests[j].append(2 * q + 1)
         pairs.append((i, j, None, q))
@@ -1031,10 +1060,13 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 q = slots // 2
                 depths[slots] = _depths_at(it, xy[q, 0], xy[q, 1], is_ortho)
     deltas = depths[0::2] - depths[1::2]
+    # What breaking each edge would paint wrong: the screen the two share.
+    cost = {}
     for i, j, gap, q in pairs:
         if q is None:
             add_edge(i, j, gap)
             continue
+        cost[(i, j)] = cost[(j, i)] = shares[q]
         delta = float(deltas[q])
         if abs(delta) <= tol:
             # Coplanar or touching: depth cannot decide, and leaving it to
@@ -1260,7 +1292,40 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # sharing the cutoff value -- 15736 of 24456 constraints, 64% of all
             # the evidence in the scene, in a single pass. The sort already puts
             # the least-supported constraints first; just take that many.
-            live.sort(key=lambda item: item[0])
+            # Spend the pair that paints the least wrong, and only then the one
+            # with the least evidence behind it. What a break costs is the
+            # screen the two share: area for two fills, length x width for a
+            # line inside a fill.
+            #
+            # Every see-through part on Apollo-Soyuz came from this, in one
+            # shape: a fill under its own edge (asserted), that edge measured
+            # behind a second fill, and the second fill measured behind the
+            # first. Both measurements are true in different places -- the
+            # geometry crosses -- and the gaps say nothing about which is
+            # cheaper to break. Ordered by gap, the fill pair went first and a
+            # surface was painted over a part: apollo_003/f5 over the mount
+            # apollo_013 in every frame, 209 sampled px, on a gap of 0.126
+            # against the line's 0.161. The one-frame blink of apollo_018.003
+            # under apollo_003/f15 was the same cycle through apollo_014's edge.
+            #
+            # Ray cast: Apollo 1623 wrong px -> 1012, Voyager 3018 -> 2105.
+            # `order violated` 1071 -> 284 and 1460 -> 648. It costs about a
+            # third more CPU in this pass -- 5.0 s -> 6.5 s on one Apollo frame
+            # -- because cheap edges break fewer cycles per pass: 31 breaks and
+            # 6961 constraints dropped -> 53 and 18,525 on frame 15.
+            #
+            # Two cheaper rules were measured and are worse. Spending any line
+            # edge before any fill pair: Apollo 1022, Voyager 3132 -- worse than
+            # doing nothing there, because part_043.001's chained outline is
+            # long, and drawing it over part_003.001 for 60 frames costs more
+            # than the sliver of fill overlap it saved. Weighing range-disjoint
+            # pairs by their measured separation instead of their range gap
+            # (which fixes the blink on its own): Apollo 1589, Voyager 2730.
+            # See docs/audits.md section 15 and scripts/test_order_spend_cost.py.
+            if certain:
+                _share_certain(items, bbox, certain, comp, sizes, after, cost)
+                certain = []
+            live.sort(key=lambda item: (cost.get((item[1], item[2]), 0.0), item[0]))
             # Spend measured constraints before asserted ones. An assertion is a
             # geometric fact -- the edge lies on the face -- so it outranks any
             # amount of sampled evidence, and every cycle through one also runs
@@ -1337,6 +1402,38 @@ def resolve(items, is_ortho=False, tol=1e-4):
     for rank, i in enumerate(ranking):
         out[i] = float(n - 1 - rank)
     return out
+
+
+def _share_certain(items, bbox, certain, comp, sizes, after, cost):
+    """The screen shared by pairs settled on disjoint depth ranges, where it matters.
+
+    Those pairs are never sampled, so nothing measured what breaking them would
+    cost. Only the breaker asks, and only about edges inside a strongly connected
+    component, and components only split once breaking starts -- so measuring
+    the certain edges inside today's components answers every later break.
+    """
+    todo = [c for c in certain
+            if comp.get(c[2], -1) == comp.get(c[3], -2) and sizes[comp[c[2]]] > 1
+            and c[3] in after[c[2]]]
+    if not todo:
+        return
+    fills = [k for k, c in enumerate(todo) if items[c[1]]["kind"] == FILL_KIND]
+    if fills:
+        areas = [0.0] * len(fills)
+        _fill_fill_centres(items, bbox, [(todo[k][0], todo[k][1]) for k in fills],
+                           areas=areas)
+        for k, a in zip(fills, areas):
+            cost[(todo[k][2], todo[k][3])] = a
+    by_fill = {}
+    for k, c in enumerate(todo):
+        if items[c[1]]["kind"] != FILL_KIND:
+            by_fill.setdefault(c[0], []).append(k)
+    for i, ks in by_fill.items():
+        spans = _line_spans(items[i], [items[todo[k][1]] for k in ks])
+        for k, spans_of in zip(ks, spans):
+            line = items[todo[k][1]]
+            cost[(todo[k][2], todo[k][3])] = (_line_length(line, spans_of)
+                                               * float(line.get("width", 1.0)))
 
 
 def hold_unranked(slots, ranked):
