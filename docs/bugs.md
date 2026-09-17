@@ -719,8 +719,20 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   alone) → 12,636 px. The neck outline between the module and the Soyuz is solid again.
   Guard: `scripts/test_chain_depth.py`. See
   [audits.md §16](audits.md#16-dashed-rings-lines-measured-by-their-drawing-points).
-  Still open: the left line at ring 1, `dock_001/c14_0`, is broken where `apollo_024`
-  sits 0.04 in front of it at the joint between the two parts, as in every preview.
+  The version pushed as 10b0517 priced breaking a touch at a line-width square, and that
+  drew a hidden line over the part in front of it — see the next entry.
+- **A hidden line drawn over the Apollo cone at the docking joint** (`dock_001/c14_0`
+  over `apollo_024`; reported 2026-09-16 as ring 1's left line broken, and wrongly called
+  pre-existing and a cross-part seam). **Fixed 2026-09-17.** The ray cast has the whole
+  line 0.037–0.107 behind the cone shell. 10b0517 drew 28 px of its 36 on frame 20
+  (a99a6ff: 3): a face touching the line pokes out through the shell, so the touching
+  rule, "face over shell" and "shell over line" made a cycle, and at a line-width square
+  the touch outpriced each shell face's 1.5 px of line. A touch is now priced by the
+  contact it would really show: line within half the stroke width of the face, minus what
+  lies under another part the line is behind. 28 → 3.5 px (the rest is the crossing trade
+  of `test_order_cycle.py`); visible nicks Apollo 1,779 → 1,404, Voyager 9,432 → 8,872;
+  audit 1,041 → 1,019 and 2,055 → 2,054. Guard: `scripts/test_chain_depth.py` (shell and
+  sliver cases). See [audits.md §17](audits.md#17-the-joint-line-a-touch-priced-by-what-it-would-really-show).
 - **`apollo_018.003` blinks under the service module for one frame** (reported by the
   user on the preview, 2026-09-15). **Fixed 2026-09-16.** Its merged fill's rank went
   2051 → 4667 → 163 over frames 14–16. In frame 15 its depth range missed

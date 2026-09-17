@@ -532,13 +532,75 @@ def _line_centre(line, spans_of):
 
 
 def _touches(items, fill, line, part_of, vertex_sets):
-    """Does a fill share a projected vertex with a line of the same part?"""
+    """The projected vertex a fill shares with a line of its own part, or None."""
     if part_of[fill] != part_of[line]:
-        return False
+        return None
     verts = vertex_sets.get(line)
     if verts is None:
         verts = vertex_sets[line] = {(float(x), float(y)) for x, y in items[line]["pts"]}
-    return any((float(x), float(y)) in verts for x, y in items[fill]["pts"])
+    for x, y in items[fill]["pts"]:
+        if (float(x), float(y)) in verts:
+            return float(x), float(y)
+    return None
+
+
+def _price_touches(items, touch_at, after, kinds, part_of, cost, comp, sizes):
+    """What breaking each touch would paint wrong, once the graph is built.
+
+    Painted over a line it only touches, a face covers the part of the line's
+    stroke it reaches: the line samples within half the stroke width of the
+    face. At a single vertex that is a nick about a line-width long; a sliver
+    face hugging the line reaches all of it -- apollo_024/f953, 0.35 px wide
+    along the 285 px edge e1280, shares one vertex. Contact already under a face
+    of another part that the line is behind is not seen, so it costs nothing:
+    priced without that, the breaker kept touches whose nick was buried and
+    spent the pairs holding a hidden line under the shell in front of it --
+    dock_001/c14_0 drawn over apollo_024. Priced by the vertex alone, it spent
+    the sliver, whose contact mostly was not buried.
+    """
+    # Only the breaker reads a price, and only for an edge inside a strongly
+    # connected component; components only split once breaking starts, so the
+    # pairs inside today's are every pair it will ever ask about.
+    for face, line in list(touch_at):
+        c = comp.get(face, -1)
+        if c != comp.get(line, -2) or sizes[c] < 2:
+            continue
+        L, F = items[line], items[face]
+        half = 0.5 * float(L.get("width", 1.0))
+        P = np.asarray(F["pts"], dtype=np.float64)
+        lo, hi = P.min(axis=0) - half, P.max(axis=0) + half
+        pts = np.asarray(L["pts"], dtype=np.float64)
+        a = np.vstack([pts, pts[:1]]) if L.get("closed") and len(pts) > 2 else pts
+        samples = []
+        for p, q in zip(a[:-1], a[1:]):
+            if (max(p[0], q[0]) < lo[0] or min(p[0], q[0]) > hi[0]
+                    or max(p[1], q[1]) < lo[1] or min(p[1], q[1]) > hi[1]):
+                continue
+            n = max(1, int(math.ceil(math.hypot(q[0] - p[0], q[1] - p[1]) / 0.25)))
+            samples.append(p + (q - p) * ((np.arange(n) + 0.5) / n)[:, None])
+        if not samples:
+            cost[(face, line)] = cost[(line, face)] = 0.0
+            continue
+        Q = np.vstack(samples)
+        A, B = P, np.roll(P, -1, axis=0)
+        AB = B - A
+        u = np.clip(np.einsum("kij,ij->ki", Q[:, None, :] - A[None], AB)
+                    / np.maximum((AB * AB).sum(axis=1), 1e-12), 0.0, 1.0)
+        dist = np.linalg.norm(A[None] + u[..., None] * AB[None] - Q[:, None, :], axis=2).min(axis=1)
+        contact = Q[(dist <= half) | _inside(F, Q[:, 0], Q[:, 1])]
+        if len(contact):
+            buried = np.zeros(len(contact), dtype=bool)
+            for g in after[line]:
+                if kinds[g] != FILL_KIND or part_of[g] == part_of[line]:
+                    continue
+                b = items[g]["bbox"]
+                if b[1] < contact[:, 0].min() or b[0] > contact[:, 0].max()                         or b[3] < contact[:, 1].min() or b[2] > contact[:, 1].max():
+                    continue
+                buried |= _inside(items[g], contact[:, 0], contact[:, 1])
+            seen = float((~buried).sum()) * 0.25
+        else:
+            seen = 0.0
+        cost[(face, line)] = cost[(line, face)] = seen * 2.0 * half
 
 
 def _line_length(line, spans_of):
@@ -1045,7 +1107,7 @@ def resolve(items, is_ortho=False, tol=1e-4):
     requests = [[] for _ in items]
     part_of = [it["key"].split("/", 1)[0] for it in items]
     vertex_sets = {}
-    touching = {}
+    touch_at = {}       # (face, line) -> the vertex they share
     for slot, (i, j, gap, shared) in enumerate(found):
         if gap is not None:
             pairs.append((i, j, gap, None))
@@ -1065,12 +1127,14 @@ def resolve(items, is_ortho=False, tol=1e-4):
             # touch, so lines go on top, as for any pair depth cannot separate;
             # weakest class, so anything measured still outranks it. Coordinates
             # compare exactly: both came from the same projected vertex.
-            if kinds[j] != FILL_KIND and _touches(items, i, j, part_of, vertex_sets):
+            at = kinds[j] != FILL_KIND and _touches(items, i, j, part_of, vertex_sets)
+            if at:
                 pairs.append((i, j, tol, None))
-                # Breaking it lets the face nick the line at that vertex: about
-                # a line-width square, not the nothing their shared length says.
-                w = float(items[j].get("width", 1.0))
-                touching[(i, j)] = touching[(j, i)] = w * w
+                # Breaking it lets the face paint over the part of the line it
+                # reaches -- not the nothing their shared length says. Priced
+                # at the first cycle break, when the graph can say what is
+                # already hidden: see _price_touches.
+                touch_at[(i, j)] = at
             continue
         q = len(centres)
         centres.append(shared)
@@ -1089,7 +1153,7 @@ def resolve(items, is_ortho=False, tol=1e-4):
                 depths[slots] = _depths_at(it, xy[q, 0], xy[q, 1], is_ortho)
     deltas = depths[0::2] - depths[1::2]
     # What breaking each edge would paint wrong: the screen the two share.
-    cost = dict(touching)
+    cost = {}
     for i, j, gap, q in pairs:
         if q is None:
             add_edge(i, j, gap)
@@ -1353,6 +1417,9 @@ def resolve(items, is_ortho=False, tol=1e-4):
             if certain:
                 _share_certain(items, bbox, certain, comp, sizes, after, cost)
                 certain = []
+            if touch_at:
+                _price_touches(items, touch_at, after, kinds, part_of, cost, comp, sizes)
+                touch_at = {}
             live.sort(key=lambda item: (cost.get((item[1], item[2]), 0.0), item[0]))
             # Spend measured constraints before asserted ones. An assertion is a
             # geometric fact -- the edge lies on the face -- so it outranks any

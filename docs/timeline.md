@@ -166,3 +166,10 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   vertex was painted over it by a hair. Ordered along their vertices, with touching faces
   kept under the line, the rings are solid; nicked line on Apollo falls to a sixth.
   [Audits §16](audits.md#16-dashed-rings-lines-measured-by-their-drawing-points).
+- **17 September.** The ring 1 line reported as still broken was hidden behind the Apollo
+  cone all along — and the previous day's fix had drawn it over the cone, by pricing a
+  broken touch at a flat line-width square. Two quicker fixes each broke something the
+  controlled scenes then pinned (a tie-break lost the nicks; a vertex-only check let a
+  sliver thin a whole edge). A touch is now priced by the line it would really uncover,
+  and the result is better than the pushed version on every measure.
+  [Audits §17](audits.md#17-the-joint-line-a-touch-priced-by-what-it-would-really-show).

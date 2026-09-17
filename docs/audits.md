@@ -917,7 +917,8 @@ recognised as touching, so most of the faces that nicked the rings are not count
 The audit cannot see a nick — a face of the same part is not an occlusion error — so it is
 the side-effect check here. Pricing the touch costs Apollo 29 sampled px (about 1,400 real
 px at 2.1% sampling) and removes 16,400 px of nicked line on the same clip; on Voyager it costs no audit pixels and
-removes 8,000 px more than the free version. It is kept.
+removes 8,000 px more than the free version. It was kept, and pushed as 10b0517 — and §17
+found what the extra 29 Apollo pixels were.
 Largest new Apollo errors: `apollo_003/f0` over `apollo_024` 3 → 12, `dock_001/c14_0` over
 `apollo_024` 2 → 9. A hypothesis that the vertex path loses shared length the drawn line
 has was checked and is wrong: `dock_001/c14_0` meets `apollo_024` for 45.3 px thinned
@@ -930,11 +931,100 @@ between-keyframe segments identical on both models (Apollo 17,462 / 0 / 26; Voya
 and 1.00 s, the neck outline back, and the module body's own rings, dashed before at
 1.00 s, solid too.
 
-**Not fixed.** Ring 1 is two lines. The right one (`c12_0`) is solid. The left one,
-`dock_001/c14_0`, is broken in two or three places, as in every preview since before face
-by face: `apollo_024`'s faces are painted over it, and the ray cast puts `apollo_024`
-0.04 in front of the line there — inside the audit's 0.05 margin, a joint between two
-parts that neither order describes. That is the cross-part seam case, still open.
+**Not fixed — and misread.** Ring 1 is two lines. The right one (`c12_0`) is solid. The
+left one, `dock_001/c14_0`, came out broken in two or three places, and this section said
+that was so "in every preview since before face by face" and a cross-part seam. Both wrong:
+it is hidden behind `apollo_024` along its whole length, and a99a6ff drew only 3 px of it;
+the priced touch drew 28 px of it on frame 20. See §17, which corrects it.
+
+---
+
+## 17. The joint line: a touch priced by what it would really show
+
+17 September. Working the item §16 left open: ring 1's left line, `dock_001/c14_0`, broken
+in two or three places where the module meets `apollo_024` (the Apollo cone shell,
+3.5 × 5.1 × 5.1).
+
+**Truth first.** Ray cast along the whole line at frame 20: at *every* sample the nearest
+surface is `apollo_024`, 0.037–0.107 in front of the line (`joint_map.py`). The line sits
+inside the shell and should not be seen at all. The gaps were right; the drawn pieces were
+the error. §16 read the 0.04 against the audit's 0.05 margin and called it ambiguous — it
+is not, it holds along the full length.
+
+**Why it was drawn.** Every shell face over the line had the correct measured constraint,
+"line behind shell face" (0.037–0.11), and the breaker spent most of them. Each closed the
+same cycle (`cycle5.py`):
+
+    shell face  behind  dock_001 face   measured: the face pokes out through the shell
+    dock_001 face behind line           the touching rule of §16 (weight tol)
+    line        behind  shell face      measured  <- spent
+
+Three true statements about geometry that crosses. §16 priced breaking a touch at a
+line-width square (2.56 px²); each shell face covers ~1.5 px of the line (2.4 px²), so the
+shell pair was the cheaper and the hidden line was drawn over the shell.
+
+| Ordering | `c14_0` drawn over the shell, frame 20 (of 36 px) |
+|---|---|
+| a99a6ff | 3.0 px |
+| Vertex path only | 3.5 |
+| Touch priced at a line-width square (10b0517) | **28.0** |
+| Touch free to break | 3.5 |
+| Touch as a sort tie-break only | 3.5 |
+| Touch priced by covered contact (kept) | 3.5 |
+
+The 3.5 px left is older: `dock_001/f66`, a face the line *lies on*, pokes out through the
+shell too, so the protected assertion holds the line in front of it — the crossing trade
+`test_order_cycle.py` pins.
+
+**Two fixes tried and rejected on the way.**
+
+- *Touch as a tie-break, not an edge* (a line sorts no further back than the nearest face
+  that only touches it; fills first on ties). No edge, so no cycle; clears the rings and
+  the joint. But the breaker cannot protect a tie-break: visible nicks Apollo 11,107 px,
+  Voyager 17,227 — six and two times 10b0517's.
+- *Touch free when its shared vertex lies under another part the line is behind.* Clears
+  the joint and the rings, audit 1,022 / 2,054, but visible nicks on Apollo tripled
+  (1,779 → 5,404) — on five `apollo_024` edges. `apollo_024/f953` is a sliver 0.35 px wide
+  that shares one vertex with the 285 px edge `e1280` and hugs it the whole way; its vertex
+  was buried, so the touch went free, and the sliver's hairline thinned the whole edge.
+
+**Fix: price a touch by the contact it would really show** (`order._price_touches`). The
+contact is the stretch of line within half the stroke width of the face — a nick at a
+vertex, the whole edge for a hugging sliver; the part of it inside a face of another part
+that the line is measured behind is buried and costs nothing; the rest costs its length ×
+width. Priced at the first cycle break, only for pairs inside a strongly connected
+component (ranks bit-identical to pricing all 7,008 pairs on frame 20).
+
+Lab, `scripts/test_chain_depth.py`, each case failing on at least one rejected version:
+
+| Case | 10b0517 | Vertex-cover | Tie-break | Contact (kept) |
+|---|---|---|---|---|
+| Rings touched at vertices | pass | pass | pass | pass |
+| Line inside a shell, touching faces poke through (0 of 60 shell faces under it) | **fail** (58) | pass | pass | pass |
+| Sliver hugging a line, vertex buried, real cycle | **fail** | **fail** | **fail** | pass |
+
+**Measured** (same captures and settings as §16; visible nicks count only nicked line no
+other part's face is painted over, in that variant's own order):
+
+| Ordering | Audit Apollo | Voyager | Visible nicks Apollo | Voyager | Rings f20 (pieces) |
+|---|---|---|---|---|---|
+| a99a6ff | 1,012 | 2,105 | — | — | 13 / 11 / 9 |
+| Touch free to break | 1,012 | 2,055 | 10,049 | 13,364 | 1 / 0 / 3 |
+| Touch at a line-width square (10b0517) | 1,041 | 2,055 | 1,779 | 9,432 | 1 / 0 / 0 |
+| Touch as a tie-break | 1,002 | 2,081 | 11,107 | 17,227 | 1 / 0 / 0 |
+| Touch free where its vertex is buried | 1,022 | 2,054 | 5,404 | 9,492 | 1 / 0 / 0 |
+| **Touch priced by covered contact** | **1,019** | **2,054** | **1,404** | **8,872** | **1 / 0 / 0** |
+
+The kept version is at or near the best on every column and better than 10b0517 on all of
+them. Cost against 10b0517, ordering one frame (process time, repeated): Apollo frame 20
+7.6 → 8.3 s, frame 7 7.0 → 7.2 s, Voyager frame 30 3.8 → 4.6 s.
+
+**Regression, 10b0517 against this:** element counts, `check_geometry` offenders and
+between-keyframe segments identical on both models (Apollo 17,462 / 0 / 26; Voyager 8,579
+/ 0 / 173). The confirmed-settings preview (`out/preview-joint/`,
+`joint_before_after.png`) at 0.77, 0.83 and 1.00 s: `dock_001/c14_0` no longer drawn over
+the cone, two specks of the 3.5 px crossing residue left; rings 2 and 3 and ring 1's right
+line still solid.
 
 ---
 
