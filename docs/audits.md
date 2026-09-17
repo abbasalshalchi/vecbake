@@ -1028,6 +1028,59 @@ line still solid.
 
 ---
 
+## 18. The docking joint after the user's Boolean
+
+17 September. The user applied a Boolean in Blender so the docking parts no longer
+intersect, and saved `apollo-soyuz.blend`; the previous save is `apollo-soyuz.blend1`.
+Measured only, at 5583384, same settings — no code changed. Both files snapshotted to the
+session scratchpad first so a later save could not move the inputs.
+
+**What changed in the file** (per-object vertex hashes, `geo_sig.py`): two objects of 92.
+`dock_001` 402 → 602 vertices, 800 → 920 faces; `dock_002` 8 → 26 vertices, 12 → 18
+faces. No Boolean modifier remains — it was applied, so the evaluated mesh equals the
+stored one (identical hashes), and the Blender 5.2 modifier-input change (geometry-node
+inputs moved off ID properties, see memory) does not come into it. `apollo_024` and every
+other object are bit-identical; the VecBake settings are identical.
+
+**Counts** (scene-settings bake, both files rebaked with the same install):
+
+| | Before | After |
+|---|---|---|
+| Elements (strokes / fills) | 17,462 (7,310 / 10,152) | 17,574 (7,344 / 10,230): +112 |
+| Merged fills / fallbacks | 56 / same list | 56 / same list |
+| `dock_001` Merge False Outline score | 211 px (faces) | 1,145.5 px (faces) |
+| `check_geometry` offenders | 0 | 0 |
+| Between-keyframe segments / offending pairs | 78,580 / 26 | 81,591 / 37 |
+
+All 11 new segment offenders are `dock_002/m`, whose merged outline became a 26-vertex
+cut shape: worst 3.30 px at frame 26.5. Every other offender is identical.
+
+**Ray-cast audit** (31 frames, 93,000 sampled px; the old file re-audited reproduces
+1,019 exactly): **1,019 → 1,005**. Overlap pixels available 4,481,087 → 4,471,737.
+Errors involving `dock_001` or `dock_002`: 80 → 54 — `dock_002/e16` over `dock_001`
+14 → 0, `soyuz_005/m` over `dock_001` 18 → 8, `dock_001/c14_0` over `apollo_024` 3 → 0,
+`dock_000/m` and `dock_003/m` over `dock_001` −4 and −3. New: `dock_001/c15_0` (the cut
+ring) over `apollo_024`, 17 px across 11 frames, measured delta 0.0 — the ring lies on the
+cone's surface and takes the coplanar "lines on top" rule. The large faces named as the
+worst errors do not move, their geometry being untouched: `apollo_003/f1` over
+`apollo_002` 76 → 78, `apollo_002/f11` over `apollo_003` 92 → 94, `apollo_013/m` over
+`apollo_003` 85 → 86, `apollo_018.013/m` over `apollo_003` 27 → 26; `apollo_002/f22` over
+`apollo_001` 3 → 0. Largest unrelated shift: `apollo_000/m` over `apollo_002` 88 → 110.
+
+**Nicks** (31 frames, 5583384 ordering): visible 1,403.8 → 1,396.5 px; all 19,060.8 →
+18,764.0 px.
+
+**The joint at frame 20, ray cast** (every `dock_001` line in the joint, `joint_truth3.py`,
+0.05 margin): drawn but hidden 3.0 → 0 px; painted over but visible 28.0 → 1.5 px. The
+line that sat 0.04 inside the cone no longer exists; the cut ring is drawn and seen.
+
+Close-ups (`out/bool-compare/closeups.png`): the specks of the hidden line are gone at
+0.77, 0.83 and 1.00 s and a clean double ring marks where the module meets the cone; the
+module box's top edge, thinned on its right half before, is solid. Frames 1, 4, 5, 16, 22
+and 27 around the named errors look the same before and after.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

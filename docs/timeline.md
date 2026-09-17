@@ -173,3 +173,8 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   sliver thin a whole edge). A touch is now priced by the line it would really uncover,
   and the result is better than the pushed version on every measure.
   [Audits §17](audits.md#17-the-joint-line-a-touch-priced-by-what-it-would-really-show).
+- **17 September, later.** The user applied a Boolean so the docking parts stop
+  intersecting. Measured at the same commit: ray-cast errors 1,019 → 1,005, those
+  involving the docking parts 80 → 54, the joint clean by the ray cast; +112 elements and
+  11 new between-keyframe offenders, all on the reshaped `dock_002`. The big crossing faces
+  elsewhere are untouched, and so are their errors. [Audits §18](audits.md#18-the-docking-joint-after-the-users-boolean).
