@@ -178,3 +178,16 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   involving the docking parts 80 → 54, the joint clean by the ray cast; +112 elements and
   11 new between-keyframe offenders, all on the reshaped `dock_002`. The big crossing faces
   elsewhere are untouched, and so are their errors. [Audits §18](audits.md#18-the-docking-joint-after-the-users-boolean).
+- **10 October.** A month of finished work that existed only in working trees goes in:
+  the player that draws a merged fill's rings as subpaths (`lerpa@f7da28a`, with the
+  guard it never had), the site's vest re-theme and re-baked hero, and a
+  `.assetsignore` so 8 MB of lab output stops being part of lerpafiles.com. Two
+  measurement tools lost with a scratch directory are rebuilt into `scripts/`
+  (`geometry_signature.py`, `measure_line_truth.py`); the first immediately shows the
+  Apollo blend has been edited since `ba4b8dd`, so §18's before/after can no longer be
+  re-run from disk. Then the interleaving selector is measured against the breaker
+  that replaced the one it lost to, and the September verdict reverses: 196 → 87 wrong
+  pixels, better than the hand split, for +59% elements. The user reports the engine
+  bell as see-through; it turns out to be two of the four largest errors in the scene,
+  both `measured wrong`, and splitting clears them.
+  [Audits §19](audits.md#19-the-interleaving-selector-measured-again-against-the-new-breaker).

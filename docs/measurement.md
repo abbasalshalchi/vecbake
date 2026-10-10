@@ -22,6 +22,8 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `scripts/screen_surface_batch.py` | `capture`: pickle the ordering pass's input for chosen frames. `replay`: run two `order.py` files on captured frames and **fail if any rank or stat differs**, with timings. `audit`: the Apollo screening audit, `--arm triangle` (nothing split) or `--arm split` (`apollo_003` face by face), writing `summary.json` | Replay: exact equivalence. Audit: yes | `blender -b apollo-soyuz.blend --python scripts/screen_surface_batch.py -- audit --arm split --out out/…`; replay runs in the bundled Python, no Blender |
 | `scripts/check_outline_segments.py` | Merged-outline and chain **segments** at ¼, ½, ¾ against the object's projected edges — `check_geometry` grades points only, and a ring joining right points in the wrong order passes it | Yes | `blender -b scene.blend --python scripts/check_outline_segments.py -- <bake.preview.html>` |
 | `scripts/test_interleave.py`, `interleave_lab.py`, `check_interleave_evidence.py` | The interleaving split selector on known fixtures (`--legacy` must fail); Blender ray casts of its saved witnesses | Lab: yes; witnesses: yes | See [audits.md §7](audits.md#7-interleaving-selector-first-attempt) |
+| `scripts/measure_line_truth.py` | Both ways a stroke can disagree with the scene: **covered but visible** (a nick -- painted, then painted over, with nothing really in front of its own body) and **drawn but hidden** (a stray). Depth-only test, 0.05 margin | **Yes** | `blender -b scene.blend --python scripts/measure_line_truth.py -- --out out/lines/x.json [--frames 20 --parts dock_001]`; `--compare a.json b.json` |
+| `scripts/geometry_signature.py` | What is in a .blend: per-object mesh hash, vertex and face counts, transform, modifiers, and whether anything is left unapplied. Reads geometry-node inputs from both their 5.1 and 5.2 homes | Exact | `blender -b scene.blend --python scripts/geometry_signature.py -- --out sig.json`; `--compare before.json after.json` |
 | `scripts/measure_subframe.py` | A merged outline against Blender's true silhouette at subframes | **Yes** | `T_TAG`, `T_NAMES` env vars |
 | `scripts/fit_orbit_depth.py` | Per-node camera distance `d² = A + B cos θ + C sin θ` for an orbit or an arc | Exact for a rigid orbit | `arc_degrees` for an arc |
 | Bake stats | `order_constraints`, `order_cycle_breaks`, `order_constraints_dropped`, `order_assertions_lost`, `merged_gap_*`, `shading_angle_guessed` | Diagnostics | In every bake's report |
@@ -30,8 +32,21 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `lerpa-website/public/_lab.html` | Rasterises one group's fills with the shipping renderer | — | `?src=` |
 
 Grade occlusion by the audit, position by `check_geometry`, outline shape by the
-subframe probe. Read `validate_bake` as "how far the order strays from its own
-evidence", not as correctness.
+subframe probe, lines by `measure_line_truth`. Read `validate_bake` as "how far
+the order strays from its own evidence", not as correctness. Before blaming a
+code change for a difference between two bakes, run `geometry_signature` on both
+.blend files and rule the scene out.
+
+### Keep the tool, not just the number
+
+The measurements in [audits.md](audits.md) sections 15-18 were taken with scripts
+written in a session scratch directory, which was cleaned. The numbers survived in
+these documents and the tools did not, so none of those runs could be repeated --
+and a number nobody can repeat is a claim, which is the one thing this page exists
+to prevent. `measure_line_truth.py` and `geometry_signature.py` are rebuilds of
+two of them, written on 2026-10-10 against the behaviour the sections describe.
+A measurement worth writing down is worth committing the tool for, in `scripts/`,
+the same day.
 
 ### Audit sizes
 

@@ -704,6 +704,22 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **The engine bell looks see-through** (`apollo_000`; reported by the user on the
+  preview, 2026-10-10). **Understood, not fixed.** `apollo_001`'s ring and the
+  octagon edge are drawn across the bell's neck: of 618 dark pixels in a box on the
+  neck, 323 are `apollo_001`'s and 38 are `apollo_002`'s. The ray cast has it as two
+  of the four largest errors in the scene — `apollo_000/m` over `apollo_001` 18 px
+  and over `apollo_002` 18 px — and diagnoses both as **measured wrong**, not a
+  dropped constraint. `apollo_000` is a cup (see §11 below), so its inside is far
+  and its rim near, and `apollo_001` sits in its mouth: in front of part of it and
+  behind the rest. One rank per merged body cannot say that, and no spending rule
+  reaches it. Splitting does: in the interleaving arm the bell's errors go 36 px → 2.
+  `apollo_000` over `apollo_002` was already in the record and growing (67 → 88 →
+  110 across §15 and §18); `apollo_000` over `apollo_001` was not written down
+  anywhere before this. See [audits.md §19](audits.md#19-the-interleaving-selector-measured-again-against-the-new-breaker).
+  Note when reproducing: hiding a part in the preview re-fits the view unless Crop
+  is on, which moves everything and makes a fixed sample box meaningless.
+
 - **Dashed seam rings around the docking module** (found 2026-09-16; marked in
   `out/preview-a99a6ff/dashed_rings.png`). **Fixed 2026-09-16.** Ring 1
   `dock_001/c12_0` (cone joint), ring 2 `dock_001/c310_0` (Soyuz end; the solid line
@@ -815,11 +831,18 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 - **A light-grey spike at the joint below the docking module** in the same frame; owned
   by one of `dock_004 / 007 / 008 / 010–015` (it disappears with them hidden). Not yet
   isolated.
-- **What is left of `apollo_003` over its fittings** after the surface read: 289 wrong
-  pixels on the screening audit, 214 with `apollo_003` drawn face by face. Splitting
-  still pays; *which* bodies to split has no justified criterion yet (the 50% depth
-  share has no knee; the first interleaving selector split 39 bodies and scored 342 —
-  [audits.md §7](audits.md#7-interleaving-selector-first-attempt)). See [audits.md](audits.md#5-triangle-read-with-and-without-splitting-apollo_003).
+- **Which bodies to draw face by face.** Splitting pays, and as of 2026-10-10 the
+  interleaving selector is the best rule measured: re-run against the cheapest-on-
+  screen breaker it scores **87 wrong pixels against 196 for nothing split and 157
+  for `apollo_003` split by hand**, where in September it scored 342 against 289 and
+  214. Its one catastrophic cycle break (261 px) was the old breaker's, and is gone.
+  What blocks it now is cost, not correctness: 42 bodies, 12,099 faces, **+59%
+  elements and 2.3x the bake**. Also measured there, against the standing guess:
+  splitting *one* side of a contradicting pair made that pair worse (`apollo_002`
+  over `apollo_003` 77 → 90), and splitting both took it to 20. Open question is now
+  how few bodies carry most of the gain — four pairs between five bodies are 141 of
+  the 196 px. [audits.md §19](audits.md#19-the-interleaving-selector-measured-again-against-the-new-breaker),
+  [§7](audits.md#7-interleaving-selector-first-attempt), [§5](audits.md#5-triangle-read-with-and-without-splitting-apollo_003).
 - **Three parts lose one frame each** to a boundary walk that returns nothing
   (part_192, part_170, part_158 — August 23).
 - **The butterfly page scrolls sideways** at narrow widths: rotated `.tilt` players

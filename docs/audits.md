@@ -1081,6 +1081,94 @@ and 27 around the named errors look the same before and after.
 
 ---
 
+## 19. The interleaving selector, measured again against the new breaker
+
+10 October. [Section 7](#7-interleaving-selector-first-attempt) rejected the
+interleaving split selector on 13 September: 342 wrong pixels against 289 for
+nothing split and 214 for `apollo_003` split by hand. Its own reading named the
+reason — **one error was 261 of those 342**, a single cycle break where the
+breaker gave up the constraint that mattered.
+
+That breaker was replaced on 16 September by one that spends the pair covering
+the least screen ([section 15](#15-drawing-order-the-blinking-thruster-and-the-see-through-parts)).
+The selector was never re-run against it. Re-running it is the point of this
+section, and the verdict reverses.
+
+**Setup.** `scripts/screen_surface_batch.py audit`, three arms back to back on
+one machine, nothing else of ours running. Screening frames 0, 15, 30 at
+budget 3000, so 9,000 sampled overlap pixels. Code at `ba4b8dd`. The harness
+forces its own settings (crease 30 degrees, merge on, one ordering worker), the
+same for every arm.
+
+**These numbers are not comparable with section 7's.** Both the code and the
+model have moved: `geometry_signature.py` has `dock_001` at a different vertex
+hash and `apollo_018.013`/`.015` in different places since `ba4b8dd` was
+measured, and `apollo-soyuz.blend1` is no longer the pre-Boolean save. The three
+arms here share a blend and a commit, so they compare with each other and with
+nothing else.
+
+| | Nothing split | `apollo_003` by hand | **Interleaving rule** |
+|---|---|---|---|
+| Wrong pixels | 196 | 157 | **87** |
+| Rate | 2.178% | 1.744% | **0.967%** |
+| Errors | 48 | 30 | 34 |
+| measured wrong | 23 | 14 | 19 |
+| order violated | 18 | 10 | 10 |
+| no constraint | 3 | 3 | 2 |
+| occluder not drawn there | 2 | 2 | 0 |
+| Errors involving `apollo_003` | 17 (121 px) | 6 (98 px) | **8 (34 px)** |
+| Elements | 17,579 | 17,582 | **27,924 (+59%)** |
+| Bake CPU | 1,069 s | 1,646 s | 2,455 s |
+| Whole audit | 2,747 s | 2,921 s | 4,798 s |
+
+Wrong pixels by pair, the ones that move:
+
+| Pair | Nothing split | `apollo_003` split | Interleaving |
+|---|---|---|---|
+| `apollo_002` over `apollo_003` | 77 | **90** | 20 |
+| `apollo_013` over `apollo_003` | 28 | 5 | 0 |
+| `apollo_000` over `apollo_001` | 18 | 14 | **0** |
+| `apollo_000` over `apollo_002` | 18 | 17 | **0** |
+| `apollo_024` over `apollo_003` | 6 | 0 | 0 |
+| `apollo_002` over `apollo_001` | 0 | 0 | 18 (new) |
+| `apollo_003` over `apollo_002` | 0 | 0 | 11 (new) |
+| `soyuz_029` over `soyuz_031` | 1 | 1 | 6 (new) |
+
+**Reading.**
+
+- **The rule now wins, by a lot.** 196 to 87 wrong pixels, 56% gone, and better
+  than the hand split it lost to last time. The selection itself did not change:
+  42 picks of 58 candidates against 39 last time, and its criterion is untouched.
+  What changed is what the breaker does with the cycles splitting creates.
+- **Section 7's single catastrophic break is gone.** `apollo_003/f1` against
+  `apollo_002` cost 261 px there; the same pair costs 11 here. Splitting removes
+  cycles and creates new ones, and the old breaker priced a new one by its depth
+  gap and spent a constraint worth 261 px. The cheapest-on-screen rule prices that
+  pair by the screen the two share, which is large, so it spends something else.
+- **Splitting one side of a pair can make it worse.** `apollo_002` over
+  `apollo_003` goes 77 to 90 when only `apollo_003` is split, and to 20 when both
+  are. That is evidence against section 7's open question 1 — "split one side of a
+  contradicting pair, not both" — at least as a general rule. A pair needs enough
+  ranks on *both* sides to describe a wrap; giving one side more and leaving the
+  other at one rank moved the error rather than removing it.
+- **`apollo_000`, the engine bell, is fixed by splitting.** 36 px involved to 2.
+  The user reported it on 10 October as looking see-through, and it is the clearest
+  case of the whole class: the bell is a cup ([bugs.md](bugs.md)), so its inside is
+  far, its rim is near, and `apollo_001` sits in its mouth — in front of part of it
+  and behind the rest. One rank cannot say that.
+- **The cost is still the objection.** +59% elements and 2.3x the bake CPU, plus
+  209 s of CPU in the selector itself. 12,099 faces replace 42 merged fills;
+  `soyuz_037` alone brings 1,520. This is what keeps it from being a default, not
+  the pixels any more.
+
+**Where that leaves it.** The rule is no longer wrong, it is expensive. The open
+question is no longer "does more granularity help" — it does, measurably — but
+"how few bodies can be split for most of the 109 pixels". The selector picks 42;
+the four worst pairs account for 141 px of the 196, between five bodies
+(`apollo_000`, `apollo_001`, `apollo_002`, `apollo_003`, `apollo_013`).
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
