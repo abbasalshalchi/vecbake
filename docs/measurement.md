@@ -22,7 +22,6 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `scripts/screen_surface_batch.py` | `capture`: pickle the ordering pass's input for chosen frames. `replay`: run two `order.py` files on captured frames and **fail if any rank or stat differs**, with timings. `audit`: the Apollo screening audit, `--arm triangle` (nothing split) or `--arm split` (`apollo_003` face by face), writing `summary.json` | Replay: exact equivalence. Audit: yes | `blender -b apollo-soyuz.blend --python scripts/screen_surface_batch.py -- audit --arm split --out out/…`; replay runs in the bundled Python, no Blender |
 | `scripts/check_outline_segments.py` | Merged-outline and chain **segments** at ¼, ½, ¾ against the object's projected edges — `check_geometry` grades points only, and a ring joining right points in the wrong order passes it | Yes | `blender -b scene.blend --python scripts/check_outline_segments.py -- <bake.preview.html>` |
 | `scripts/test_interleave.py`, `interleave_lab.py`, `check_interleave_evidence.py` | The interleaving split selector on known fixtures (`--legacy` must fail); Blender ray casts of its saved witnesses | Lab: yes; witnesses: yes | See [audits.md §7](audits.md#7-interleaving-selector-first-attempt) |
-| `scripts/measure_line_truth.py` | Both ways a stroke can disagree with the scene: **covered but visible** (a nick -- painted, then painted over, with nothing really in front of its own body) and **drawn but hidden** (a stray). Depth-only test, 0.05 margin | **Yes** | `blender -b scene.blend --python scripts/measure_line_truth.py -- --out out/lines/x.json [--frames 20 --parts dock_001]`; `--compare a.json b.json` |
 | `scripts/geometry_signature.py` | What is in a .blend: per-object mesh hash, vertex and face counts, transform, modifiers, and whether anything is left unapplied. Reads geometry-node inputs from both their 5.1 and 5.2 homes | Exact | `blender -b scene.blend --python scripts/geometry_signature.py -- --out sig.json`; `--compare before.json after.json` |
 | `scripts/measure_subframe.py` | A merged outline against Blender's true silhouette at subframes | **Yes** | `T_TAG`, `T_NAMES` env vars |
 | `scripts/fit_orbit_depth.py` | Per-node camera distance `d² = A + B cos θ + C sin θ` for an orbit or an arc | Exact for a rigid orbit | `arc_degrees` for an arc |
@@ -32,10 +31,47 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `lerpa-website/public/_lab.html` | Rasterises one group's fills with the shipping renderer | — | `?src=` |
 
 Grade occlusion by the audit, position by `check_geometry`, outline shape by the
-subframe probe, lines by `measure_line_truth`. Read `validate_bake` as "how far
-the order strays from its own evidence", not as correctness. Before blaming a
+subframe probe. Read `validate_bake` as "how far the order strays from its own
+evidence", not as correctness. Before blaming a
 code change for a difference between two bakes, run `geometry_signature` on both
 .blend files and rule the scene out.
+
+### Two traps found rebuilding the nick metric, 2026-10-10
+
+The metric behind "visible nicks" in [audits.md](audits.md) sections 16-18 was lost
+with its scratch directory. Rebuilding it failed twice, and both failures are worth
+keeping because either would have produced a confident number.
+
+**An element's `depth` is not a depth.** `ir.py` called it "camera-space distance",
+and it starts as one, but what is emitted is the rank `order.resolve` returned --
+a position in a total order (`bake.py`, "Resolving occlusion"). Comparing it with a
+ray cast is meaningless. The real per-pixel depths are in the items handed to
+`order.resolve`, reachable by spying on it the way `audit.run` does and reading
+them with `order._depths_at`. Those *do* agree with `_Truth`: on a captured Apollo
+frame, every line whose own object the ray hits matches to +-0.000 units. The
+comment is corrected.
+
+**`_Truth.surface_of` answers a different question.** It returns an object's
+nearest surface, which is what the audit wants for "was this pixel painted with
+the wrong thing". For "was this line visible", it reads every line on the far side
+of its own body -- correctly hidden by its own skin -- as visible. That version
+reported 409,788 nicks on the Apollo clip where the figure is in the low thousands.
+
+**And the reason the rebuild is still not committed.** Both halves of the measure
+rest on `audit._paint`, which is not a model of what the player draws:
+
+- `_element_mask` pads a stroke to `width/2 + 0.35` -- 2.3 px for a 1.6 px stroke --
+  and `top` is built from the same padded masks, so neighbouring elements claim each
+  other's fringes and short edges come back 100% covered.
+- `_paint` draws fills as polygons only. The player also strokes **every fill in its
+  own colour at one device pixel or more**, to close the cracks between abutting
+  faces. That hairline stroke is the mechanism that nicks a line. A nick metric built
+  on this painter cannot see the thing it exists to measure.
+
+So a faithful nick metric needs a painter that draws what the player draws, at the
+widths it draws them. Until there is one, grade lines by the audit, which asks a
+question `_paint` can answer, and treat section 16-18's nick figures as a record of
+runs that can no longer be repeated.
 
 ### Keep the tool, not just the number
 

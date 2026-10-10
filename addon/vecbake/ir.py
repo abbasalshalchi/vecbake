@@ -86,7 +86,14 @@ class Element:
     edge_color: object = None
     geo: Track = None          # vector track, flat xy pairs, pixel space
     opacity: Track = None      # scalar 0..1
-    depth: Track = None        # scalar, camera-space distance (bigger = further)
+    # Paint order, bigger = painted earlier. It starts life as a camera-space
+    # distance -- that is where `seed` comes from -- but what is emitted is the
+    # rank `order.resolve` returned for the frame (bake.py, "Resolving
+    # occlusion"), which is a position in a total order and not a distance in
+    # any unit. Do not compare it with a ray cast: a tool that did read every
+    # line on the far side of its own body as visible, by three hundred times.
+    # The real per-pixel depths live in the items handed to `order.resolve`.
+    depth: Track = None        # scalar, paint order (bigger = further back)
     shade: Track = None        # scalar 0..1 multiplied into `color` (fills)
     # Static per-vertex bool: does the path bend smoothly through this vertex?
     # Not a Track -- deciding it per frame would let the shape pop as the
