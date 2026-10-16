@@ -15,6 +15,7 @@ learned, and what is settled — so none of it has to be rediscovered.
 | [gotchas.md](gotchas.md) | Blender, Windows, the browser or npm is behaving strangely |
 | [decisions.md](decisions.md) | You want to know why the product, name, licence, look or hero is the way it is — and the working principles |
 | [progress-2026-09-13.md](progress-2026-09-13.md) | You are picking up the unfinished paint-order work |
+| [launch.md](launch.md) | You want to know what stands between the project and a sale, as of 16 October |
 
 ## Where else the history lives
 
