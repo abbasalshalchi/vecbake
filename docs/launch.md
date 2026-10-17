@@ -4,6 +4,11 @@ The question was what stands between VecBake/Lerpa and its first sale. This page
 records what was found, from the repos, npm and the live site, and the order of work
 proposed. Everything in §1 was checked on the day; §2 and §3 are judgement.
 
+> **Correction, 17 October.** §2 and §3 answered the wrong question. The user's aim is
+> the engine: good enough, as an engine, that people pay for what it makes. §1's facts
+> stand — the stale npm player in particular is an engine-output fault a buyer sees —
+> but the order in §3 was not adopted.
+
 ---
 
 ## 1. Where things stand
