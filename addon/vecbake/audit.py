@@ -212,7 +212,7 @@ class _Truth:
                                                   width, height)
         self.unproject = np.linalg.inv(mvp)
         self.objs = {o.name: o.evaluated_get(depsgraph)
-                     for o in scene.objects if o.type == "MESH"}
+                     for o in scene.objects if bake_mod.drawable(o)}
 
     def _depth(self, point):
         p = np.asarray(point, dtype=np.float64)

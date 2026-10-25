@@ -31,6 +31,7 @@ _ns = {"__name__": "check_geometry"}
 exec(open(os.path.join(_here, "check_geometry.py"), encoding="utf-8").read(), _ns)
 load, _decode, _sample = _ns["load"], _ns["_decode"], _ns["_sample"]
 _projected, _seg_dist, _bake = _ns["_projected"], _ns["_seg_dist"], _ns["_bake"]
+_drawable = _ns["_drawable"]
 
 FRACTIONS = np.array([0.25, 0.5, 0.75])
 
@@ -80,7 +81,7 @@ def run(path, verbose=True, limit=15, subframe=0.0):
         view, mvp = _bake.camera_matrices(scene, cam, dg, w, h)
         for name, items in by_obj.items():
             obj = bpy.data.objects.get(name)
-            if obj is None or obj.type != "MESH":
+            if not _drawable(obj):
                 continue
             px, edges, *_ = _projected(obj, dg, view, mvp, w, h)
             if not len(edges):

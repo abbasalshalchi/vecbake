@@ -48,6 +48,10 @@ try:                                   # installed as an extension
 except ImportError:                    # loaded straight from the add-on folder
     from vecbake import bake as _bake
 
+# What the baker draws. An install from before curves were baked has no
+# `drawable`, and drew meshes only, so that is the right answer for its files.
+_drawable = getattr(_bake, "drawable", lambda obj: obj is not None and obj.type == "MESH")
+
 
 def load(path):
     """The scene payload, out of an .svg, a .preview.html or a .json."""
@@ -113,8 +117,17 @@ def _seg_dist(p, a, b):
 
 def _projected(obj, dg, view, mvp, w, h):
     """Projected points plus the index arrays the element ids refer to."""
+    # to_mesh, not `.data`: a curve's evaluated data is the Curve, and its
+    # drawn geometry -- what the element ids index -- is the mesh it makes.
     ev = obj.evaluated_get(dg)
-    me = ev.data
+    me = ev.to_mesh()
+    try:
+        return _arrays(obj, me, view, mvp, w, h)
+    finally:
+        ev.to_mesh_clear()
+
+
+def _arrays(obj, me, view, mvp, w, h):
     nv = len(me.vertices)
     co = np.empty(nv * 3, dtype=np.float64)
     me.vertices.foreach_get("co", co)
@@ -196,7 +209,7 @@ def run(path, frames=None, tol=None, camera=None, verbose=True):
         view, mvp = _bake.camera_matrices(scene, cam, dg, w, h)
         for name, items in by_obj.items():
             obj = bpy.data.objects.get(name)
-            if obj is None or obj.type != "MESH":
+            if not _drawable(obj):
                 skipped += len(items)
                 continue
             px, edges, ls, lt, lv = _projected(obj, dg, view, mvp, w, h)

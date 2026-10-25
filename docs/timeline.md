@@ -205,3 +205,10 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   bake time that follows input faces whether in shot or not. The 180k-face doughnut
   had not finished ordering after an hour and a half.
   [Audits §20](audits.md#20-the-cross-model-scorecard).
+- **25 October, later.** The first class off the scorecard: curves, text and surfaces
+  bake, from the same evaluated mesh every other read already used. A controlled scene
+  bakes identically as curves and as their own meshes, element for element; flashbang's
+  see-through curves go, 369 → 134 wrong pixels; Apollo and the Voyager come back as the
+  identical drawing. The doughnut finished: every pixel right, 160,287 elements, 124 MB —
+  none of its nine bodies merged, the multi-ring carry problem on the most-made model in
+  Blender. [Audits §21](audits.md#21-curves-text-and-surfaces-baked).

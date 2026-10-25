@@ -67,7 +67,10 @@ against 5.1).
 
 ## Use
 
-Set a camera animation, pick your meshes, press **Bake & Export**. **Analyze**
+Set a camera animation, pick your objects, press **Bake & Export**. Meshes,
+curves, text and surfaces all bake, each from the geometry Blender evaluates for
+it -- a bevelled curve or an extruded title comes out exactly as the same shape
+converted to a mesh would (`scripts/test_curve_objects.py`). **Analyze**
 runs the same bake without writing anything and reports the element count —
 use it to check you are inside your budget before committing.
 

@@ -55,18 +55,46 @@ class BakeError(Exception):
 # scene inspection helpers
 # ---------------------------------------------------------------------------
 
+# Object types whose evaluated geometry is a mesh: everything the baker reads
+# comes from `evaluated_get(dg).to_mesh()`, which a curve, a text and a surface
+# answer exactly as a mesh does. Taking meshes only dropped them silently --
+# 3,072 of a flashbang scene's 5,221 faces were bevelled curves, and the ray
+# cast saw straight through where they should have been.
+DRAWABLE = {"MESH", "CURVE", "FONT", "SURFACE"}
+
+
+def drawable(obj) -> bool:
+    return obj is not None and obj.type in DRAWABLE
+
+
+def _has_geometry(obj, depsgraph) -> bool:
+    """Whether the object evaluates to any vertices at all.
+
+    A curve with no splines evaluates to no mesh, and an object with nothing
+    to draw has no plan to make; asked of every type, not only curves.
+    """
+    ev = obj.evaluated_get(depsgraph)
+    try:
+        me = ev.to_mesh()
+        return me is not None and len(me.vertices) > 0
+    finally:
+        ev.to_mesh_clear()
+
+
 def collect_objects(context, settings: BakeSettings):
     if settings.objects:
         objs = list(settings.objects)
     else:
-        objs = [o for o in context.scene.objects if o.type == "MESH"]
+        objs = [o for o in context.scene.objects if drawable(o)]
         try:
             objs = [o for o in objs if o.visible_get()]
         except RuntimeError:
             pass  # no view layer (background mode) -- take them all
-    objs = [o for o in objs if o.type == "MESH"]
+    depsgraph = context.evaluated_depsgraph_get()
+    objs = [o for o in objs if drawable(o) and _has_geometry(o, depsgraph)]
     if not objs:
-        raise BakeError("No mesh objects to bake. Select some meshes or make them visible.")
+        raise BakeError("Nothing to bake. Select some meshes, curves, text or surfaces, "
+                        "or make them visible.")
     return objs
 
 

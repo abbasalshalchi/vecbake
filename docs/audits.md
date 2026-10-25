@@ -1206,8 +1206,8 @@ Table: `python scripts/scorecard_table.py out/scorecard <names>`.
 pixels, 2.178%, 48 errors** — 23 measured wrong, 18 order violated, 3 no constraint —
 the same as §19's nothing-split arm in every column. Each run also re-grades its logged
 gaps at its own margin, and reproduces the audit's own count every time. Apollo ran
-before the settings reset was added, so it kept its saved stroke and fill colours;
-nothing else it saves lies outside the applied set.
+before the settings reset was added; rerun with it (and with the fixed audit rays)
+it is the identical drawing, colours included, and the identical 196.
 
 **Five measurement faults, found and fixed before any of this could be read.** Each
 gave a plausible number. Written up in
@@ -1224,48 +1224,50 @@ the one in the add-on is in [bugs.md](bugs.md#the-audit-cast-its-rays-through-th
 
 **Results.**
 
-| | apollo | voyager | creature | flashbang | celltower | discoball |
-|---|---|---|---|---|---|---|
-| Status | done | done | done | done | done | done |
-| Camera | own move | own move | orbit, new camera | orbit, artist's camera | own move | orbit, artist's camera |
-| Frames | [1, 31] | [1, 60] | [1, 31] | [1, 31] | [1, 24] | [1, 31] |
-| Audit margin | 0.0500 | 0.0241 | 0.0011 | 0.0090 | 0.0034 | 0.0161 |
-| Elements | 17,579 | 10,592 | 5,155 | 1,414 | 1,394 | 9,749 |
-| Bake CPU, s | 996 | 1,960 | 270 | 73 | 66 | 159 |
-| File, MB raw / gz | 11.11 / 1.69 | 14.62 / 3.10 | 3.51 / 0.61 | 1.18 / 0.28 | 1.25 / 0.29 | 4.87 / 0.90 |
-| Peak memory, MB | 1,711 | 1,507 | 1,480 | 485 | 421 | 659 |
-| Overlap px tested | 9,000 | 9,000 | 4,365 | 9,000 | 9,000 | 3,041 |
-| Wrong px (own margin) | 196 | 162 | 0 | 369 | 40 | 0 |
-| Wrong rate | 2.178% | 1.800% | 0.000% | 4.100% | 0.444% | 0.000% |
-| Wrong px at 0.05 | 196 | 132 | 0 | 266 | 24 | 0 |
-| Distinct errors | 48 | 61 | 0 | 58 | 19 | 0 |
-|   measured wrong | 23 (150 px) | 15 (90 px) | 0 | 22 (68 px) | 5 (9 px) | 0 |
-|   order violated | 18 (36 px) | 31 (36 px) | 0 | 6 (68 px) | 5 (6 px) | 0 |
-|   no constraint | 3 (4 px) | 4 (5 px) | 0 | 0 | 0 | 0 |
-|   occluder not drawn there | 2 (3 px) | 7 (27 px) | 0 | 27 (223 px) | 9 (25 px) | 0 |
-| Geometry offenders | 0 | 0 | 0 | 0 | 0 | 0 |
-|   over 10 px | 0 | 0 | 0 | 0 | 0 | 0 |
-|   worst, px | 1.04 | 1.10 | 1.11 | 1.04 | 1.05 | 1.11 |
-| Segments @0.5 offending | 39 | 173 | 14 | 49 | 189 | 0 |
-|   over 3 px | 2 | 22 | 2 | 1 | 4 | 0 |
-|   over 10 px | 0 | 1 | 0 | 0 | 0 | 0 |
-|   worst, px | 3.3 | 15.8 | 6.0 | 3.1 | 4.8 | 0.0 |
-| Merged fills | 58 | 266 | 5 | 2 | 9 | 0 |
-|   fell back | 33 | 56 | 2 | 5 | 4 | 2 |
-| Cycle breaks | 1,753 | 2,472 | 3 | 645 | 377 | 771 |
+| | apollo | voyager | creature | flashbang | celltower | discoball | doughnut |
+|---|---|---|---|---|---|---|---|
+| Status | done | done | done | done | done | done | done |
+| Camera | own move | own move | orbit, new camera | orbit, artist's camera | own move | orbit, artist's camera | orbit, artist's camera |
+| Frames | [1, 31] | [1, 60] | [1, 31] | [1, 31] | [1, 24] | [1, 31] | [1, 31] |
+| Audit margin | 0.0500 | 0.0241 | 0.0011 | 0.0090 | 0.0034 | 0.0161 | 0.0031 |
+| Elements | 17,579 | 10,592 | 5,155 | 1,414 | 1,394 | 9,749 | 160,287 |
+| Bake CPU, s | 996 | 1,960 | 270 | 73 | 66 | 159 | 8,190 |
+| File, MB raw / gz | 11.11 / 1.69 | 14.62 / 3.10 | 3.51 / 0.61 | 1.18 / 0.28 | 1.25 / 0.29 | 4.87 / 0.90 | 123.75 / 21.51 |
+| Peak memory, MB | 1,711 | 1,507 | 1,480 | 485 | 421 | 659 | 7,444 |
+| Overlap px tested | 9,000 | 9,000 | 4,365 | 9,000 | 9,000 | 3,041 | 9,000 |
+| Wrong px (own margin) | 196 | 162 | 0 | 369 | 40 | 0 | 0 |
+| Wrong rate | 2.178% | 1.800% | 0.000% | 4.100% | 0.444% | 0.000% | 0.000% |
+| Wrong px at 0.05 | 196 | 132 | 0 | 266 | 24 | 0 | 0 |
+| Distinct errors | 48 | 61 | 0 | 58 | 19 | 0 | 0 |
+|   measured wrong | 23 (150 px) | 15 (90 px) | 0 | 22 (68 px) | 5 (9 px) | 0 | 0 |
+|   order violated | 18 (36 px) | 31 (36 px) | 0 | 6 (68 px) | 5 (6 px) | 0 | 0 |
+|   no constraint | 3 (4 px) | 4 (5 px) | 0 | 0 | 0 | 0 | 0 |
+|   occluder not drawn there | 2 (3 px) | 7 (27 px) | 0 | 27 (223 px) | 9 (25 px) | 0 | 0 |
+| Geometry offenders | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+|   over 10 px | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+|   worst, px | 1.04 | 1.10 | 1.11 | 1.04 | 1.05 | 1.11 | 1.07 |
+| Segments @0.5 offending | 39 | 173 | 14 | 49 | 189 | 0 | 240 |
+|   over 3 px | 2 | 22 | 2 | 1 | 4 | 0 | 16 |
+|   over 10 px | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+|   worst, px | 3.3 | 15.8 | 6.0 | 3.1 | 4.8 | 0.0 | 3.5 |
+| Merged fills | 58 | 266 | 5 | 2 | 9 | 0 | 0 |
+|   fell back | 33 | 56 | 2 | 5 | 4 | 2 | 10 |
+| Cycle breaks | 1,753 | 2,472 | 3 | 645 | 377 | 771 | 919 |
 
 Bake CPU is the whole process with one ordering worker (the audit needs ordering in
 its own process to diagnose), so it is the engine's cost, not the wall time of a panel
-bake with the worker pool. Controls: the test shapes and the lab scene both run end
+bake with the worker pool — and on this machine it is good to about a factor of two:
+identical drawings have come back at 577 and 996 s, and at 1,960 and 4,218 s
+([measurement.md](measurement.md#machine-noise)). Read it for orders of magnitude. Controls: the test shapes and the lab scene both run end
 to end (64 s and 8 s); the shapes never overlap on screen, and the lab's 12.0% is its
 crossing pair, which one rank cannot get right by construction.
 
 Bytes per element, raw / gzipped: Apollo 632 / 96, Voyager 1,380 / 292, creature 680 /
-119, flashbang 836 / 195, cell tower 898 / 209, disco ball 499 / 92. Voyager is twice
+119, flashbang 836 / 195, cell tower 898 / 209, disco ball 499 / 92, doughnut 772 / 134. Voyager is twice
 the others because its clip is twice as long. The creature and the disco ball overlap
 little on screen (4,365 and 3,041 pixels to test in three frames), so their zero wrong
-pixels say little about ordering; the cell tower, flashbang and the anchors each had
-over 260,000.
+pixels say little about ordering, and the doughnut's (49,808) little more; the cell
+tower, flashbang and the anchors each had over 260,000.
 
 **What fails, by how many models it reaches.**
 
@@ -1293,22 +1295,76 @@ over 260,000.
 5. **Curves and text are not baked** — 1 of 6 measured, structural. `collect_objects`
    takes meshes only, without a word. In flashbang that is 3,072 of 5,221 faces and 199
    of its 369 wrong pixels; without it flashbang would sit near Apollo's rate.
-   [bugs.md §12](bugs.md#12-open).
-6. **Bake time follows input faces, in shot or not.** The doughnut through its baking
+   **Fixed in [§21](#21-curves-text-and-surfaces-baked): flashbang 369 → 134.**
+6. **Smooth bodies with holes do not merge** — the doughnut, every one of its nine
+   bodies (above). One model, but it decides that model's file size, bake time and
+   memory outright, and a body with a hole is no rare shape: rings, handles, pipes,
+   gears seen at an angle.
+7. **Bake time follows input faces, in shot or not.** The doughnut through its baking
    camera drew one plane and took 1,036 s of CPU, sampling 180k faces it then culled
    off screen, twice (once to size outlines, once to bake), at ~11 s a frame.
 
 Clean everywhere: **every drawn point at every sampled frame is within 1.11 px of its
-true projection**, on all six bakes that finished.
+true projection**, on all seven bakes.
 
-**The doughnut did not finish in time for this write-up**, and that is its result.
-Through its rendering camera it sampled 31 frames twice in ~1,450 s, chained edges for
-~1,700 s, and was still resolving paint order at frame 13 of 31 after 5,246 s wall
-(4,965 s CPU), with frames slowing from ~75 s to ~480 s each as the orbit brought more
-of the scene in. Memory held at 3.5–4 GB. Whatever its pixels turn out to be, a
-smooth 180k-face scene is past what one ordering worker bakes in an afternoon — the
-first number on this page a buyer would hit before any of the others. Its row will be
-added when the run ends.
+**The doughnut is right and unshippable.** Through its rendering camera every
+pixel the audit tested is right and every drawn point is within 1.07 px, over
+1,673,427 point-sets. But it is **160,287 elements, 123.7 MB (21.5 MB gzipped)**, from
+**8,190 s of CPU** with 7.4 GB of memory at peak — because nothing merged. All nine
+bodies fell back to faces: each one refused by the carry test, and each one drawing
+1,022–20,687 px of visible false outline over the clip against the 160 px limit
+(`Torus.003` merged is 38.0 px off between keyframes, face by face 0.6). A torus's
+outline is two rings, and as the camera orbits the hole narrows, splits and closes:
+the multi-ring carry problem open since September ([bugs.md §12](bugs.md#12-open),
+"a half-grown ring"), here on every object of the most-made model in Blender. Face by
+face then makes everything after it expensive: 15.9 million ordering constraints a
+clip, ordering frames of 75–480 s on one worker.
+
+---
+
+## 21. Curves, text and surfaces baked
+
+25 October, the first class off §20's list. `collect_objects` took meshes only; it
+now takes `bake.DRAWABLE` — mesh, curve, text, surface — and drops, for every type
+alike, an object whose evaluated geometry has no vertices. Everything downstream
+already read `evaluated_get(dg).to_mesh()`, so nothing else in the baker changed. The
+audit's own-surface ray, both geometry checkers and the panel's pickers use the same
+rule; `check_geometry` reads the evaluated mesh instead of `.data`, which for a curve
+is the Curve. Bugs: [bugs.md §12](bugs.md#12-open).
+
+**Controlled scene first.** `scripts/test_curve_objects.py` builds a bevelled Bézier
+circle, an extruded two-letter text, a NURBS patch, a wire curve with no bevel and a
+curve with no splines, in front of a wall, under an orbiting camera. It bakes them,
+then replaces each with `bpy.data.meshes.new_from_object` of its evaluated self — same
+name, same transform channels, same order — and bakes again.
+
+| | Old code | New code |
+|---|---|---|
+| Elements, as curves / as meshes | 1 / 708 | 706 / 706 |
+| Elements that differ, sample for sample | — | **0** |
+| Ring / Title / Patch / Wire / Empty | 0 / 0 / 0 / 0 / 0 | 223 / 454 / 27 / 1 / 0 |
+| `check_geometry` on the curve bake | 9 point-sets | 4,884, 0 offenders, worst 0.34 px |
+| Audit sees the curve's own surface | no | yes |
+
+**Then the scenes.** Same harness and settings as §20.
+
+| | Flashbang before | Flashbang after | Apollo | Voyager |
+|---|---|---|---|---|
+| Elements | 1,414 | 2,597 | 17,579 → 17,579 | 10,592 → 10,592 |
+| Drawing vs before (`compare_bakes.py`) | — | +1,183 curve elements | **identical** | **identical** |
+| Wrong px (rate) | 369 (4.10%) | **134 (1.49%)** | 196 → 196 | 162 → 162 |
+| `occluder not drawn there` | 27 errors, 223 px | **0** | 2 → 2 | 7 → 7 |
+| Measured wrong / order violated | 68 / 68 px | 71 / 53 px | unchanged | unchanged |
+| Geometry offenders | 0 | 0 | 0 | 0 |
+| Segments @0.5 over 3 px | 1 | 1 (no curve element among them) | 2 → 2 | 22 → 22 |
+| File, MB raw / gz | 1.18 / 0.28 | 2.00 / 0.43 | unchanged | unchanged |
+
+**Reading.** The see-through class is gone from flashbang, and with it two thirds of
+its wrong pixels; what is left is ordering — 44 px of it the two coincident linked
+duplicates — and puts flashbang under Apollo's rate. The anchors hold only meshes, so
+any change to them would have been a regression; both are the same drawing, element for
+element and field for field, and grade the same. Apollo's rerun also ran the fixed audit rays of §20 and grades the same
+196, which settles that the ray fix does not move a hero audit.
 
 ---
 

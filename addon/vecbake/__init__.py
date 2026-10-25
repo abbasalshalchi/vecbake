@@ -42,10 +42,10 @@ def _shading_hint(context):
     report rather than offer. Objects disagreeing with each other is normal and
     is the point of the mode -- say so instead of picking one to display.
     """
-    objs = [o for o in getattr(context, "selected_objects", ()) if o.type == "MESH"]
+    objs = [o for o in getattr(context, "selected_objects", ()) if bake_mod.drawable(o)]
     if not objs:
         active = getattr(context, "active_object", None)
-        objs = [active] if active is not None and active.type == "MESH" else []
+        objs = [active] if bake_mod.drawable(active) else []
     if not objs:
         return "Angle comes from each object's own modifier"
 
@@ -79,9 +79,9 @@ class VECBAKE_PG_settings(PropertyGroup):
     source: EnumProperty(
         name="Source",
         items=[
-            ("VISIBLE", "Visible", "Every visible mesh in the scene"),
-            ("SELECTED", "Selected", "Selected meshes only"),
-            ("COLLECTION", "Collection", "Meshes in one collection"),
+            ("VISIBLE", "Visible", "Every visible mesh, curve, text and surface in the scene"),
+            ("SELECTED", "Selected", "The selected meshes, curves, texts and surfaces"),
+            ("COLLECTION", "Collection", "The meshes, curves, texts and surfaces in one collection"),
         ],
         default="VISIBLE",
     )
@@ -425,9 +425,9 @@ class VECBAKE_PG_settings(PropertyGroup):
     def to_bake_settings(self, context) -> BakeSettings:
         s = BakeSettings()
         if self.source == "SELECTED":
-            s.objects = [o for o in context.selected_objects if o.type == "MESH"]
+            s.objects = [o for o in context.selected_objects if bake_mod.drawable(o)]
         elif self.source == "COLLECTION" and self.collection:
-            s.objects = [o for o in self.collection.all_objects if o.type == "MESH"]
+            s.objects = [o for o in self.collection.all_objects if bake_mod.drawable(o)]
         s.all_cameras = self.all_cameras
         s.bidirectional = self.bidirectional
         if not self.use_scene_range:

@@ -189,6 +189,15 @@ Time with `time.process_time()` on one worker, and never read an audit's bake ti
 as bake cost: `audit.run` orders every frame serially. Runs in
 [audits.md](audits.md#3-what-the-triangle-read-costs).
 
+**CPU time is not immune either.** On 25 October two pairs of bakes produced the
+identical drawing (`compare_bakes.py`, field for field) and still disagreed on process
+CPU by up to 2.2×: Apollo 996 s with a second Blender beside it and under a gigabyte
+free, then 577 s; Voyager 1,960 s, then 4,218 s alone, with 4 GB free and every phase
+uniformly about twice as slow. Page faults are charged to the process, and this
+i5-12450H has slower efficiency cores a lone process can be scheduled onto. CPU time
+on this machine says which bake is ten times dearer, not which is a third dearer:
+compare element counts, or time back to back in one process.
+
 ### Waiting on output that was never going to match
 A wait loop grepping for `Error:` exited immediately on Blender's harmless
 `ModuleNotFoundError: No module named 'imp'` startup line, reporting a 40-minute

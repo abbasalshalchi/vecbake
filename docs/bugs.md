@@ -734,19 +734,29 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
-- **Curve, text and surface objects are not baked at all** (found 2026-10-25 by the
+- **Curve, text and surface objects were not baked at all** (found 2026-10-25 by the
   cross-model scorecard, [audits.md §20](audits.md#20-the-cross-model-scorecard)).
-  `bake.collect_objects` keeps `type == "MESH"` and nothing else, with no warning. In
-  the flashbang scene four bevelled Bézier circles — 768 faces each, **3,072 of the
-  scene's 5,221 drawable faces**, plainly visible — have no element in the bake, and
-  the ray cast sees them: 199 of the 369 wrong pixels there are a cylinder showing
-  through where a curve should be. A text object (`FONT`) goes the same way by the same
-  line of code — read, not measured: no text was in shot anywhere in the corpus — and
-  that matters for any logo or title move. The ray
-  cast in `audit._Truth` hits them through `scene.ray_cast`, so they are graded as
-  `occluder not drawn there`. Not yet decided: convert their evaluated geometry like a
-  mesh, or warn.
-
+  **Fixed 2026-10-25.** `bake.collect_objects` kept `type == "MESH"` and nothing else,
+  with no warning. In the flashbang scene four bevelled Bézier circles — 768 faces
+  each, **3,072 of the scene's 5,221 drawable faces** — had no element in the bake, and
+  the ray cast saw them: 199 of the 369 wrong pixels there were a cylinder showing
+  through where a curve should be. Nothing past the filter needed changing — every
+  geometry read was already `evaluated_get(dg).to_mesh()`, which a curve, a text and a
+  surface answer as a mesh does — so the fix is one rule, `bake.DRAWABLE`, used by the
+  baker, the panel's object pickers, the audit's own-surface ray and both geometry
+  checkers, and one more for every type alike: an object whose evaluated geometry has
+  no vertices has nothing to draw (a curve with no splines evaluates to no mesh at all,
+  and would have stopped the bake). `check_geometry` also read `evaluated.data`, which
+  for a curve is the Curve; it now reads the mesh. Flashbang: 1,414 → 2,597 elements,
+  wrong pixels **369 → 134** (4.1% → 1.49%), `occluder not drawn there` 223 → 0.
+  Guard: `scripts/test_curve_objects.py` — a bevelled curve, an extruded text, a NURBS
+  patch, a wire curve and an empty curve, baked as themselves and again as
+  `meshes.new_from_object` of themselves: 706 elements both ways, **identical sample
+  for sample**; on the old code the three shapes draw nothing. The test's own first
+  failure is worth knowing: assigning `matrix_world` to the twin decomposes it and
+  comes back a few bits off, which moved every point and even changed which chains
+  formed — copy location, rotation and scale instead. See
+  [audits.md §21](audits.md#21-curves-text-and-surfaces-baked).
 - **The engine bell looks see-through** (`apollo_000`; reported by the user on the
   preview, 2026-10-10). **Understood, not fixed.** `apollo_001`'s ring and the
   octagon edge are drawn across the bell's neck: of 618 dark pixels in a box on the
