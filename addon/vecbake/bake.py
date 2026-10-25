@@ -998,7 +998,18 @@ def bake_iter(context, settings: BakeSettings):
             # The outline as drawn, halfway between the two keyframes, against
             # the silhouette that is really there. This is what a viewer sees
             # between two frames, so it is what the decision is made on.
-            if middle is not None and name in drew and name in prev_drew:
+            #
+            # One ring only. A multi-subpath outline is judged by Merge False
+            # Outline below, as sizing already leaves it out of `_gap_cost`:
+            # scored here it was read as one loop with its rings joined end to
+            # end, against `walk_loop`'s bridged ring -- which `walk_loop` only
+            # gives for two pieces. That drops each ring's closing segment and
+            # adds two chords across the body, so a torus whose rim and hole
+            # are drawn within 0.3 px of the truth scored 13.2 px and was
+            # refused (docs/audits.md section 22; section 10 measured the same
+            # joining on the thrusters).
+            single = not (plan.outline_parts and len(plan.outline_parts) > 1)
+            if single and middle is not None and name in drew and name in prev_drew:
                 a, b = prev_drew[name], drew[name]
                 if a.shape == b.shape:
                     plan.carry_cost = max(

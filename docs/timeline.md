@@ -212,3 +212,14 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   identical drawing. The doughnut finished: every pixel right, 160,287 elements, 124 MB —
   none of its nine bodies merged, the multi-ring carry problem on the most-made model in
   Blender. [Audits §21](audits.md#21-curves-text-and-surfaces-baked).
+- **25–26 October.** Why a torus will not merge. A controlled torus refuses at every
+  camera height, two different ways: seen clearly, the gap test was scoring a two-ring
+  outline as one loop with its rings joined (13.2 px for an outline drawn within 0.3 px)
+  — the joining §10 found on the thrusters in September and never removed; edge-on, the
+  outline really fails on a folded silhouette. The joining is gone: multi-ring outlines
+  are judged by Merge False Outline alone, as sizing already did. The torus merges; the
+  last three `apollo_018` thrusters merge after a month on the open list; flashbang
+  halves (2,597 → 1,345 elements); Apollo's wrong pixels fall 196 → 180; nothing is newly
+  refused anywhere. The doughnut's own tori are refused rightly — through a 20 mm lens
+  their silhouettes split and rejoin between keyframes — and that is the open decision.
+  [Audits §22](audits.md#22-why-a-torus-will-not-merge).

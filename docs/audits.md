@@ -1299,7 +1299,9 @@ tower, flashbang and the anchors each had over 260,000.
    of its 369 wrong pixels; without it flashbang would sit near Apollo's rate.
    **Fixed in [§21](#21-curves-text-and-surfaces-baked): flashbang 369 → 134.**
 6. **Smooth bodies with holes do not merge** — the doughnut, every one of its nine
-   bodies (above). One model, but it decides that model's file size, bake time and
+   bodies (above). Taken apart in [§22](#22-why-a-torus-will-not-merge): a torus seen
+   clearly was refused by a measurement fault (fixed there); the doughnut's, seen low and
+   close, by a silhouette that changes topology between keyframes (open). One model, but it decides that model's file size, bake time and
    memory outright, and a body with a hole is no rare shape: rings, handles, pipes,
    gears seen at an angle.
 7. **Bake time follows input faces, in shot or not.** The doughnut through its baking
@@ -1367,6 +1369,141 @@ duplicates — and puts flashbang under Apollo's rate. The anchors hold only mes
 any change to them would have been a regression; both are the same drawing, element for
 element and field for field, and grade the same. Apollo's rerun also ran the fixed audit rays of §20 and grades the same
 196, which settles that the ray fix does not move a hero audit.
+
+---
+
+## 22. Why a torus will not merge
+
+25–26 October. §20's doughnut drew all nine of its bodies face by face — 160,287
+elements, 124 MB — each one refused by the gap test (`judge_carry`) *and* by Merge
+False Outline. The question was which test refuses what, and why.
+
+**A controlled torus first.** [`scripts/lab_torus.py`](../scripts/lab_torus.py): one
+smooth primitive torus (64 × 32), the scorecard's settings and 60° orbit, the camera at
+four heights. Pieces are `walk_pieces` loops per keyframe.
+
+| Elevation | Pieces per frame | Merged | Refused by | Gap test, carry / face | False outline |
+|---|---|---|---|---|---|
+| 5° | 1 every frame | no | sizing's `_gap_cost` (> 4 × slack) | — | — |
+| 15° | 1 every frame | no | the same: 227 px | — | — |
+| 30° | 2 every frame | no | **gap test** | 10.81 / 0.48 px | 99 px (limit 160) |
+| 60° | 2 every frame | no | **gap test** | 13.21 / 0.45 px | none |
+
+No torus merges at any height, and the two kinds of refusal are different things.
+
+*Seen clearly (30°, 60°) the outline is right and the gap test measures it wrong.* At
+60° every drawn point at the worst half-frame is within **0.30 px** of the true
+silhouette; the 13.21 px is the other direction, a true vertex 13.2 px from the drawn
+polyline. `judge_carry` passes `outline.stray` the drawn outline's subpaths
+concatenated, as one closed loop, against `walk_loop`'s single ring — which bridges two
+pieces with a seam and gives nothing past two. Read as one loop, the drawn outline loses
+the rim's own closing segment and gains two chords from rim to hole, and the true rim
+vertex on the missing segment is 13.2 px from either chord
+(`out/lab-torus/gap-test-ring-joining-60deg.png`). The player closes every subpath on
+itself; nothing like that is drawn. §10 measured the same joining on the `apollo_018`
+thrusters ("a perfect three-ring outline scores 30 px").
+
+*Edge-on (5°, 15°) the outline really is wrong.* The silhouette is the rim plus the far
+inner contour folding over the near tube, and the single ring drawn halfway between
+keyframes wanders across the body, 227 px from the truth at its worst
+(`edge-on-15deg.png`). Sizing refuses it before the gap test is reached. The fold
+problem: [memory and §12](#12-what-is-left-between-keyframes).
+
+**Then the doughnut's own torus.** [`scripts/lab_merge_why.py`](../scripts/lab_merge_why.py)
+bakes one object of a scene and logs both tests gap by gap. `Torus.003` alone through
+the `rendering camera` reproduces its refusal in the full scene exactly — 38.03 / 0.6 px,
+3,982 px of false outline, 658 slots — so it can be studied by itself.
+
+Its silhouette is not rim-and-hole. Through a 20 mm lens, low and close, the pieces are
+loops of the torus's contour that cross each other and fold back with cusps, and their
+number changes between keyframes: 2, 3 or 4, at keyframes and at half-frames alike.
+
+| Gaps | Visible false outline (as `false_seen` counts it) |
+|---|---|
+| where the piece count changes (11 of 30) | **3,140 px** |
+| where it does not (19 of 30) | **842 px** |
+| total, against a 160 px limit | 3,982 px |
+
+The gap test judged three gaps (33.43, 38.03, 4.49 px), all through the same joining.
+Drawn against the truth (`doughnut-torus003-gaps-*.png`), the false line in the gaps
+that change is the drawn rings cutting straight across the body while the contour
+splits or rejoins underneath them; in the steady gaps it is the folded inner contour
+drifting. **The doughnut is refused, correctly, by Merge False Outline**: slots fixed
+for the clip and interpolated linearly cannot follow a contour that changes topology
+between keyframes. That is §12's open decision, now on the most-made model in Blender.
+
+**What was changed.** Only the measurement that is wrong. `judge_carry` now scores
+one-ring outlines only; a multi-subpath outline is judged by Merge False Outline, which
+measures each ring closed on itself against every true piece. That is what sizing
+already did (`_gap_cost` skips multi-subpath outlines) and what `judge_carry`'s own
+comment said happened. Nothing about how outlines are drawn changed.
+
+| Lab torus | Before | After |
+|---|---|---|
+| 30°: elements | 2,246 | **1** (merged), 0 geometry offenders, 1 segment at 1.37 px |
+| 60°: elements | 1,654 | **1** (merged), 0 geometry offenders, 0 segments |
+| 15°: elements | 2,552 | 2,552 (still refused; folds) |
+
+Guard: `scripts/test_torus_merge.py` — fails on the old `bake.py` (neither merges),
+passes on the new.
+
+**The anchors.** Scorecard harness, same settings as §20; "before" is §21's run.
+
+| | Apollo before | Apollo after | Voyager before | Voyager after |
+|---|---|---|---|---|
+| Merged fills | 58 | **62** | 266 | **269** |
+| Newly merged | | `apollo_018.005`, `.008`, `.015`, `soyuz_008` | | `part_013.001`, `part_026.001`, `part_080.001` |
+| Newly refused | | none | | none |
+| Their visible false outline (limit 160) | | 8, 0, 135.5, 19.5 px | | 44.5, 51.5, 153 px |
+| Elements | 17,579 | **16,395** | 10,592 | **10,395** |
+| Wrong px (rate) | 196 (2.18%) | **180 (2.00%)** | 162 (1.80%) | 162 (1.80%) |
+| Distinct errors | 48 | 46 | 61 | 58 |
+| Geometry offenders | 0 | 0 | 0 | 0 |
+| Segments @0.5 offending / > 3 px / > 10 px | 39 / 2 / 0 | 39 / 2 / 0 | 173 / 22 / 1 | 176 / 24 / 1 |
+| …of which on the new merges | | **0** | | 3 (8.51, 4.13, 2.70 px) |
+| File, MB | 11.11 | 10.35 | 14.62 | 14.39 |
+
+The three `apollo_018` thrusters are the ones on the open list since September
+("`.005 .008 .015` still refused, 6.8–10.5 px"): refused only by the joining, they merge
+and none of their segments is off by 1.25 px halfway between keyframes. On Voyager the
+two new offenders over 3 px are degenerate: `part_080.001/m`'s 8.51 px is a zero-length
+segment and `part_026.001/m`'s 4.13 px one is 0.2 px long — collapsed slots, two
+coincident points that draw nothing, the same thing as `part_081.001/m`'s 15.8 px (§12).
+
+**The rest of the corpus.** Baked again with `scripts/bake_only.py` and compared with
+`compare_bakes.py`: the creature kit, the cell tower and the disco ball are the
+identical drawing. Flashbang is not, and was graded again in full:
+
+| Flashbang | Before (§21) | After |
+|---|---|---|
+| Newly merged | | `BézierCircle`, `BézierCircle.004` (the bevelled rings), `Cube`, `Cylinder.002` |
+| Their visible false outline | | 2, 20.5, 23.5, 38.5 px |
+| Elements | 2,597 | **1,345** |
+| File, MB raw / gz | 2.00 / 0.43 | **1.21 / 0.29** |
+| Wrong px (rate) | 134 (1.49%) | 130 (1.44%) |
+| Geometry offenders | 0 | 0 |
+| Segments @0.5 offending / > 3 px | 49 / 1 | 61 / 1 |
+| …of which on the new merges | | 12, worst 1.78 px |
+
+A bevelled ring is a torus too: its rim and bore were refused by the same joining.
+
+`bake_only.py` bakes with the worker pool; a pooled bake (11 workers) and a single-worker
+bake of the cell tower are the identical drawing, so a pooled rerun answers "did this
+change the drawing" without the audit's serial ordering.
+
+**The doughnut**, baked again with four ordering workers (26 min wall, against 2.4 h
+on one): still **0 merged fills**, and the merge record — refusals, false outline per
+body, slots — identical to §20's; all 160,287 elements it shares with that bake have
+the same geometry and opacity. It has three more: `BézierCurve/c0_0`–`c2_0`, a wire curve
+on the mug (no bevel, no faces) that §21 now bakes as strokes, the way a mesh's loose
+edges are; the paint ranks around them shift, nothing else. The doughnut is refused by
+what it draws, not by how it was measured, and stays open (bugs.md §12).
+
+**Where that leaves the torus.** Seen clearly it now merges, and so does everything
+built like it — the thrusters, a bevelled ring, a bore. Seen edge-on, or low and close
+through a wide lens, it does not, because its silhouette folds and changes topology
+between keyframes, which fixed slots interpolated linearly cannot follow. That is the
+next thing to decide, not to tune.
 
 ---
 

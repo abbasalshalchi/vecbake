@@ -108,6 +108,7 @@ refuses what faces would draw better.
 | Bridge a tube's bore to its outside with a zero-area seam | Merged 253 → 259, 16.1 → 15.7 MB; only for two-piece silhouettes | KEPT | `6e69a51` |
 | Cover the bridge seam with a second unstroked fill | The seam was not visible at playback | NOT BUILT | `6e69a51` |
 | Multiple subpaths per merged fill | Refuses nothing; `apollo_018` 259 face fills → one element | KEPT | `42fa586` |
+| Gap test for one-ring outlines only; multi-subpath outlines judged by Merge False Outline alone | Torus lab 30°/60°: 2,246 / 1,654 elements → 1, 0 geometry offenders, no segment over 3 px. Apollo merged 58 → 62, wrong px 196 → 180; Voyager 266 → 269, 162 → 162; nothing newly refused. Not the ring-by-ring test of audits §10, which judged multi-ring outlines *more* | KEPT | audits §22 |
 
 ---
 

@@ -734,6 +734,35 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **The gap test joined a multi-ring outline's rings end to end** (measured on a torus,
+  2026-10-25/26). **Fixed.** `judge_carry` passed `outline.stray` every subpath of a
+  merged outline concatenated, as one closed loop, against `walk_loop`'s single ring —
+  bridged for two pieces, nothing past two. That drops each ring's closing segment and
+  adds two chords from one ring to the next: a smooth torus seen from 60° up, drawn
+  within 0.30 px of its rim and hole at the worst half-frame, scored 13.21 px against
+  0.45 px face by face and was drawn as 1,654 faces. It had been measured once before,
+  on the thrusters ("a perfect three-ring outline scores 30 px", audits §10); the fix
+  tried then judged ring by ring and refused more, because it began judging appearing
+  pieces against a face cost that never charges a face for appearing. Merge False
+  Outline came later for exactly those outlines, and sizing's `_gap_cost` already
+  skipped them; `judge_carry` now does too. Apollo merged 58 → 62 (the last three
+  `apollo_018` thrusters and `soyuz_008`), ray-cast wrong pixels 196 → 180; Voyager
+  266 → 269, 162 → 162; neither refuses anything new. Guard:
+  `scripts/test_torus_merge.py`. [audits.md §22](audits.md#22-why-a-torus-will-not-merge).
+
+- **A torus seen low and close does not merge** (the doughnut tutorial, 2026-10-25/26).
+  **Open.** Through its 20 mm rendering camera each doughnut's silhouette is loops of the
+  torus's contour that cross and fold with cusps, 2–4 pieces whose number changes
+  between keyframes; the outline's slots, fixed for the clip and interpolated linearly,
+  cut across the body while the contour splits and rejoins. `Torus.003`: 3,140 px of
+  visible false outline in the 11 gaps where the piece count changes, 842 px in the 19
+  where it does not, against a 160 px limit. Merge False Outline refuses it rightly, and
+  the doughnut draws as 160,287 faces, 124 MB. This is the decision audits §12 left open —
+  whether an appearing or splitting piece has to carry, or the comparison has to charge
+  faces for appearing — on the most-made model in Blender. Seen edge-on (5°–15°) a plain
+  torus is refused earlier, by sizing: its single ring wanders 227 px across the folded
+  silhouette. [audits.md §22](audits.md#22-why-a-torus-will-not-merge).
+
 - **Curve, text and surface objects were not baked at all** (found 2026-10-25 by the
   cross-model scorecard, [audits.md §20](audits.md#20-the-cross-model-scorecard)).
   **Fixed 2026-10-25.** `bake.collect_objects` kept `type == "MESH"` and nothing else,
@@ -874,8 +903,15 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 - **Grey spike at the dock joint** — not a bug: `dock_008`, real geometry drawn face by
   face, matching the ray cast to a pixel (same section).
 - **Half the `apollo_018` thrusters are not merged.** Now three of sixteen (`.005`,
-  `.008`, `.015`) after the one-piece-frame fix. The rest of this entry is the first
-  reading, kept for the record. 16 identical meshes, identity
+  `.008`, `.015`) after the one-piece-frame fix. **Fixed 2026-10-26: all sixteen merge.**
+  The last three were refused by `judge_carry` scoring their subpaths joined end to end
+  as one loop, against `walk_loop`'s bridged ring — the joining §10 measured and never
+  removed. The gap test now scores one-ring outlines only and leaves multi-subpath ones
+  to Merge False Outline, as sizing already did; the three draw 8, 0 and 135.5 px of
+  visible false outline against the 160 px limit, and none of their segments is off by
+  1.25 px between keyframes. See the next entry and
+  [audits.md §22](audits.md#22-why-a-torus-will-not-merge). The rest of this entry is
+  the first reading, kept for the record. 16 identical meshes, identity
   transforms; `.001 .003 .005 .007 .010 .013 .015` fall back as `merged_uncarried`:
   merged they are 11.5–15.7 px off between keyframes against 0.05–0.07 px face by face.
   Probably their outline changes character over the arc at their mounting angles. Their
