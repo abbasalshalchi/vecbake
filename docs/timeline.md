@@ -191,3 +191,17 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   bell as see-through; it turns out to be two of the four largest errors in the scene,
   both `measured wrong`, and splitting clears them.
   [Audits §19](audits.md#19-the-interleaving-selector-measured-again-against-the-new-breaker).
+- **16–17 October.** Asked to make the project good enough to sell, the first answer
+  was a storefront plan; the user corrected it — "good engine wise". Recorded in
+  [launch.md](launch.md), with the correction.
+- **25 October.** The cross-model scorecard: five models the engine was never tuned on
+  and the two heroes, one harness (`scripts/scorecard.py`), same settings. Building it
+  turned up five ways the tools read clean on a model they were not built on — the
+  worst in the add-on itself: the audit cast its rays from the scene's render size,
+  and fanned them under an orthographic camera, so a missed ray read as a pass. Fixed,
+  with `test_audit_rays.py`. Apollo then reproduces §19 to the pixel (196). Across the
+  rest: keyframe geometry within 1.11 px everywhere; ordering errors in the heroes'
+  range; new classes — curves and text never baked, backface cull on open surfaces, and
+  bake time that follows input faces whether in shot or not. The 180k-face doughnut
+  had not finished ordering after an hour and a half.
+  [Audits §20](audits.md#20-the-cross-model-scorecard).

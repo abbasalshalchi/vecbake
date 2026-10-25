@@ -236,6 +236,12 @@ def run(path, frames=None, tol=None, camera=None, verbose=True):
                 if d > allow:
                     bad.append({"d": d, "id": it["id"], "frame": int(f),
                                 "kind": it["kind"]})
+    if not checked and by_obj == {} and doc["els"]:
+        # A bake without element ids gives this nothing to match, and zero
+        # offenders over zero point-sets read as a clean pass: celltower.blend
+        # saves include_ids off, and graded clean that way on 25 October.
+        raise RuntimeError(f"{path}: no element carries an id, so nothing can be "
+                           "checked -- bake with include_ids on")
     bad.sort(key=lambda r: -r["d"])
     report = {"checked": checked, "skipped": skipped, "offenders": len(bad),
               "worst": worst, "worst_at": worst_at, "tol_px": tol_px,

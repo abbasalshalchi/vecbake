@@ -84,6 +84,16 @@ are missing: Blender running → add-on server started → port 9876 listening �
 Every headless run prints `ModuleNotFoundError: No module named 'imp'` at startup.
 It is harmless — and it matches a naive `grep Error`.
 
+### Headless runs want `--factory-startup`
+On 25 October, Blender 5.2.2 in the background crashed with `EXCEPTION_ACCESS_VIOLATION`
+every time it loaded `lerpa voyager.blend`, before any of our code ran. The crash log's
+stack is a Python *thread* setting an RNA property (`pyrna_struct_setattro` →
+`WM_msg_publish_rna`) — one of the third-party add-ons in this profile (BlenderKit,
+Poliigon, Sketchfab, Poly Haven…), not VecBake, which starts no threads. The same file
+loads cleanly with `blender -b --factory-startup` and VecBake enabled by hand:
+`addon_utils.enable("bl_ext.user_default.vecbake", default_set=False, persistent=False)`.
+`scripts/scorecard.py` does this. It also silences the BlenderKit chatter in the logs.
+
 ---
 
 ## Files and folders

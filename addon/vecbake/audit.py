@@ -67,6 +67,7 @@ from dataclasses import replace
 import numpy as np
 
 import bpy
+from mathutils import Vector
 
 from . import api
 from . import bake as bake_mod
@@ -200,11 +201,16 @@ class _Truth:
         self.w, self.h = width, height
         depsgraph = bpy.context.evaluated_depsgraph_get()
         self.dg = depsgraph
-        cam = scene.camera.evaluated_get(depsgraph)
-        self.view = np.array(cam.matrix_world.inverted(), dtype=np.float64)
-        self.tr, self.br, self.bl, self.tl = cam.data.view_frame(scene=scene)
-        self.origin = cam.matrix_world.translation
-        self.mw = cam.matrix_world
+        # The ray must be the bake's ray: through the bake's own projection at
+        # the bake's own size. `view_frame(scene=scene)` follows the scene's
+        # render resolution instead, so a 1080x1080 scene baked at 1920x1080
+        # was ray cast through the wrong pixels (graded 9.4% wrong), and rays
+        # fanned out from the camera centre even under an orthographic camera
+        # -- where a missed ray is skipped, so that read as clean. Unprojecting
+        # through the same matrix serves both kinds of camera.
+        self.view, mvp = bake_mod.camera_matrices(scene, scene.camera, depsgraph,
+                                                  width, height)
+        self.unproject = np.linalg.inv(mvp)
         self.objs = {o.name: o.evaluated_get(depsgraph)
                      for o in scene.objects if o.type == "MESH"}
 
@@ -212,14 +218,17 @@ class _Truth:
         p = np.asarray(point, dtype=np.float64)
         return float(-(p @ self.view[:3, :3].T + self.view[:3, 3])[2])
 
-    def _dir(self, px, py):
-        u, v = px / self.w, 1.0 - py / self.h
-        corner = self.bl + (self.br - self.bl) * u + (self.tl - self.bl) * v
-        return ((self.mw @ corner) - self.origin).normalized()
+    def _ray(self, px, py):
+        """World origin (on the near plane) and direction through a pixel."""
+        x, y = 2.0 * px / self.w - 1.0, 1.0 - 2.0 * py / self.h
+        near = self.unproject @ np.array((x, y, -1.0, 1.0))
+        far = self.unproject @ np.array((x, y, 1.0, 1.0))
+        near, far = near[:3] / near[3], far[:3] / far[3]
+        return Vector(near), Vector(far - near).normalized()
 
     def nearest(self, px, py):
-        d = self._dir(px, py)
-        ok, loc, _n, _f, obj, _m = self.scene.ray_cast(self.dg, self.origin, d)
+        origin, d = self._ray(px, py)
+        ok, loc, _n, _f, obj, _m = self.scene.ray_cast(self.dg, origin, d)
         if not ok or obj is None:
             return None, None
         return obj.name, self._depth(loc)
@@ -230,8 +239,8 @@ class _Truth:
         if obj is None:
             return None
         inv = obj.matrix_world.inverted()
-        d = self._dir(px, py)
-        ok, loc, _n, _i = obj.ray_cast(inv @ self.origin, (inv.to_3x3() @ d).normalized())
+        origin, d = self._ray(px, py)
+        ok, loc, _n, _i = obj.ray_cast(inv @ origin, (inv.to_3x3() @ d).normalized())
         if not ok:
             return None
         return self._depth(obj.matrix_world @ loc)

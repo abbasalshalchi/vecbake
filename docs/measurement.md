@@ -210,6 +210,32 @@ same camera and settings, not by the 300-part model. When a real model is too bi
 reason about, build the smallest scene whose right answer you can state in advance —
 `boss` (a box on a plate) is what made the multi-ring winding test a test.
 
+### Five ways a model the tools were not built on reads as clean
+Found on 25 October building the cross-model scorecard
+([audits.md §20](audits.md#20-the-cross-model-scorecard)). Each one produced a number,
+and every number looked plausible.
+
+- **A missed ray is skipped, not scored.** The audit only counts a pixel wrong when
+  the ray hits something nearer than the painted element's own surface. A ray through
+  the wrong place mostly hits nothing, or nothing of that element, so a broken ray
+  reads as *fewer* errors. Under an orthographic camera the lab scene graded 0 wrong
+  over 9,000 pixels; with the rays fixed, 1,080. Before believing a clean audit, run it
+  on a scene that must fail (`scripts/test_audit_rays.py`, and the lab's crossing pair).
+- **The scene's render size is not the bake's.** With Scene Resolution off the bake
+  has its own width and height; anything that asks the camera for its frame through
+  the scene gets the scene's aspect. Use `bake.camera_matrices` at the bake's size.
+- **A blend carries its own panel.** Setting the audited options left everything else
+  as each file saved it. `celltower.blend` saves `include_ids` off, and both geometry
+  checkers then graded zero point-sets and reported zero offenders. They now refuse;
+  `scorecard.py` resets every setting before applying its own.
+- **The scene camera is not always the shot.** The doughnut tutorial's scene camera
+  is a texture-baking camera aimed at one 2 × 2 plane; the bake came back as 258
+  elements of that plane, audited clean with zero overlap pixels. Name the camera.
+- **An absolute margin is a tuned epsilon.** The audit's 0.05 units was chosen on
+  Apollo, where the camera spans 25.5 units at the pivot. The Mechanical Creature Kit
+  is 10 cm across, framed at 0.54: there 0.05 is wider than its parts and nothing can
+  fail. Scale it by framed width; Apollo stays at exactly 0.05.
+
 ---
 
 ## Timing reference

@@ -596,6 +596,36 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 - A between-keyframes scan sampled past `duration` and reported the whole scene ~47 px
   wrong at once — the tell was every part sharing one timestamp.
 
+### The audit cast its rays through the wrong pixels
+- **Seen:** 25 October, in the cross-model scorecard. A flashbang scene graded **9.4%
+  wrong** where Apollo grades about 2%, with 709 of its 842 wrong pixels diagnosed
+  `occluder not drawn there`. Tracing one: the ray at (790.5, 206.5) hit `Cube/f89`,
+  and `Cube/f89` was in the bake — but the bake's own outline of it did not cover that
+  pixel, while `check_geometry` had every Cube point within 1.25 px of the truth.
+- **Cause:** `_Truth` built rays from `cam.data.view_frame(scene=scene)`, which follows
+  the scene's *render* resolution. The bake projects at its own width and height
+  (`calc_matrix_camera`, `use_scene_res` off). The flashbang renders 1080 × 1080 and
+  was baked 1920 × 1080, so every ray went through a different point of the picture
+  than the pixel it was grading. A second fault beside it: rays fanned out from the
+  camera's centre under an **orthographic** camera too, where they should be
+  parallel. Both mostly *miss*, and a missed ray is skipped rather than scored — so
+  the orthographic lab scene graded clean over 9,000 pixels while testing almost
+  nothing.
+- **Fix:** rays are unprojected through the bake's own matrix at the bake's own
+  size: one code path for both camera kinds, and the same projection the bake drew
+  with. Commit with the §20 scorecard.
+- **Guard:** `scripts/test_audit_rays.py` — a cube before a wall, perspective and
+  orthographic, scene render square, 16:9 and 4.9:1, bake 1920 × 1080; points on
+  every camera-facing face must be hit at their own depth. On the old code 5 of 6
+  cases fail (only perspective at a matching aspect passes); on the new, 15/15 in all.
+- **Reach:** every audit run on an orthographic camera, and every one at a bake size
+  whose aspect differs from the scene's render size — including the panel's
+  Audit > Check Occlusion. The hero audits were all perspective at 1920 × 1080 in a
+  1920 × 1080 scene and are unaffected: on Apollo at frame 1, 5,000 random pixels hit
+  the same object under the old rays and the new, with depths within 0.001 units
+  (the new ray starts on the near plane, not at the camera), fifty times under the
+  0.05 margin.
+
 ### A test that could not catch its own bug
 - `test_edge_shading.py` set its cylinder to 30°, the same value as the fallback, so
   "the angle is read back" passed on Blender 5.2 with the bug live (see
@@ -703,6 +733,19 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 ---
 
 ## 12. Open
+
+- **Curve, text and surface objects are not baked at all** (found 2026-10-25 by the
+  cross-model scorecard, [audits.md §20](audits.md#20-the-cross-model-scorecard)).
+  `bake.collect_objects` keeps `type == "MESH"` and nothing else, with no warning. In
+  the flashbang scene four bevelled Bézier circles — 768 faces each, **3,072 of the
+  scene's 5,221 drawable faces**, plainly visible — have no element in the bake, and
+  the ray cast sees them: 199 of the 369 wrong pixels there are a cylinder showing
+  through where a curve should be. A text object (`FONT`) goes the same way by the same
+  line of code — read, not measured: no text was in shot anywhere in the corpus — and
+  that matters for any logo or title move. The ray
+  cast in `audit._Truth` hits them through `scene.ray_cast`, so they are graded as
+  `occluder not drawn there`. Not yet decided: convert their evaluated geometry like a
+  mesh, or warn.
 
 - **The engine bell looks see-through** (`apollo_000`; reported by the user on the
   preview, 2026-10-10). **Understood, not fixed.** `apollo_001`'s ring and the

@@ -117,6 +117,9 @@ def run(path, verbose=True, limit=15, subframe=0.0):
                                     "from": [round(float(v), 1) for v in a_[k]],
                                     "to": [round(float(v), 1) for v in b_[k]],
                                     "length": round(float(np.hypot(*(b_[k] - a_[k]))), 1)})
+    if not checked and doc["els"] and not any(e.get("id") for e in doc["els"]):
+        raise RuntimeError(f"{path}: no element carries an id, so nothing can be "
+                           "checked -- bake with include_ids on")
     bad.sort(key=lambda r: -r["d"])
     if verbose:
         print(f"[segments] {checked} segments over {len(frames)} frames; "

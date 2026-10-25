@@ -1169,6 +1169,149 @@ the four worst pairs account for 141 px of the 196, between five bodies
 
 ---
 
+## 20. The cross-model scorecard
+
+25 October. Every number above this section comes from Apollo–Soyuz or the Voyager.
+This grades the engine on models it was never tuned on, with those two as anchors,
+so that "good enough to sell" has numbers behind it.
+
+**Corpus.** Five blends already on disk, picked for being unlike the heroes, plus the
+two heroes.
+
+| Name | Blend (under `Documents/`) | What it is | Drawable faces | Camera |
+|---|---|---|---|---|
+| apollo | `Blender 2026/lerpa apollo-soyuz/apollo-soyuz.blend` | hero, 91 parts | 27,399 | its own 60° arc, 31 frames |
+| voyager | `Blender 2026/lerpa voyager/lerpa voyager.blend` | hero, 322 parts | 5,257 | its own arc, 60 frames |
+| creature | `blender/Mechanical Creature Kit Free/…Polyfjord_v1.0.blend` | 7 rigid parts on an armature, 10 cm across | 17,069 | none in file: a new one, orbit |
+| flashbang | `Blender 2026/flashbang/Untitled1.blend` | hard-surface product: 7 meshes, 6 Bézier curves, a floor | 5,221 | the artist's, orbit |
+| celltower | `Blender 2026/celltower/celltower.blend` | the NOC tower, orthographic | 1,154 | its own move, 24 frames at 30 fps |
+| discoball | `Blender 2026/AI/claude one prompt disco ball/…` | one 5,664-facet ball over a floor | 5,665 | the artist's, orbit |
+| doughnut | `Blender 2026/doughnut tutorial blender 5/…` | eight doughnuts and a 96k-face mug, smooth and organic | 180,608 | `rendering camera`, orbit |
+
+**Setup.** [`scripts/scorecard.py`](../scripts/scorecard.py), one Blender 5.2.2 per
+model, two at a time, `--factory-startup` with VecBake enabled by hand
+([gotchas](gotchas.md#headless-runs-want---factory-startup)). Every panel setting is
+reset to its default, then the hero audits' set is applied (the one at the top of
+this page). A scene whose camera moves keeps its move; any other gets Apollo's arc: an
+empty at a pivot turning −30° → +30° about world Z over 31 frames at 24 fps, the
+camera parented to it. One bake per model, graded three ways: the ray-cast audit at
+the first, middle and last frame, 3,000 overlap pixels each (§19's sampling);
+`check_geometry.py` at the sampled frames; `check_outline_segments.py` halfway
+between them. The audit margin is 0.05 × framed width ÷ Apollo's framed width (25.54),
+so Apollo grades at exactly 0.05 — see [measurement.md](measurement.md#five-ways-a-model-the-tools-were-not-built-on-reads-as-clean).
+Bake code `0678b45`; `audit.py` with the ray fix below, which changes grading only.
+Table: `python scripts/scorecard_table.py out/scorecard <names>`.
+
+**The harness reproduces §19.** Apollo comes back at 17,579 elements, **196 wrong
+pixels, 2.178%, 48 errors** — 23 measured wrong, 18 order violated, 3 no constraint —
+the same as §19's nothing-split arm in every column. Each run also re-grades its logged
+gaps at its own margin, and reproduces the audit's own count every time. Apollo ran
+before the settings reset was added, so it kept its saved stroke and fill colours;
+nothing else it saves lies outside the applied set.
+
+**Five measurement faults, found and fixed before any of this could be read.** Each
+gave a plausible number. Written up in
+[measurement.md](measurement.md#five-ways-a-model-the-tools-were-not-built-on-reads-as-clean);
+the one in the add-on is in [bugs.md](bugs.md#the-audit-cast-its-rays-through-the-wrong-pixels).
+
+| Fault | What it read as | Fixed |
+|---|---|---|
+| Audit rays from the scene's render size, and fanned under an orthographic camera | flashbang 9.4% wrong (now 4.1%); lab clean (now 12.0%); cell tower 23 px (now 40) | `audit._Truth` unprojects through the bake's matrix; `test_audit_rays.py` |
+| Each blend's saved panel leaking in | cell tower with ids off: both geometry checkers clean over **zero** point-sets | reset first; the checkers refuse a bake without ids |
+| The scene camera is not the shot | doughnut: 258 elements of one texture-baking plane | the corpus names the camera |
+| An absolute 0.05 margin | creature: wider than its parts, so nothing could fail | scaled by framed width |
+| A profile add-on crashing Blender on load | Voyager: no run at all | `--factory-startup` |
+
+**Results.**
+
+| | apollo | voyager | creature | flashbang | celltower | discoball |
+|---|---|---|---|---|---|---|
+| Status | done | done | done | done | done | done |
+| Camera | own move | own move | orbit, new camera | orbit, artist's camera | own move | orbit, artist's camera |
+| Frames | [1, 31] | [1, 60] | [1, 31] | [1, 31] | [1, 24] | [1, 31] |
+| Audit margin | 0.0500 | 0.0241 | 0.0011 | 0.0090 | 0.0034 | 0.0161 |
+| Elements | 17,579 | 10,592 | 5,155 | 1,414 | 1,394 | 9,749 |
+| Bake CPU, s | 996 | 1,960 | 270 | 73 | 66 | 159 |
+| File, MB raw / gz | 11.11 / 1.69 | 14.62 / 3.10 | 3.51 / 0.61 | 1.18 / 0.28 | 1.25 / 0.29 | 4.87 / 0.90 |
+| Peak memory, MB | 1,711 | 1,507 | 1,480 | 485 | 421 | 659 |
+| Overlap px tested | 9,000 | 9,000 | 4,365 | 9,000 | 9,000 | 3,041 |
+| Wrong px (own margin) | 196 | 162 | 0 | 369 | 40 | 0 |
+| Wrong rate | 2.178% | 1.800% | 0.000% | 4.100% | 0.444% | 0.000% |
+| Wrong px at 0.05 | 196 | 132 | 0 | 266 | 24 | 0 |
+| Distinct errors | 48 | 61 | 0 | 58 | 19 | 0 |
+|   measured wrong | 23 (150 px) | 15 (90 px) | 0 | 22 (68 px) | 5 (9 px) | 0 |
+|   order violated | 18 (36 px) | 31 (36 px) | 0 | 6 (68 px) | 5 (6 px) | 0 |
+|   no constraint | 3 (4 px) | 4 (5 px) | 0 | 0 | 0 | 0 |
+|   occluder not drawn there | 2 (3 px) | 7 (27 px) | 0 | 27 (223 px) | 9 (25 px) | 0 |
+| Geometry offenders | 0 | 0 | 0 | 0 | 0 | 0 |
+|   over 10 px | 0 | 0 | 0 | 0 | 0 | 0 |
+|   worst, px | 1.04 | 1.10 | 1.11 | 1.04 | 1.05 | 1.11 |
+| Segments @0.5 offending | 39 | 173 | 14 | 49 | 189 | 0 |
+|   over 3 px | 2 | 22 | 2 | 1 | 4 | 0 |
+|   over 10 px | 0 | 1 | 0 | 0 | 0 | 0 |
+|   worst, px | 3.3 | 15.8 | 6.0 | 3.1 | 4.8 | 0.0 |
+| Merged fills | 58 | 266 | 5 | 2 | 9 | 0 |
+|   fell back | 33 | 56 | 2 | 5 | 4 | 2 |
+| Cycle breaks | 1,753 | 2,472 | 3 | 645 | 377 | 771 |
+
+Bake CPU is the whole process with one ordering worker (the audit needs ordering in
+its own process to diagnose), so it is the engine's cost, not the wall time of a panel
+bake with the worker pool. Controls: the test shapes and the lab scene both run end
+to end (64 s and 8 s); the shapes never overlap on screen, and the lab's 12.0% is its
+crossing pair, which one rank cannot get right by construction.
+
+Bytes per element, raw / gzipped: Apollo 632 / 96, Voyager 1,380 / 292, creature 680 /
+119, flashbang 836 / 195, cell tower 898 / 209, disco ball 499 / 92. Voyager is twice
+the others because its clip is twice as long. The creature and the disco ball overlap
+little on screen (4,365 and 3,041 pixels to test in three frames), so their zero wrong
+pixels say little about ordering; the cell tower, flashbang and the anchors each had
+over 260,000.
+
+**What fails, by how many models it reaches.**
+
+1. **Outline drift between keyframes** — 5 of 6 have a merged outline or chain more
+   than 3 px off at subframe 0.5 (none on the disco ball). Small: worst 3.1–6.0 px
+   everywhere except one Voyager element. The exception, `part_081.001/m` at 15.8 px,
+   is a zero-length segment — two coincident points 16 px off the outline, which reads
+   as a parked slot. `part_024.001/m` is 3–4 px off in 58 of 59 frames: a persistent
+   drift, not a blip.
+2. **Measured wrong** — 4 of 6. One rank per merged body cannot describe a body that
+   is in front of a neighbour in one place and behind it in another. The largest class
+   on both anchors (Apollo 150 px, Voyager 90, flashbang 68, cell tower 9), and the lab's
+   crossing pair is it in pure form. Splitting fixes it ([§19](#19-the-interleaving-selector-measured-again-against-the-new-breaker)),
+   at +59% elements on Apollo.
+3. **Order violated** — 4 of 6, 6–68 px. Flashbang's 54 px of it is `Cylinder.004`
+   against `triangle`: two linked duplicates of one mesh, 2 cm apart. A modelling fault
+   more than an ordering one.
+4. **Backface cull on open surfaces** — 2 of 6 (cell tower 25 px, Voyager 27 px), new.
+   Traced: the nearest surface on the ray is the *back* of a face, which a closed,
+   consistently wound mesh never shows first. `tower` has 304 open edges on 308 faces;
+   `part_012.009` is 12 loose quads. The cull drops the faces the camera is looking at
+   and the part behind shows through. The cell tower's own panel had the cull off; the
+   applied set turned it on. Candidate fix, not built: cull a face's back only where its
+   connected surface is closed — decided from topology, with no threshold.
+5. **Curves and text are not baked** — 1 of 6 measured, structural. `collect_objects`
+   takes meshes only, without a word. In flashbang that is 3,072 of 5,221 faces and 199
+   of its 369 wrong pixels; without it flashbang would sit near Apollo's rate.
+   [bugs.md §12](bugs.md#12-open).
+6. **Bake time follows input faces, in shot or not.** The doughnut through its baking
+   camera drew one plane and took 1,036 s of CPU, sampling 180k faces it then culled
+   off screen, twice (once to size outlines, once to bake), at ~11 s a frame.
+
+Clean everywhere: **every drawn point at every sampled frame is within 1.11 px of its
+true projection**, on all six bakes that finished.
+
+**The doughnut did not finish in time for this write-up**, and that is its result.
+Through its rendering camera it sampled 31 frames twice in ~1,450 s, chained edges for
+~1,700 s, and was still resolving paint order at frame 13 of 31 after 5,246 s wall
+(4,965 s CPU), with frames slowing from ~75 s to ~480 s each as the orbit brought more
+of the scene in. Memory held at 3.5–4 GB. Whatever its pixels turn out to be, a
+smooth 180k-face scene is past what one ordering worker bakes in an afternoon — the
+first number on this page a buyer would hit before any of the others. Its row will be
+added when the run ends.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
