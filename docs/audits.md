@@ -1200,7 +1200,9 @@ the first, middle and last frame, 3,000 overlap pixels each (§19's sampling);
 between them. The audit margin is 0.05 × framed width ÷ Apollo's framed width (25.54),
 so Apollo grades at exactly 0.05 — see [measurement.md](measurement.md#five-ways-a-model-the-tools-were-not-built-on-reads-as-clean).
 Bake code `0678b45`; `audit.py` with the ray fix below, which changes grading only.
-Table: `python scripts/scorecard_table.py out/scorecard <names>`.
+The corpus, with each blend's path and shot camera, is
+[`scripts/scorecard_corpus.txt`](../scripts/scorecard_corpus.txt); the table is
+`python scripts/scorecard_table.py out/scorecard <names>`.
 
 **The harness reproduces §19.** Apollo comes back at 17,579 elements, **196 wrong
 pixels, 2.178%, 48 errors** — 23 measured wrong, 18 order violated, 3 no constraint —

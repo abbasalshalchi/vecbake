@@ -1,0 +1,13 @@
+# The cross-model scorecard corpus (docs/audits.md sections 20-21).
+# name | blend, relative to %USERPROFILE%\Documents | shot camera (blank = the scene's)
+# Run each, two at a time at most on a 16 GB machine (the doughnut peaks at 7.4 GB):
+#   blender -b --factory-startup "<blend>" --python scripts/scorecard.py -- \
+#       --name <name> --out out/scorecard/<name> [--camera "<camera>"]
+# then: python scripts/scorecard_table.py out/scorecard apollo,voyager,...
+apollo|Blender 2026/lerpa apollo-soyuz/apollo-soyuz.blend|
+voyager|Blender 2026/lerpa voyager/lerpa voyager.blend|
+creature|blender/Mechanical Creature Kit Free/Free_Mechanical_Creature_Kit_by_Polyfjord_v1.0.blend|
+flashbang|Blender 2026/flashbang/Untitled1.blend|
+celltower|Blender 2026/celltower/celltower.blend|
+discoball|Blender 2026/AI/claude one prompt disco ball/claude one prompt disco ball.blend|
+doughnut|Blender 2026/doughnut tutorial blender 5/doughnut tutorial blender 5.blend|rendering camera
