@@ -1091,6 +1091,15 @@ scripts/validate_bake.py  occlusion + reduction audit
 scripts/test_order_*.py   ordering: cycles, scale, merged surfaces
 scripts/build_test_scene.py
 scripts/devserver.py      static server + POST /save/<name> snapshot endpoint
+scripts/run_tests.py      every scripts/test_*.py, each under the interpreter it
+                          needs (Blender's bundled Python, or blender -b)
+scripts/scorecard.py      grade one model: bake, ray-cast audit, check_geometry,
+                          outline segments halfway between keyframes, size, CPU
+scripts/scorecard_corpus.txt  the seven models it is run on, with shot cameras
+scripts/scorecard_table.py    the corpus as one table
+scripts/bake_only.py      rebake a scorecard model with the worker pool, no audit
+scripts/compare_bakes.py  are two bakes the same drawing, field for field
+scripts/lab_*.py          labs: a torus and why it merges or not, gap by gap
 player/demo.html          older harness for the bare .json track format
 ```
 

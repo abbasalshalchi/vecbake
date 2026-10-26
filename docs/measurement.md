@@ -29,6 +29,12 @@ a change moves the metric and not the artefact, the metric is wrong.
 | `tools/play.html` | Loads the player from disk, so a player change can be tested without re-baking | — | `localhost:8765/tools/play.html?f=<clip>` |
 | `scripts/devserver.py` | Serves the repo, falling back to `lerpa-website/public`; `POST /save/<name>` writes canvas snapshots to `snapshots/` | — | Port 8765 |
 | `lerpa-website/public/_lab.html` | Rasterises one group's fills with the shipping renderer | — | `?src=` |
+| `scripts/scorecard.py` | One model end to end: one bake, graded by the audit (margin scaled to the framing), `check_geometry` and segments at subframe 0.5, plus size, elements, CPU, peak memory | Yes | `blender -b --factory-startup <blend> --python scripts/scorecard.py -- --name N --out out/scorecard/N [--camera C]`; corpus in `scorecard_corpus.txt`, table by `scorecard_table.py` |
+| `scripts/compare_bakes.py` | Whether two bakes are the same drawing, field for field, colour apart | Exact | `python scripts/compare_bakes.py a.svg b.svg` |
+| `scripts/bake_only.py` | Rebakes a scorecard model with the worker pool and no audit, for drawing comparisons (pooled and serial bakes are identical) | — | as `scorecard.py`, plus `--workers N` |
+| `scripts/lab_merge_why.py` | Why one object's merged outline is refused: both merge tests logged gap by gap, with piece counts at keyframes and half-frames | Yes | `--object O [--camera C] [--frames A B]` |
+| `scripts/lab_appear_options.py` | Re-scores gaps where a subpath is parked under alternative parking rules, between keyframes and at the empty keyframe | Yes | as `lab_merge_why.py` |
+| `scripts/run_tests.py` | Every `test_*.py`, each under the interpreter it needs | — | `python scripts/run_tests.py [filter]` |
 
 Grade occlusion by the audit, position by `check_geometry`, outline shape by the
 subframe probe. Read `validate_bake` as "how far the order strays from its own
