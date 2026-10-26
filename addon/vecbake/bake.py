@@ -2674,9 +2674,20 @@ def _sample_object(plan, me, eval_obj, settings, slots, fi,
         # 8-16, on real edges, so no geometry check saw them. The measuring
         # pass has no subpath sizes yet and keeps the single-ring path.
         multi = bool(plan.outline_parts and len(plan.outline_parts) > 1)
-        if pieces is not None and len(pieces) == 1 and not multi:
+        # The measuring pass sends every frame down the pieces path, one piece
+        # or several. Sent down the single-ring path, a one-piece frame set
+        # `piece_needs` to one number and threw away what earlier frames had
+        # measured for the others -- so whether an object was sized as several
+        # subpaths depended on its last frame: a torus whose hole is open in
+        # frames 8-24 of 31 was sized as one ring, and the same torus cut to
+        # frames 1-20 as two (docs/audits.md section 23). Per piece, matched by
+        # vertices, it is the same number whatever order the frames come in;
+        # for an object that is one ring throughout it is the same polyline and
+        # the same `need_for`, so nothing about it changes.
+        measuring = plan.outline_n is None
+        if pieces is not None and len(pieces) == 1 and not multi and not measuring:
             walk = (pieces[0][0], pieces[0][1])
-        if pieces is not None and (len(pieces) > 1 or multi):
+        if pieces is not None and (len(pieces) > 1 or multi or measuring):
             _sample_outline_pieces(plan, pieces, xy, depth, slot, fi, settings,
                                    face_visible, face_depth, face_shade,
                                    face_alpha_max=plan.face_alpha,

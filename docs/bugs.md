@@ -750,6 +750,17 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   266 → 269, 162 → 162; neither refuses anything new. Guard:
   `scripts/test_torus_merge.py`. [audits.md §22](audits.md#22-why-a-torus-will-not-merge).
 
+- **Sizing depended on the last frame** (found 2026-10-26 on a controlled torus).
+  **Fixed.** The measuring pass sent a one-piece frame down the single-ring path, which
+  set `piece_needs` to one number and dropped what earlier frames had measured for the
+  other pieces, so a part with a hole open mid-clip was sized as one ring if the clip
+  ended without it and as two if it ended with it — and was then judged by a different
+  test. Every measuring frame now goes through the pieces path, matched by vertices.
+  Apollo merges `dock_008` (wrong px 180 → 193), Voyager nine more (162 → 153, segments
+  over 3 px 24 → 38), the creature kit's `Joint` stops merging (+1,021 elements, its 6 px
+  drift gone). Guard: `scripts/test_piece_sizing.py` (fails on the old code: two of
+  three clips not sized as subpaths). [audits.md §23](audits.md#23-a-piece-that-appears-how-it-could-carry-measured-before-building).
+
 - **A torus seen low and close does not merge** (the doughnut tutorial, 2026-10-25/26).
   **Open.** Through its 20 mm rendering camera each doughnut's silhouette is loops of the
   torus's contour that cross and fold with cusps, 2–4 pieces whose number changes
@@ -762,6 +773,10 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   faces for appearing — on the most-made model in Blender. Seen edge-on (5°–15°) a plain
   torus is refused earlier, by sizing: its single ring wanders 227 px across the folded
   silhouette. [audits.md §22](audits.md#22-why-a-torus-will-not-merge).
+  Measured further on 26 October ([§23](audits.md#23-a-piece-that-appears-how-it-could-carry-measured-before-building)):
+  keying the outline at each topology event would take the doughnut torus's event-gap
+  false line from 6,217 to 13 px, but each body also draws 842–13,962 px in gaps with no
+  event, from its folded contour drifting — so even that would not merge the doughnut.
 
 - **Curve, text and surface objects were not baked at all** (found 2026-10-25 by the
   cross-model scorecard, [audits.md §20](audits.md#20-the-cross-model-scorecard)).

@@ -65,8 +65,11 @@ def main():
     ap.add_argument("--object", required=True)
     ap.add_argument("--camera")
     ap.add_argument("--out")
+    ap.add_argument("--frames", nargs=2, type=int, help="first and last frame to bake")
     args = ap.parse_args(argv)
     scene = bpy.context.scene
+    if args.frames:
+        scene.frame_start, scene.frame_end = args.frames
     if args.camera:
         scene.camera = bpy.data.objects[args.camera]
     cam_rec = _defs["setup_camera"](scene)

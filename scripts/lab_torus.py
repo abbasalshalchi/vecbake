@@ -36,7 +36,12 @@ SETTINGS = ns["SETTINGS"]
 FRAMES = 31
 
 
-def build(elevation, major=1.0, minor=0.4, segments=(64, 32)):
+def build(elevation, major=1.0, minor=0.4, segments=(64, 32), tilt=0.0, lens=50.0, fill=1.1):
+    """`tilt` leans the torus about X, in degrees: a tilted torus under an orbit
+    about Z is seen from a changing height, which is what makes its silhouette
+    change topology during the clip (the doughnut's tori lean and are seen
+    nearly edge-on). `fill` is the camera distance as a multiple of the one that
+    just frames the torus."""
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj)
     scene = bpy.context.scene
@@ -47,15 +52,16 @@ def build(elevation, major=1.0, minor=0.4, segments=(64, 32)):
                                      major_segments=segments[0], minor_segments=segments[1])
     torus = bpy.context.active_object
     torus.name = "Torus"
+    torus.rotation_euler = (math.radians(tilt), 0.0, 0.0)
     bpy.ops.object.shade_smooth()
 
     pivot = bpy.data.objects.new("pivot", None)
     scene.collection.objects.link(pivot)
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
     scene.collection.objects.link(cam)
-    cam.data.lens = 50.0
+    cam.data.lens = lens
     radius = major + minor
-    dist = radius / math.sin(math.atan(36.0 * 9 / 16 / 2 / 50.0)) * 1.1
+    dist = radius / math.sin(math.atan(36.0 * 9 / 16 / 2 / lens)) * fill
     up = math.radians(elevation)
     cam.location = (0.0, -dist * math.cos(up), dist * math.sin(up))
     cam.rotation_euler = (math.pi / 2 - up, 0.0, 0.0)

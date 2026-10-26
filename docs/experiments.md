@@ -109,6 +109,11 @@ refuses what faces would draw better.
 | Cover the bridge seam with a second unstroked fill | The seam was not visible at playback | NOT BUILT | `6e69a51` |
 | Multiple subpaths per merged fill | Refuses nothing; `apollo_018` 259 face fills → one element | KEPT | `42fa586` |
 | Gap test for one-ring outlines only; multi-subpath outlines judged by Merge False Outline alone | Torus lab 30°/60°: 2,246 / 1,654 elements → 1, 0 geometry offenders, no segment over 3 px. Apollo merged 58 → 62, wrong px 196 → 180; Voyager 266 → 269, 162 → 162; nothing newly refused. Not the ring-by-ring test of audits §10, which judged multi-ring outlines *more* | KEPT | audits §22 |
+| Park an absent subpath on its own centroid instead of one vertex | Torus birth/death: 4,173 px false line between keyframes against 4,281 now | REJECTED, measured only | audits §23 |
+| Park each point on its own surface point in the empty frame | Between keyframes 4,281 → 275 px, but the ring is drawn at the empty keyframe: 3,348.5 px there | REJECTED, measured only | audits §23 |
+| Draw a subpath only from the moment it exists (event time by bisection), carried back from its own surface points then | Torus birth/death 4,281 → 276 px, nothing at keyframes; doughnut `Torus.003` 6,217 → 4,590.5 — its events are splits | NOT BUILT | audits §23 |
+| Key the whole element at each topology event (two keyframes straddling it), rings by own surface points either side | Doughnut `Torus.003` event gaps 6,217 → **13** px; fits sparse tracks; does not touch the 842–13,962 px per body in steady gaps | NOT BUILT — a decision | audits §23 |
+| Size subpaths through the pieces path in every measuring frame | Sizing no longer depends on the last frame; Apollo +1 merge (wrong px 180 → 193), Voyager +9 (162 → 153, segments > 3 px 24 → 38), creature `Joint` refused | KEPT | audits §23 |
 
 ---
 

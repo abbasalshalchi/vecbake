@@ -1507,6 +1507,129 @@ next thing to decide, not to tune.
 
 ---
 
+## 23. A piece that appears: how it could carry, measured before building
+
+26 October. §22 left the doughnut refused by its own silhouette: contour loops that
+split, rejoin, appear and vanish between keyframes. The question was how such a piece
+could carry, or what charging faces for appearing would change — measured on a
+controlled torus before anything is built.
+
+**The controlled case.** `lab_torus.py` with a tilt: the torus leans 15°, the camera
+is 10° up through a 20 mm lens, and the 60° orbit sweeps how high the torus is seen
+from. Its hole opens at frame 8 and closes at frame 25 of 31: one piece, two, one —
+a birth and a death at known gaps. (A primitive torus never splits into three or four;
+the doughnut's lumpy dough does.) `out/lab-torus/torus_birth.blend`.
+
+**A sizing fault first.** The full clip was sized as one ring and refused by sizing's
+gap check; cut to frames 1–20 it was two subpaths, refused by Merge False Outline at
+855 px; cut to 8–31, one ring again. The measuring pass sent one-piece frames down the
+single-ring path, which set `piece_needs` to one number and dropped what two-piece
+frames had measured for the hole — so whether a part was sized as several subpaths
+depended on its **last frame**. Every measuring frame now goes through the pieces path,
+matched by vertices; a part that is one ring throughout measures as before. All three
+clips now size `[78, 90]` and are judged the same way (855, 1,315 and 2,176.5 px).
+Guard: `scripts/test_piece_sizing.py`.
+
+**What the sizing fix does to the corpus.** Scorecard harness for the anchors and the
+creature kit, `bake_only.py` + `compare_bakes.py` for the rest; "before" is §22.
+
+| | Before | After |
+|---|---|---|
+| Apollo merged / wrong px / segments > 3 px | 62 / 180 / 2 | 63 (`dock_008`) / **193** / 2 |
+| Voyager merged / wrong px / segments > 3 px | 269 / 162 / 24 | **278** / **153** / **38** |
+| Creature kit elements / segments > 3 px (worst) | 5,155 / 2 (6.04 px) | **6,176** / **0 (1.65 px)** |
+| Flashbang, cell tower, disco ball | | identical drawings |
+| Doughnut | 0 merged | 0 merged, same refusals; the mug re-sized (1,577 → 1,147 slots, false line 20,687 → 20,232.5 px) |
+| Newly refused | | creature `Joint` only |
+
+Fourteen Apollo outlines change size, which is the fix doing its job, and the audit moves
+13 px the wrong way, ten of them on `apollo_000` over `apollo_002` — the "measured wrong"
+class that shifts whenever the ordering inputs change (§19). Voyager's nine new merges
+draw 0.5–149.5 px of visible false outline, under the limit, and 14 of their segments are
+over 3 px (worst `part_092.001/m`, 9.55 px on a 28 px segment for four half-frames). The
+creature's `Joint` was a one-ring merge only because its last frame had one piece; sized
+for its others it draws 1,032 px of false outline and goes face by face — its 6 px drift
+gone, 1,021 elements more.
+
+That makes a standing inconsistency visible. A **one-ring** outline is refused if any gap
+is 6 px worse than faces (Merge Slack); a **multi-ring** outline only if its visible false
+line over the whole clip passes 160 px, so a part can drift 9 px for a few half-frames
+and pass. Both fixes in §22–23 move parts from the strict test to the lenient one,
+correctly by the design, and the bars do not match. Which should — one bar for every
+merged outline, or a per-gap peak alongside the clip total — is a decision, not a fix.
+
+**Where the false line is.** The birth gap alone is 829 of frames 1–20's 855 px. The
+true hole halfway through it is nearly its full length already and only thinner — it
+opens along a line, 0.122 of the way into the gap — while the drawn one grows out of the
+one vertex its slot was parked on, at the hole's far end, so halfway it is a half-size
+copy beside the truth (`out/lab-torus/birth-gaps-6-7-8.png`).
+
+**Options, measured** (`scripts/lab_appear_options.py`). The object is baked once with
+the limit off (measuring, not deciding, as §14 did at 1e9), then every gap where a slot
+is parked at one end is re-scored under each rule with the bake's own false-outline
+measure, at a quarter, half and three quarters of the gap, and at the empty keyframe —
+because a parked ring is drawn there.
+
+| Parking rule | Birth 7→8 | Death 24→25 | Total in between | At the empty keyframes |
+|---|---|---|---|---|
+| now: the whole ring on one vertex | 2,052 | 2,229 | 4,281.5 px | 0 |
+| on its own centroid | 2,066 | 2,107 | 4,173 px | 0 |
+| each point on its own surface point | 137 | 138 | 275 px | **3,348.5 px** |
+| **from the event**: the ring drawn only from the moment it exists, starting from its own surface points then | **138** | **138** | **276 px** | **0** |
+
+Each point on its own surface point is right in between and wrong at the keyframe,
+where the ring of those vertices is a long false loop; one fill path and one opacity
+per element cannot leave a subpath out at a keyframe and in between. Drawn from the
+event — the moment found by bisecting the piece count, the ring carried back along the
+line through its full shape and never shown before it — keeps the good half of both:
+**94% less, nothing at the keyframes**.
+
+**On the doughnut's own torus it is not enough.** Same rules on `Torus.003` through the
+`rendering camera`:
+
+| | now | own centroid | own surface points | from the event | **keyed at the event** |
+|---|---|---|---|---|---|
+| False line in event gaps (¼, ½, ¾) | 6,217 | 7,338 | 4,942 (+197 at keys) | 4,590.5 | **13** |
+
+Its events are mostly splits — one contour loop pinching into two — and the slot that
+continues has to morph from the whole loop to its half; re-parking only the slot that
+appears leaves that. The bound in the last column keys the whole element at the event:
+up to it every ring follows its own surface points from the keyframe before, after it
+every ring of the keyframe after, switched at the instant. That draws **13 px** of false
+line where the bake draws 6,217. In format terms it is two keyframes straddling each
+topology change, which sparse tracks already hold (`{"t": […]}`); the baker, the IR and
+keyframe reduction would have to sample there.
+
+**Charging faces for appearing** changes the comparison, not the drawing. §13 measured
+that faces draw essentially no visible false line even where they appear — they fade
+where they are — so under any like-for-like rule a merged outline loses at a topology
+event unless the outline itself carries the event. It cannot rescue the doughnut alone.
+
+**And events are not the doughnut's whole problem.** `lab_merge_why.py` on two more of
+its bodies, splitting each one's visible false outline (as the bake counts it, halfway)
+by whether the piece count changes across the gap:
+
+| Body | False outline | In gaps with an event | In steady gaps |
+|---|---|---|---|
+| `Torus.003` | 3,982 px | 3,140 | **842** |
+| `Torus` | 6,082.5 px | 4,722.5 | **1,360** |
+| `mug` | 20,232.5 px | 6,270.5 | **13,962** |
+
+Even a representation that carried every event perfectly would leave each body 5–90×
+over the 160 px limit, from the folded contour drifting in gaps where nothing appears or
+vanishes — the slot-sliding class of §13 and experiments §2–3, on a contour with cusps.
+**Keying events would not make the doughnut merge.** It would pay where births and deaths
+are most of the false line, as on the lab torus (98% of it).
+
+**Decision, not built.** Keying a merged outline at its topology events is the one option
+measured here that carries an appearing or splitting piece; it fits the existing format;
+it is also two more keyframes per event, which the working principles call patching when
+they are added to hide an artefact. Whether recording the instant a silhouette changes
+topology is that, and whether it is worth building while the doughnut's steady drift
+would still refuse it, is the user's call.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before

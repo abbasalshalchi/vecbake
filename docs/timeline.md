@@ -223,3 +223,14 @@ Bugs are in [bugs.md](bugs.md); experiments in [experiments.md](experiments.md).
   refused anywhere. The doughnut's own tori are refused rightly — through a 20 mm lens
   their silhouettes split and rejoin between keyframes — and that is the open decision.
   [Audits §22](audits.md#22-why-a-torus-will-not-merge).
+- **26 October, later.** How a piece that appears could carry, measured before building.
+  A tilted torus whose hole opens and closes during the clip turns up a sizing fault
+  first — whether a part was sized as several subpaths depended on its last frame — and
+  it is fixed (Voyager +9 merges, creature `Joint` refused, Apollo's audit 180 → 193).
+  Then four ways to park the absent hole: drawing it only from the moment it exists cuts
+  the torus's birth-and-death false line 94% with nothing at the keyframes, and keying the
+  whole outline at each topology event cuts the doughnut torus's event gaps from 6,217 to
+  13 px. Neither is built: the doughnut's bodies also drift 842–13,962 px in gaps with no
+  event, so it would still not merge; and keying at events is two more keyframes each,
+  which is the user's call. Single-ring and multi-ring outlines turn out to be held to
+  different bars. [Audits §23](audits.md#23-a-piece-that-appears-how-it-could-carry-measured-before-building).
