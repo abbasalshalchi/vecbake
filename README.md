@@ -1112,8 +1112,8 @@ add-on links against Blender's Python API, so this is not a choice: any Blender
 add-on is a derivative work and must be GPL. A copy you receive is yours to
 modify and redistribute.
 
-The web runtime in [lerpa/](lerpa/) is separate code under **AGPL-3.0-or-later**,
-with a commercial licence available for closed-source products — see
-[lerpa/COMMERCIAL.md](lerpa/COMMERCIAL.md).
+The web runtime in [lerpa/](lerpa/) is separate code under **MIT**: use it
+anywhere, closed-source and commercial products included. (It was AGPL with a
+commercial licence up to 0.4.0.)
 
 **Files you bake are yours.** Neither licence reaches the output.

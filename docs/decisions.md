@@ -78,6 +78,16 @@ The name Lerpa comes from *lerp*, although the player uses cubic spatial interpo
 
 ## Licensing and pricing
 
+**26 October 2026: free and open source, both halves.** The add-on is free under
+GPL-3.0-or-later and its repository goes public; the player is relicensed **MIT** from
+0.5.0. The reasons, as the user set them out: real downloads were zero (all 54 a month were
+the author's own), there is no company to sell a licence through and no lawyer to write
+one, registering a company in Iraq costs millions of IQD, and the horizon is months, not a
+year, because language models are starting to make such animations directly. The project's
+value now is as a public credential and as the grader behind an RL environment;
+AGPL and a paid tier only kept users away. Commissions
+remain possible. What follows is the record of the earlier model, superseded.
+
 - **Player: AGPL-3.0-or-later with a commercial licence** (2026-08-03). MIT let a
   closed-source product ship the runtime free, leaving nothing to sell; AGPL is the
   condition such a product cannot meet. Only possible while one author holds the whole
