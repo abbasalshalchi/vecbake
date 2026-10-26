@@ -1100,6 +1100,8 @@ scripts/scorecard_table.py    the corpus as one table
 scripts/bake_only.py      rebake a scorecard model with the worker pool, no audit
 scripts/compare_bakes.py  are two bakes the same drawing, field for field
 scripts/lab_*.py          labs: a torus and why it merges or not, gap by gap
+scripts/render_reference.py  Blender's own render of a scorecard frame, same camera
+scripts/build_reel.py     the reel page: every scorecard bake live beside its render
 player/demo.html          older harness for the bare .json track format
 ```
 
