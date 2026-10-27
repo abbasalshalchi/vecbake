@@ -1693,6 +1693,17 @@ not. In the whole model the orbital module covers it. The bake orders the scene 
 is drawn; a subset with its occluders hidden is a different picture, and nothing
 grades that yet.
 
+**A crop that was not the camera's.** Once live, the bell's rim was reported cut off
+mid-wobble, as if the camera were too close. It is not: every vertex of all 91 objects,
+in camera space on every frame and quarter-frame, stays inside the frame. The tightest,
+`soyuz_029` at frame 31, leaves 2.08 units of dolly to spare, and the bell's furthest
+point is at ndc −0.898, about 98 px inside the left edge. The crop was the page's: the
+hero's canvas turns with the drawing, its fit checked only the tilted box against the
+panel, and with the page's −0.04 offset the bell ran 7.2 px past the bitmap. Its mouth
+lies parallel to that edge, so the whole rim went. Fixed in lerpa-website `63b3cf4`;
+the bake is unchanged. Moving the camera back would not have helped — the page scales
+the model to its measured size, so a smaller drawing is zoomed straight back up.
+
 ---
 
 ## Timing on a loaded machine
