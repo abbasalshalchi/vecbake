@@ -1659,6 +1659,30 @@ file left the docking module's collar out — the ring floated clear of the body
 dropped the lower thruster quad on the service module, and drew a round fitting over the
 docking module that belongs behind it. The re-bake matches the render in all three.
 
+**What shipped is a second re-bake, with the engine bell closed.** The user found the
+bell (`apollo_000`) see-through when zoomed — an open shell, [bugs.md §12](bugs.md#12-open)
+— and closed its opening in the blend (one 40-gon cap; boundary edges 40 → 0; no other
+object changed; blend sha256 `e80b5cad…`). Re-baked and graded in one `scorecard.py` run
+at `b187687`:
+
+| | First re-bake | Shipped (bell closed) |
+|---|---|---|
+| Elements | 16,160 | 16,164 |
+| Ray-cast audit | 193 wrong px of 9,000 | 193 of 9,000 |
+| Points off their geometry | 0, worst 1.04 px | 0, worst 1.04 px |
+| Outline gaps at 0.5 | 38 in 12 elements, worst 3.30 px | 47 in 13, worst 3.30 px |
+| gzip | 1.566 MB | 1.564 MB |
+
+The nine new gaps are all the bell's own (its merged outline 2 → 9, worst 2.38 px; two
+chains at 1.4 and 1.64 px). Rendered at frames 1, 16 and 31, every pixel that differs
+between the two re-bakes lies inside the bell's box. Against a Freestyle hidden-line
+render of the bell alone (visible lines only) at the same frames, the closed bell matches:
+the inside is drawn, and the far rim no longer shows through the near wall. A total-order
+comparison of depth tracks is no test of that — the topological sort reorders globally,
+and ~10,000 non-overlapping elements swap ranks with no pixel moving. Bake CPU read
+1,242 s against 377 s, with the user's Blender and two side renders running; not a
+measurement.
+
 **The zoom tree did not need re-deriving.** Same 91 groups. Re-fitting the orbit depth
 from the blend (`fit_orbit_depth.py … 60`) moves any node's zoom by at most 0.26%
 (`apollo_018.015`); the shipped table was kept.

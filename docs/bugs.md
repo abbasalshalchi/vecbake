@@ -751,6 +751,10 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
   Scope on Apollo–Soyuz: 39 of 92 mesh objects have boundary edges, 19 of them merged
   (`dock_008`, `soyuz_013`, `dock_009`, `soyuz_029/030`, `apollo_000`, …). Next: a
   controlled open-cone scene, then both fixes, then Apollo and Voyager regressions.
+  For the hero, the user closed the bell's opening in the blend instead (27 October);
+  the re-bake then matches the hidden-line render ([audits.md §24](audits.md#24-the-hero-re-baked)).
+  That works around one part; the engine bug is untouched and the other 38 open shells
+  still carry it.
 
 - **The gap test joined a multi-ring outline's rings end to end** (measured on a torus,
   2026-10-25/26). **Fixed.** `judge_carry` passed `outline.stray` every subpath of a
