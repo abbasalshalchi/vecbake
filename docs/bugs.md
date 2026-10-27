@@ -734,6 +734,24 @@ in [experiments.md](experiments.md#merged-outlines). These are the bugs.
 
 ## 12. Open
 
+- **An open shell is see-through** (seen 2026-10-27 by the user on the hero's engine bell,
+  `apollo_000`, zoomed in: "the near exterior wall is see through"). Not new — the bell
+  is pixel-identical in the 10 October bake and the re-bake. Confirmed against a
+  Freestyle hidden-line render of the bell alone at frames 1, 16 and 31: two faults,
+  both from a single-sided shell being treated as a closed solid.
+  - Looking into the opening (frame 1), the inside of the far wall is not drawn: it faces
+    away, and `backface_cull` drops it, so the bell is a hole where Blender shows its
+    inside. This is the "backface cull on open surfaces" item: cull only closed
+    components.
+  - From the side (frames 16, 31), the far half of the rim is drawn over the near outside
+    wall. The bell is a merged fill, and a merged part's own strokes are ranked above its
+    fill, so nothing in the part can hide its own lines; drawn face by face, sampled order
+    would have put the near wall over them.
+  The hero paints fills in the background colour, which is why it reads as "no fill".
+  Scope on Apollo–Soyuz: 39 of 92 mesh objects have boundary edges, 19 of them merged
+  (`dock_008`, `soyuz_013`, `dock_009`, `soyuz_029/030`, `apollo_000`, …). Next: a
+  controlled open-cone scene, then both fixes, then Apollo and Voyager regressions.
+
 - **The gap test joined a multi-ring outline's rings end to end** (measured on a torus,
   2026-10-25/26). **Fixed.** `judge_carry` passed `outline.stray` every subpath of a
   merged outline concatenated, as one closed loop, against `walk_loop`'s single ring —
