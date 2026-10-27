@@ -1630,6 +1630,47 @@ would still refuse it, is the user's call.
 
 ---
 
+## 24. The hero re-baked
+
+27 October. The website's Apollo–Soyuz was the bake of 10 October, older than
+everything since §20. It was re-baked with [`scripts/bake_only.py`](../scripts/bake_only.py)
+at `10db5b0` (the add-on unchanged since `04054fd`; the installed copy identical to the
+repo but for the preview's player), Blender 5.2.3, the blend unchanged since 17
+September: the scene's own `lerpa_cam` 60° arc, 31 frames at 24 fps, the hero audits'
+settings. 441 s wall with the ordering pool.
+
+**It is the drawing §20 graded.** `compare_bakes.py` against the scorecard's apollo
+(`0bc19b3`): identical — ids, geometry, depth, opacity, colour. So the ray-cast audit
+stands for it: 193 wrong pixels of 9,000 (2.14%). The old file was never graded, so it
+was put through the same two file checks (`check_geometry.py`, `check_outline_segments.py
+--subframe 0.5`) on the same blend:
+
+| | Old hero (10 Oct) | Re-bake |
+|---|---|---|
+| Elements | 18,324 | 16,160 |
+| Merged fills | 54 | 63 |
+| File, raw / gzip | 11.70 / 1.79 MB | 10.25 / 1.57 MB |
+| Points off their geometry | 17,843 in 884 elements, worst 196.8 px (`dock_001/e745`, frame 16) | 0, worst 1.04 px |
+| Outline gaps at 0.5 | 763 in 43 elements, worst 7.03 px (`apollo_018.013`) | 38 in 12, worst 3.30 px (`dock_002/m`) |
+| Render, same player, 883 px, default strokes, alternating runs | 59.9 ms median | 53.2 ms median |
+
+Against Blender's Workbench render of frame 16 (`out/reel/apollo_ref.png`), the old
+file left the docking module's collar out — the ring floated clear of the body —
+dropped the lower thruster quad on the service module, and drew a round fitting over the
+docking module that belongs behind it. The re-bake matches the render in all three.
+
+**The zoom tree did not need re-deriving.** Same 91 groups. Re-fitting the orbit depth
+from the blend (`fit_orbit_depth.py … 60`) moves any node's zoom by at most 0.26%
+(`apollo_018.015`); the shipped table was kept.
+
+**Still open.** With only the docking module drawn — the hero's isolated view — its
+ring's far rim shows a regular sawtooth that Blender's render of the same parts does
+not. In the whole model the orbital module covers it. The bake orders the scene that
+is drawn; a subset with its occluders hidden is a different picture, and nothing
+grades that yet.
+
+---
+
 ## Timing on a loaded machine
 
 This machine runs Chrome, Voicemeeter and the Blender GUI; CPU sat at 53–56% before
