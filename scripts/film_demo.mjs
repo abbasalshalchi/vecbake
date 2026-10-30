@@ -137,6 +137,13 @@ async function click() {
   await shoot();
   await mouse('mouseReleased', x, y, { button: 'left', clickCount: 1 });
 }
+// A click that lands somewhere else is still a working click, and looks like a
+// slip in the finished clip. So stop rather than film it.
+async function expectNode(want) {
+  await shoot();
+  const node = await ev('__film.hero.node');
+  if (node !== want) throw new Error(`frame ${frame}: expected node "${want}", got "${node}"`);
+}
 const key = (code, text) => send('Input.dispatchKeyEvent', { type: 'keyDown', key: text, code, text: text.length === 1 ? text : undefined, windowsVirtualKeyCode: text.length === 1 ? text.toUpperCase().charCodeAt(0) : 39 })
   .then(() => send('Input.dispatchKeyEvent', { type: 'keyUp', key: text, code }));
 const scene = i => ev(`__film.show(${i}); 1`);
@@ -169,9 +176,12 @@ const [ox, oy] = await spot('soyuz_005');
 await glide(ox, oy, 0.7);
 await hold(0.35);
 await click();
+await expectNode('orbital');
 await hold(2.2);
-await glide(SIZE * 0.2, SIZE * 0.6, 0.5);
+// Back out through a corner nothing is drawn in, whichever way the part has turned.
+await glide(SIZE * 0.92, SIZE * 0.08, 0.5);
 await click();
+await expectNode('');
 await hold(0.8);
 
 // 3. Recolour, while the pointer keeps it turning.
