@@ -137,6 +137,23 @@ async function click() {
   await shoot();
   await mouse('mouseReleased', x, y, { button: 'left', clickCount: 1 });
 }
+// The point nearest the upper right that is on the canvas with nothing drawn near it.
+const emptySpot = () => ev(`(() => {
+  const p = __film.hero.player, c = document.getElementById('ship');
+  const r = c.getBoundingClientRect(), w = c.width / p.dpr, a = Math.PI / 4;
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  let best = null, bestD = Infinity;
+  for (let y = 40; y < ${SIZE}; y += 20) for (let x = 40; x < ${SIZE}; x += 20) {
+    const dx = x - cx, dy = y - cy;
+    const ux = dx * Math.cos(a) - dy * Math.sin(a), uy = dx * Math.sin(a) + dy * Math.cos(a);
+    if (Math.abs(ux) > w / 2 - 8 || Math.abs(uy) > w / 2 - 8) continue;
+    if (p.pick(r.left + ux + w / 2, r.top + uy + w / 2, 40)) continue;
+    const d = Math.hypot(x - ${SIZE} * 0.85, y - ${SIZE} * 0.2);
+    if (d < bestD) { bestD = d; best = [x, y]; }
+  }
+  return best;
+})()`);
+
 // A click that lands somewhere else is still a working click, and looks like a
 // slip in the finished clip. So stop rather than film it.
 async function expectNode(want) {
@@ -178,8 +195,10 @@ await hold(0.35);
 await click();
 await expectNode('orbital');
 await hold(2.2);
-// Back out through a corner nothing is drawn in, whichever way the part has turned.
-await glide(SIZE * 0.92, SIZE * 0.08, 0.5);
+// Back out through empty canvas. The canvas is a diamond once tilted, so the
+// stage's own corners are off it and a click there reaches nothing.
+const [ex, ey] = await emptySpot();
+await glide(ex, ey, 0.5);
 await click();
 await expectNode('');
 await hold(0.8);
