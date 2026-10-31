@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lerpa link preview card</title>
+<!-- The picture a link shows on LinkedIn, X and Slack: the real hero drawing the
+     real file, with the page's own type. scripts/film_og_card.mjs shoots it.
+     The site's assets resolve because scripts/devserver.py falls back to public/. -->
+<link rel="stylesheet" href="/site.css">
+<style>
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body::before { height: 12px; background: var(--banding); }
+  .copy { position: absolute; left: 64px; top: 72px; bottom: 64px; width: 560px;
+          display: flex; flex-direction: column; z-index: 1; }
+  .copy img { display: block; height: 64px; width: auto; align-self: flex-start; }
+  .copy h1 { font-size: 78px; line-height: 1.02; margin-top: auto; }
+  .copy p { font-size: 28px; line-height: 1.3; color: var(--ink-soft); margin: 24px 0 0; }
+  /* A feed shows this at under half size, so the line is heavier than on the page. */
+  #rig { position: absolute; right: 8px; top: 12px; width: 618px; height: 618px; }
+  #card-canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div class="copy">
+  <img src="/brand/lerpa-lockup.svg" alt="Lerpa">
+  <h1>Press a 3D&nbsp;move into a single&nbsp;SVG.</h1>
+  <p>One file. No video, no WebGL.</p>
+</div>
+<div id="rig"><canvas id="card-canvas"></canvas></div>
+<script type="module">
+  import { mountHero } from '/hero/hero.js';
+  const rig = await mountHero(document.getElementById('card-canvas'), {
+    src: '/hero/apollo-soyuz.svg',
+    tree: '/hero/apollo-soyuz-tree.json',
+    title: 'Apollo–Soyuz',
+    arcDegrees: 60,
+    tilt: -45,
+    fill: 0.98,
+    maxDpr: 1,
+  });
+  const cs = getComputedStyle(document.documentElement);
+  rig.paint(cs.getPropertyValue('--ground').trim(), cs.getPropertyValue('--steel').trim());
+  rig.player.lineScale = 1.5;
+  await document.fonts.ready;
+  window.__card = rig;
+</script>
+</body>
+</html>
