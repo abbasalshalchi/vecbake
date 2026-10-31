@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VecBake listing image</title>
+<!-- The featured image for the extensions.blender.org listing: a real baked file,
+     drawn by the real player. scripts/film_listing_art.mjs shoots it at 1920x1080.
+     ?model=voyager|apollo picks the file. No Blender logo: the platform's terms forbid it. -->
+<link rel="stylesheet" href="/site.css">
+<style>
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body::before { height: 18px; background: var(--banding); }
+  .copy { position: absolute; left: 104px; top: 120px; bottom: 104px; width: 900px;
+          display: flex; flex-direction: column; z-index: 1; }
+  .copy h1 { font-size: 168px; line-height: 1; margin: 0; }
+  .copy .what { font-size: 68px; line-height: 1.1; margin: auto 0 0; color: var(--ink); font-weight: 600; }
+  .copy .formats { font-family: var(--mono); font-size: 34px; color: var(--hivis); margin: 44px 0 0; }
+  /* Voyager's booms leave most of its tilted box empty, so the box runs past the page. */
+  #rig { position: absolute; left: 776px; top: -130px; width: 1560px; height: 1560px; }
+  #art { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div class="copy">
+  <h1>VecBake</h1>
+  <p class="what">Bake a 3D camera move into a 2D vector animation.</p>
+  <p class="formats">Animated SVG · Lottie · JSON</p>
+</div>
+<div id="rig"><canvas id="art"></canvas></div>
+<script type="module">
+  import { mountHero } from '/hero/hero.js';
+  const MODELS = {
+    voyager: { src: '/hero/voyager.svg', tree: '/hero/voyager-tree.json', title: 'Voyager' },
+    apollo: { src: '/hero/apollo-soyuz.svg', tree: '/hero/apollo-soyuz-tree.json', title: 'Apollo–Soyuz' },
+  };
+  const q = new URLSearchParams(location.search);
+  const rig = await mountHero(document.getElementById('art'), {
+    ...MODELS[q.get('model') || 'voyager'],
+    arcDegrees: 60,
+    tilt: Number(q.get('tilt') ?? -45),
+    fill: 0.98,
+    maxDpr: 1,
+  });
+  const cs = getComputedStyle(document.documentElement);
+  rig.paint(cs.getPropertyValue('--ground').trim(), cs.getPropertyValue('--steel').trim());
+  // The listing shows this at under a quarter of its size, so the line is heavier than on the page.
+  rig.player.lineScale = 2;
+  await document.fonts.ready;
+  window.__card = rig;
+</script>
+</body>
+</html>

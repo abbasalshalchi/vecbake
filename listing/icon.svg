@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 2000 2000">
+  <!-- The identity's mark on its own ground, so the dark side stays visible on any page. -->
+  <rect width="2000" height="2000" fill="#0D0D10"/>
+  <g transform="translate(1000 1000) scale(1.06) translate(-1000 -900)">
+    <path d="M300 476H742V1655H300Z" fill="#6A707A"/>
+    <path d="M300 476L668 145H1110L742 476Z" fill="#B7BCC3"/>
+    <path d="M742 476L1110 145V1323L742 1655Z" fill="#33373F"/>
+    <path d="M742 1655L1110 1323H1700L1330 1655Z" fill="#D2EF2B"/>
+  </g>
+</svg>
