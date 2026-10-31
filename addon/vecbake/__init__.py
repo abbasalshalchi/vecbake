@@ -30,7 +30,7 @@ from bpy.props import (
 )
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import api, audit, bake as bake_mod, emit_json, emit_lottie, emit_svg, ir, reduce, settings as settings_mod
+from . import agent, api, audit, bake as bake_mod, emit_json, emit_lottie, emit_svg, ir, reduce, settings as settings_mod
 from .bake import BakeError
 from .settings import BakeSettings
 
@@ -422,6 +422,12 @@ class VECBAKE_PG_settings(PropertyGroup):
     progress_fraction: FloatProperty(name="Progress", default=0.0, min=0.0, max=1.0)
     baking: BoolProperty(name="Baking", default=False)
 
+    def formats(self):
+        wanted = (("lerpa", self.emit_lerpa), ("json", self.emit_json),
+                  ("svg", self.emit_svg), ("lottie", self.emit_lottie),
+                  ("still", self.emit_still), ("preview", self.emit_preview))
+        return [name for name, on in wanted if on]
+
     def to_bake_settings(self, context) -> BakeSettings:
         s = BakeSettings()
         if self.source == "SELECTED":
@@ -485,10 +491,7 @@ class VECBAKE_PG_settings(PropertyGroup):
 # ---------------------------------------------------------------------------
 
 def _formats(props):
-    wanted = (("lerpa", props.emit_lerpa), ("json", props.emit_json),
-              ("svg", props.emit_svg), ("lottie", props.emit_lottie),
-              ("still", props.emit_still), ("preview", props.emit_preview))
-    return [name for name, on in wanted if on]
+    return props.formats()
 
 
 def _used(props, option) -> bool:
@@ -969,7 +972,11 @@ class VECBAKE_PT_panel(Panel):
                 box.progress(factor=props.progress_fraction, text=props.progress_text)
             else:
                 box.label(text=props.progress_text, icon="TIME")
-            box.label(text="Esc to cancel", icon="EVENT_ESC")
+            if agent.running():
+                box.label(text="Started by a script or agent", icon="CONSOLE")
+                box.operator("vecbake.agent_cancel", icon="CANCEL")
+            else:
+                box.label(text="Esc to cancel", icon="EVENT_ESC")
         elif props.last_stats:
             layout.label(text=props.last_stats, icon="CHECKMARK")
 
@@ -980,6 +987,8 @@ classes = (
     VECBAKE_OT_audit,
     VECBAKE_OT_export,
     VECBAKE_PT_panel,
+    agent.VECBAKE_PG_agent,
+    agent.VECBAKE_OT_agent_cancel,
 )
 
 
@@ -987,9 +996,13 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.vecbake = PointerProperty(type=VECBAKE_PG_settings)
+    bpy.types.WindowManager.vecbake = PointerProperty(type=agent.VECBAKE_PG_agent)
+    agent.register()
 
 
 def unregister():
+    agent.unregister()
+    del bpy.types.WindowManager.vecbake
     del bpy.types.Scene.vecbake
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

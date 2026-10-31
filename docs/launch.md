@@ -121,7 +121,58 @@ ruff, which the guidelines ask for, is not installed here and was not run.
 **Queue, as seen today.** No review time is published. The first entries awaiting review
 were 25 minutes to 2 weeks old, plus one at 2 years.
 
-**For agent support.** `localhost` is allowed. A required external component is not, even
+**Listing images, in `listing/`.** The platform's model asks for a 256 x 256 PNG icon and a
+featured image of at least 1920 x 1080 at 16:9 (`extensions/models.py` in its source);
+both must exist before review. `icon.png` is the identity's box and shadow on its ground.
+`featured.png` is `hero/voyager.svg`, baked 6 September, drawn by the real player;
+`node scripts/film_listing_art.mjs <origin> listing` reshoots them. Voyager rather than
+the hero because the repo records Voyager as a NASA model and records no source or licence
+for Apollo–Soyuz, only that it came from Maya as a GLB. NASA's terms were not re-read and
+the repo holds no download URL for the model.
+
+**Moderators asked 31 October** about `player.js` in #extensions-moderators. Not answered yet.
+
+**Agent support, built the same day.** `window_manager.vecbake` gives `describe`, `start`,
+`status` and `cancel`; [agents.md](agents.md) is the guide. A request starts from the panel's
+settings and never writes to them. No socket, no dependency, no download.
+
+| Check | Result |
+|---|---|
+| `scripts/test_agent.py` | Refusals, measuring without writing, panel and agent bakes byte-identical in all six formats |
+| `scripts/agent_connection_check.py`, the Lab server's own code in a second, isolated Blender | `start` answered in 48-80 ms; cancel, a second bake, a file load and a Selected source all behave |
+| The same, through the real `blender-mcp.exe` over stdio | Tool listed, bake ran, files on disk, refusal arrived |
+| Apollo-Soyuz (16,178 elements), copied, through `start` | Finished; the SVG hash matched before and after each slicing change |
+
+The first Apollo run showed Blender unable to answer for 52 s in Chaining edges, and the next
+19 s around Sizing. Both are now sliced (`chain.apply_iter`, `size_outlines`, `try_refine`,
+`walk_shapes`), with the file unchanged at SHA-256 `E9AE897A...06AD`. What remains on Apollo:
+
+| Stretch | Longest |
+|---|---|
+| Resolving occlusion, the frame the parent keeps for itself | 15.0 s |
+| Writing files | 10.1 s |
+| A Sampling boundary | 7.1 s |
+| Reducing keyframes | 6.6 s |
+
+All are far inside the bridge's 300 s (`blmcp/tools_helpers/connection.py`), and the window
+is stuck for that long too, so they are worth slicing if someone complains. The Apollo bake
+read 477 s before the slicing and 241-247 s after. Nothing in the change explains a halving,
+and the runs were not alternated, so do not quote it as a speed-up.
+
+Not tested through an agent: the user's own open Blender, which had unsaved work, so nothing
+was installed in it. No model has driven this; every call was scripted.
+
+**The zip to upload is `dist/vecbake-0.3.0.zip`**, which replaces 0.2.0: 234,719 B, 26 entries,
+no caches, SHA-256 `99a67581bd1dc48244a0771083b851da0fb6f72a8f729c70cb920d7d928f11a0`. Installed
+from that zip into an isolated profile, the full suite passes 30 of 30 on Blender 5.2.3. The
+window checks above were made on 0.2.0 and not repeated, so the Cancel Bake button has not been
+seen drawn. Blender 5.1, macOS, Linux and ruff remain unrun.
+
+Found on the way and not fixed: the emitters report the size of their text, but on Windows
+text mode turns each line ending into two bytes, so the panel's KB figure runs low and baked
+files differ between operating systems. The agent reports sizes from the disk.
+
+**For agent support, the rules.** `localhost` is allowed. A required external component is not, even
 for an optional feature (terms 5.2), and neither is depending on another extension.
 A socket in the add-on needs the `network` permission and a `bpy.app.online_access` check.
 A long bake over MCP also blocks the GUI (`docs/gotchas.md`).

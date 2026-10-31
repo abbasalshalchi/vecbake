@@ -238,18 +238,20 @@ def _bake_and_write(
     """
     context = context or bpy.context
     settings = settings or BakeSettings()
-    directory = bpy.path.abspath(directory)
-    if not os.path.isabs(directory):
-        # With an unsaved .blend, abspath turns "//out/" into a *relative*
-        # "out/", which then quietly resolves against the process working
-        # directory -- usually Blender's install folder. Fail loudly instead of
-        # scattering files somewhere the user will never look.
-        raise BakeError(
-            f"Output folder '{directory}' is relative to the .blend file, but this "
-            "file has not been saved yet. Save the .blend, or set an absolute "
-            "output folder."
-        )
-    os.makedirs(directory, exist_ok=True)
+    # No formats is a bake to measure: nothing is written, so no folder is needed.
+    if formats:
+        directory = bpy.path.abspath(directory)
+        if not os.path.isabs(directory):
+            # With an unsaved .blend, abspath turns "//out/" into a *relative*
+            # "out/", which then quietly resolves against the process working
+            # directory -- usually Blender's install folder. Fail loudly instead of
+            # scattering files somewhere the user will never look.
+            raise BakeError(
+                f"Output folder '{directory}' is relative to the .blend file, but this "
+                "file has not been saved yet. Save the .blend, or set an absolute "
+                "output folder."
+            )
+        os.makedirs(directory, exist_ok=True)
 
     cameras = resolve_cameras(context, settings)
     multi = len(cameras) > 1

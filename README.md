@@ -66,6 +66,9 @@ the 3D viewport N-panel under a **VecBake** tab. Blender 5.1+.
 
 ## Use
 
+An AI agent or a script talking to a running Blender has its own way in:
+[docs/agents.md](docs/agents.md).
+
 Set a camera animation, pick your objects, press **Bake & Export**. Meshes,
 curves, text and surfaces all bake, each from the geometry Blender evaluates for
 it -- a bevelled curve or an extruded title comes out exactly as the same shape

@@ -1133,15 +1133,19 @@ def bake_iter(context, settings: BakeSettings):
             ring_cache.setdefault(name, {})
         for fi, frame in enumerate(frames):
             scene.frame_set(frame)
-            for name, got in _rings_of(context.evaluated_depsgraph_get(),
-                                       mine).items():
-                ring_cache[name][(fi, 0)] = got
+            for obj in mine:
+                for name, got in _rings_of(context.evaluated_depsgraph_get(),
+                                           [obj]).items():
+                    ring_cache[name][(fi, 0)] = got
+                yield ("Sizing", fi, len(frames))
             if fi + 1 < len(frames):
                 scene.frame_set(frame, subframe=0.5)
-                for name, (_, poly) in _rings_of(
-                        context.evaluated_depsgraph_get(), mine).items():
-                    if poly is not None:
-                        ring_cache[name][(fi, 1)] = poly
+                for obj in mine:
+                    for name, (_, poly) in _rings_of(
+                            context.evaluated_depsgraph_get(), [obj]).items():
+                        if poly is not None:
+                            ring_cache[name][(fi, 1)] = poly
+                    yield ("Sizing", fi, len(frames))
             yield ("Sizing", fi + 1, len(frames))
 
     def size_outlines(names):
@@ -1180,7 +1184,8 @@ def bake_iter(context, settings: BakeSettings):
         """
         cache = ring_cache
 
-        for name in names:
+        for index, name in enumerate(names):
+            yield ("Sizing", index, len(names))
             hi = outline_slots.get(name, 0)
             shapes = cache.get(name)
             if hi < 5 or not shapes:
@@ -1199,6 +1204,7 @@ def bake_iter(context, settings: BakeSettings):
                 if n in tried or not (3 <= n <= hi):
                     continue
                 tried.add(n)
+                yield ("Sizing", index, len(names))
                 err = _gap_cost(shapes, n)
                 if err < best_err - 1e-9:
                     best_n, best_err = n, err
@@ -1208,6 +1214,7 @@ def bake_iter(context, settings: BakeSettings):
                 if n in tried or not (3 <= n <= hi):
                     continue
                 tried.add(n)
+                yield ("Sizing", index, len(names))
                 err = _gap_cost(shapes, n)
                 if err < best_err - 1e-9:
                     best_n, best_err = n, err
@@ -1254,6 +1261,7 @@ def bake_iter(context, settings: BakeSettings):
 
             now = {}
             for name, (ring, poly) in here.items():
+                yield ("Refining outlines", fi, len(frames))
                 if ring is None:
                     chain[name] = [None] * len(options[name])
                     continue
@@ -1472,7 +1480,8 @@ def bake_iter(context, settings: BakeSettings):
             # slack is not going to be brought under it by either.
             if ring_cache and settings.merge_slack_px > 0.0:
                 hopeless = []
-                for name in sorted(outline_slots):
+                for index, name in enumerate(sorted(outline_slots)):
+                    yield ("Sizing", index, len(outline_slots))
                     shapes = ring_cache.get(name)
                     if not shapes or len(part_slots.get(name, ())) > 1:
                         continue
@@ -1487,7 +1496,7 @@ def bake_iter(context, settings: BakeSettings):
                         ring_cache.pop(name, None)
 
             if settings.size_by_gap and ring_cache:
-                size_outlines(sorted(outline_slots))
+                yield from size_outlines(sorted(outline_slots))
 
             judging = can_judge
             restart()
@@ -1518,7 +1527,7 @@ def bake_iter(context, settings: BakeSettings):
                     and p.outline_n and p.carry_cost > settings.refine_gate_px
                     and len(part_slots.get(n, ())) <= 1)
                 if gated and ring_cache:
-                    try_refine(gated)
+                    yield from try_refine(gated)
 
             false_scores = {n: round(p.false_seen, 1) for n, p in plans.items()
                             if n in wanted and p.false_seen > 0.0}
@@ -1577,10 +1586,9 @@ def bake_iter(context, settings: BakeSettings):
 
     chain_report = {"chains": 0, "edges_merged": 0, "paths": {}}
     if settings.chain_edges:
-        yield ("Chaining edges", 0, 1)
-        chain_report = chain_mod.apply(plans, elements, slots, frame_items,
-                                       vertex_cache, settings, len(frames),
-                                       frame_ortho)
+        chain_report = yield from chain_mod.apply_iter(plans, elements, slots, frame_items,
+                                                       vertex_cache, settings, len(frames),
+                                                       frame_ortho)
 
     # Fills get the same thinning strokes have always had. Placed here, beside
     # chaining, because both rewrite element geometry and both must finish

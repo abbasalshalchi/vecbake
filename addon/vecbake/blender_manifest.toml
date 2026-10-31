@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "vecbake"
-version = "0.2.0"
+version = "0.3.0"
 name = "VecBake"
 tagline = "Bake 3D scenes to interpolated 2D vector animations"
 maintainer = "Abbas Alshalchi <abbasalshalchi@gmail.com>"

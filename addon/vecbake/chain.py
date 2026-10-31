@@ -412,9 +412,14 @@ def thin_fills(plans, elements, slots, frame_items, vertex_cache, settings, nfra
     return {"paths": paths, "points_dropped": dropped}
 
 
-def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
-          ortho_by_frame=None):
-    """Rewrite elements/slots/frame_items in place. Returns a small report."""
+def apply_iter(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
+               ortho_by_frame=None):
+    """Rewrite elements/slots/frame_items in place. Returns a small report.
+
+    A generator, yielding `(phase, done, total)` after each chain. Measuring chains
+    against the fills they cross took Blender away for 10 s at a time on a sphere of
+    1,280 faces, long enough for a connection into it to give up.
+    """
     removed_keys = set()
     added: list[Element] = []
     chain_items = {}          # frame index -> list of replacement items
@@ -425,7 +430,8 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
         ortho_by_frame = [False] * nframes
     fills = _fills_by_frame(frame_items, nframes, ortho_by_frame)
 
-    for plan in plans.values():
+    for plan_index, plan in enumerate(plans.values()):
+        yield ("Chaining edges", plan_index, len(plans))
         if not plan.strokes or not plan.nedges:
             continue
         eligible = [e for e in range(plan.nedges) if f"{plan.name}/e{e}" in slots]
@@ -482,6 +488,7 @@ def apply(plans, elements, slots, frame_items, vertex_cache, settings, nframes,
 
         for index, (path, members, ring) in enumerate(
                 _trace(plan.edge_verts, eligible, keys, cont)):
+            yield ("Chaining edges", plan_index, len(plans))
             if len(members) < 2:
                 continue
 

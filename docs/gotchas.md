@@ -66,8 +66,10 @@ bake report says when neither worked. `320f320`.
   then writes into Blender's install folder. Test `os.path.isabs()`.
 
 ### A bake through the MCP blocks the GUI
-Running a long bake over the Blender MCP connection freezes the user's session and
-times the connection out. Run bakes headless in a separate Blender process instead.
+`bake_and_write` or `bpy.ops.vecbake.export()` over the Blender MCP connection freezes the
+user's session, and the bridge gives up on an answer after 300 s. Use
+`window_manager.vecbake.start`, which returns at once ([agents.md](agents.md)), or run
+headless in a separate Blender process.
 
 ### Kill Blender by PID, never by name
 `taskkill /IM blender.exe` kills every Blender, including the user's own session.
