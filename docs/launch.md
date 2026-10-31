@@ -66,3 +66,62 @@ user's report.
 6. **Launch.** The README's "three things that were hard" is the Show HN post as it
    stands; a Superhive listing; r/blender and Blender Artists with a short capture of
    the hero.
+
+---
+
+## 4. Listing on extensions.blender.org (31 October)
+
+Checked against the [terms](https://extensions.blender.org/terms-of-service/) and the
+[moderators' guidelines](https://developer.blender.org/docs/features/extensions/moderation/guidelines/).
+
+**Run on Blender 5.2.3.** `blender --command extension validate` and `build` pass on
+`addon/vecbake`, giving a 228,475 B zip with no `__pycache__`. Installed from that zip
+into an isolated `BLENDER_USER_RESOURCES`, it enabled as
+`bl_ext.user_default.vecbake`. Background bakes of the default cube (0.9 s) and the
+cube plus a 2,562-vertex icosphere (153 s) wrote all five formats. The heavy bake ran
+11 workers from the installed folder and wrote nothing into the add-on's directory.
+The files were not opened and the panel was not used, so none of this covers the GUI.
+
+**Changed for upload, later the same day**
+
+| What | Why |
+|---|---|
+| Added `[permissions] files` and `website` to the manifest | The guidelines expect `files` for most I/O add-ons |
+| `blender_version_min` 4.2.0 → 5.1.0 | Nothing from 4.2 to 4.5 has been baked on (§1). 5.1 was not rerun either: no 5.1 binary is installed here |
+| Built `dist/vecbake-0.2.0.zip` | 228,554 B, 25 entries, no caches. SHA-256 `1C05347F0F7DC6671967D629E2E2F595E3EF84213379253357E63B88C3E30301` |
+
+**That zip in a real window, on 5.2.3, from a clean profile**
+
+- The VecBake tab opens and the whole panel draws, with no tracebacks.
+- A simulated click on **Bake & Export** baked the default cube under a keyed camera and
+  reported `12 elements (9 strokes, 3 fills), 12 drawn/frame, 289 keyframes` in the status
+  bar. Simulated clicks are not dependable: most format toggles and one whole run's
+  first click did not land, and only Preview Page ever toggled. Not chased, because the
+  same runs show the button works.
+- The operator the button calls, invoked in the window with every format on, wrote all
+  seven files. From an unsaved file it refused and wrote nothing.
+- The preview page, opened in headless Chrome from a panel bake, draws the cube.
+- The Folder field shows red by default even though the bake succeeds and creates the
+  folder. The add-on sets no alert there; why Blender paints it was not established.
+- Not covered: macOS, Linux, a hand-driven mouse, and any bake beyond these scenes in the window.
+
+**Could be raised in review**
+
+- `preview/player.js` is 45 KB of MIT JavaScript in the zip, used only by the Preview
+  format. Terms 3.6: "Source code of the extension must be fully written in Python."
+  Terms 1.2 asks for CC0 on bundled assets. Neither names JavaScript, so ask the
+  moderators before uploading.
+- `_worker.py:60` writes to `sys.modules`, which the add-on guidelines forbid. It runs in
+  a child Python, never inside Blender. Say so in the upload note rather than rewrite it.
+
+**Clean in a search of the add-on's `.py` files:** `sys.path`, `threading`, `eval`, `exec`,
+`bpy.data.objects`, `keyconfigs`, `__name__` as an ID, network calls and links in the UI.
+ruff, which the guidelines ask for, is not installed here and was not run.
+
+**Queue, as seen today.** No review time is published. The first entries awaiting review
+were 25 minutes to 2 weeks old, plus one at 2 years.
+
+**For agent support.** `localhost` is allowed. A required external component is not, even
+for an optional feature (terms 5.2), and neither is depending on another extension.
+A socket in the add-on needs the `network` permission and a `bpy.app.online_access` check.
+A long bake over MCP also blocks the GUI (`docs/gotchas.md`).

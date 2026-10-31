@@ -62,8 +62,7 @@ install()
 ```
 
 Then enable **VecBake** in `Edit > Preferences > Add-ons`. The panel lands in
-the 3D viewport N-panel under a **VecBake** tab. Blender 4.2+ (developed
-against 5.1).
+the 3D viewport N-panel under a **VecBake** tab. Blender 5.1+.
 
 ## Use
 
